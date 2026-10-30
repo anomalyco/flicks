@@ -1,0 +1,23 @@
+[package]
+name = "flicks-audio"
+description = "Channel layout, stereo downmix, resampling and device output for the Flicks player."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.18"
+
+[dev-dependencies]
+flicks-aac = { path = "../aac" }
+flicks-ac3 = { path = "../ac3" }
+flicks-opus = { path = "../opus" }
+flicks-testkit = { path = "../testkit" }

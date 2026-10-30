@@ -237,3 +237,22 @@ The normal `scripts/check.sh` gate passes (benchmark intentionally ignored). Cor
 RGBA/BGRA and linear/encoded Rgba16Float layer targets. 24 IOSurface/CPU comparisons are
 byte-identical, and 12 cases retain correct pixels after dropping the source buffer,
 imported frame and texture cache before submitting the draw.
+
+## FLK-30 — audio resampler (2026-10-30)
+
+Apple M5 Max, macOS 27.2, rustc 1.99.0, release profile, code `073ef32`. Single thread,
+10 s of a stereo 1 kHz sine pushed in 1024-frame chunks; best of three runs.
+
+| Conversion | CPU per second of stereo audio | Share of one core |
+|---|---:|---:|
+| 44.1 → 48 kHz | **2.78 ms** (2,777 µs) | 0.28 % |
+| 48 → 44.1 kHz | **2.73 ms** (2,726 µs) | 0.27 % |
+
+Rational polyphase, Kaiser-windowed sinc (64 zero crossings of the lower rate, 64–70 taps per
+output frame). Quality against computed sines: THD+N −100.5 to −109.2 dB for 1, 10 and 18 kHz
+both ways, max error ≤ 1.7·10⁻⁵, a 23 kHz tone aliases at −94.6 dB going to 44.1 kHz. Not
+optimized: nothing calls for it at this cost.
+
+```sh
+cargo test -p flicks-audio --release --test resample -- --nocapture --test-threads=1
+```
