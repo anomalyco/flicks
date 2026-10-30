@@ -1,6 +1,13 @@
 # Flicks architecture
 
-2026-10-30. Second draft. No product code yet; `crates/core`, `crates/net` and `crates/store` are copied from Deadbolt (`../deadbolt`, commit 7595d31) and renamed. Research: `research/2026-10-30-fast-stack.md`.
+2026-10-30. Third draft. No product code yet; `crates/core`, `crates/net` and `crates/store` are copied from Deadbolt (`../deadbolt`, commit 7595d31) and renamed. Research: `research/2026-10-30-fast-stack.md`.
+
+## Principles
+
+1. **Everything lives in this repo.** Flicks never depends on another project's repo: no git dependencies on FilmCraft, Isocast, Deadbolt or anything else. Code we want from them is copied in, renamed, owned and maintained here, as `core`, `net` and `store` were. Copied code keeps its original copyright and licence notice in `THIRD_PARTY_NOTICES` (FilmCraft is MIT or Apache-2.0, which requires that).
+2. **Rune is the one exception.** It's our UI framework, so Flicks depends on it, builds every UI in it, and contributes what's missing upstream instead of working around it.
+3. **No FFmpeg, no libmpv.** Demuxing, decoding, encoding, remuxing, subtitles and playback are our own Rust code, with the operating system's hardware decoders and encoders called directly.
+4. **Insanely optimized.** Every hot path has a budget and a benchmark that fails CI when it regresses: idle memory, cold start, time to first frame, seek, scan of an unchanged library, and frames dropped. Zero-copy from hardware decoder to GPU texture to screen. No process spawned per stream. Nothing runs when nothing changes.
 
 ## Shape
 
@@ -78,38 +85,53 @@ Progress is stored per (profile, item) on every server that holds that item, as 
 
 ## Server
 
-- **Folders:** the admin adds local folders (or mounted network shares). The scanner walks them with folder hashes (an unchanged folder costs one directory listing), watches local disks for changes, reads headers in-process (keyframe index, codec data, HDR and Dolby Vision, audio formats), identifies files by OSHash, parses names with `hunch`, and matches on TMDB.
+- **Folders:** the admin adds local folders (or mounted network shares). The scanner walks them with folder hashes (an unchanged folder costs one directory listing), watches local disks for changes, reads headers with our own container parsers (keyframe index, codec data, HDR and Dolby Vision, audio formats), identifies files by OSHash, parses names with our own parser, and matches on TMDB.
 - **Admin window (Rune):** folders and scan status, unmatched and wrong matches, editing metadata, devices and profiles (pair, rename, change role, remove), libraries and who can see them, transcoding (hardware detected, limits), addresses (LAN, tailnet, tunnel URL, iroh on or off), logs.
-- **Playback:** one request (`/play/{item}?t=resume` with the client's device profile) answers with direct play (byte ranges of the original file), an in-process fMP4 HLS remux from the keyframe index, or a `jellyfin-ffmpeg` transcode with hardware acceleration. Direct play costs no CPU, and a seek is one range request.
+- **Playback:** one request (`/play/{item}?t=resume` with the client's device profile) answers with one of three paths:
+  1. **Direct play:** byte ranges of the original file. No CPU. A seek is one range request. Every Flicks app takes this path for everything our player supports.
+  2. **Remux:** fMP4 HLS cut from the keyframe index in process, for players that can't open the container (AVPlayer, browsers, some TVs).
+  3. **Transcode:** our own pipeline in process, no child processes: hardware decode, scale before tone mapping on the GPU, hardware encode (VideoToolbox, Media Foundation with NVENC/QSV/AMF, VA-API), or our software H.264 encoder where there's no hardware. An audio-only transcode (DTS or TrueHD to AAC) leaves the video untouched.
 - **Background analysis:** one pass per file for trickplay thumbnails, intro and credits markers, and loudness; results are keyed by content hash.
+- **LAN discovery:** the server advertises `_flicks._tcp` through the OS's own DNS-SD responder (Bonjour, Avahi, Windows DNS-SD), so clients on the same network list it before pairing.
 
 ## Client
 
 - **Library:** a home screen merged across servers (Continue Watching, Next Up, Recently Added, by library and genre), detail pages, search, versions and sources. Servers that are offline grey out their titles instead of hiding them.
 - **Add server:** scan a QR, paste a link, or type an address and enter the server's short code.
-- **Client core:** one Rust crate (`client`) holds the server list, address racing, auth, catalog and progress merge, and media fetching. Every Flicks app uses it: the Rune desktop app directly, and the iOS, tvOS and Android TV apps through UniFFI bindings.
+- **Client core:** one Rust crate (`client`) holds the server list, address racing, auth, catalog and progress merge, and media fetching. Every Flicks app uses it: the Rune desktop app directly, and the iOS, tvOS and Android TV apps through a C ABI we generate ourselves.
 
-## Player
+## Media stack
 
-Our own player, built on FilmCraft's media crates (`../filmcraft` is `storytold/filmcraft`, MIT or Apache-2.0, pure Rust, no FFmpeg):
+All ours, in this repo. The starting point is FilmCraft's pure-Rust media code (no FFmpeg, checked frame by frame against ffmpeg), copied in and cut down to what playback and serving need; Isocast's platform layers and muxer are the starting point for hardware encode and MP4 writing.
 
-- **Containers:** Matroska/WebM (with Cues), MP4/MOV (fragmented too), MPEG-TS. MKV plays directly, so our apps never need the server to remux.
-- **Video:** H.264 (500–600 fps at 1080p in software), HEVC Main/Main 10 (~225 fps at 1080p), AV1 (8/10-bit, film grain), VP9 (8/10/12-bit), all in Rust. Hardware decode through VideoToolbox (macOS), Media Foundation (Windows) and VA-API (Linux, H.264 and HEVC).
-- **Audio:** AAC, Opus, AC-3, FLAC, MP3, Vorbis, PCM.
-- **Gaps we'd add:** E-AC-3, DTS, TrueHD (and passthrough to receivers), PGS and ASS subtitles, Dolby Vision, HDR output and tone mapping for SDR screens.
+| Area | Crate | Starts from | Then add |
+|---|---|---|---|
+| Containers | `container` | FilmCraft's Matroska (with Cues), MP4/MOV (fragmented), MPEG-TS readers; Isocast's MP4 writer | fMP4 HLS segmenting for the server's remux |
+| Video decode | `video` | FilmCraft's H.264 (500–600 fps at 1080p in software), HEVC Main/Main 10 (~225 fps), AV1 (incl. film grain), VP9 | Dolby Vision (profiles 5, 7, 8) metadata and reshaping |
+| Audio decode | `audio` | FilmCraft's AAC, Opus, AC-3; their FLAC/MP3/Vorbis go through a third-party crate there, so we write those | E-AC-3 and Atmos metadata, DTS, TrueHD, passthrough to receivers |
+| Hardware | `platform` | FilmCraft's VideoToolbox, Media Foundation and VA-API decode; Isocast's macOS, Windows and Linux layers | VA-API AV1/VP9, hardware encode on all three for the server |
+| Encode | `encode` | FilmCraft's H.264 and AAC encoders | Only for the server's transcodes |
+| Subtitles | `subtitle` | — | SRT, WebVTT, PGS (bitmap, simple), ASS/SSA rendering on Rune's text engine |
+| GPU | `gpu` | FilmCraft's YUV and colour code | Zero-copy hardware frame → wgpu texture on every OS, scale, HDR tone mapping, HDR output where the display supports it |
 
-The `player` crate does demux, decode (hardware first), audio output with A/V sync, subtitles, and draws frames into a wgpu texture that Rune shows. The same crate compiles for iOS, tvOS and Android, so every Flicks app plays the same files the same way, which is how Infuse plays everything on Apple TV.
+### Player
 
-**Fallback while those gaps close:** libmpv, installed as a dependency (Homebrew on macOS, the package manager on Linux, bundled on Windows). The client checks each file's codecs against what our player supports and uses libmpv only for the rest, so coverage is complete from day one and shrinks to zero as the gaps close. The server's remux and transcode remain for third-party clients and slow connections.
+The `player` crate puts it together: demux, decode (hardware first, our software decoders when the hardware can't), audio output with A/V sync, subtitles, and frames as wgpu textures that Rune draws. It also builds for iOS, tvOS and Android, so every Flicks app plays the same files the same way, the way Infuse plays everything on Apple TV.
+
+Until a gap closes (say DTS audio), the client asks the server for that one track transcoded (DTS to AAC) and plays the original video directly. Nothing ever falls back to a third-party player.
+
+### Contributing it to Rune
+
+Rune's `Player` is AVPlayer-only today, which means macOS, no MKV and no Windows or Linux. Once `player` is solid, it's a natural cross-platform backend for Rune's `Player`. We'd offer it upstream and keep Flicks on the same code.
 
 ## Apps and platforms
 
 | Platform | App | Plays with |
 |---|---|---|
-| macOS, Windows, Linux | Flicks (Rune) | Our player, libmpv fallback |
+| macOS, Windows, Linux | Flicks (Rune) | Our player |
 | Server admin, all three | Flicks Server window (Rune) or CLI | — |
-| iOS, iPadOS, tvOS | Flicks (SwiftUI shell + client core) | Our player; AVPlayer for AirPlay and Picture in Picture |
-| Android, Android TV, Fire TV | Flicks (Compose shell + client core) | Our player; Media3 as fallback |
+| iOS, iPadOS, tvOS | Flicks (SwiftUI shell + client core) | Our player; the system player only where Apple requires it (AirPlay, Picture in Picture) |
+| Android, Android TV, Fire TV | Flicks (Compose shell + client core) | Our player |
 | Anything else (Roku, LG, Samsung, Kodi, browsers) and until our apps ship | Infuse, Swiftfin, Streamyfin, Findroid, Jellyfin apps, jellyfin-web | Through the Jellyfin-compatible API |
 
 ### Jellyfin-compatible API
@@ -129,26 +151,27 @@ Jellyfin clients sign in with a username and password or with **Quick Connect**,
 | `core` | Device keys, signed entries, membership and roles, profile logs, progress registers | Copied from Deadbolt; strip password items, rename vault to profile |
 | `store` | Encrypted redb for keys and logs | Copied from Deadbolt |
 | `net` | iroh endpoint (tuned), membership gate, pairing, sync sessions | Copied from Deadbolt; add tuning and the new pairing payload |
-| `library` | Scanner, header parsing, OSHash, TMDB matching, SQLite catalog | New |
-| `media` | Play planner, fMP4 HLS remux, ffmpeg supervisor, analysis | New |
-| `server` | HTTPS API, auth and tokens, pairing windows, service install, `flicks` CLI | New |
+| `container`, `video`, `audio`, `platform`, `encode`, `subtitle`, `gpu` | The media stack above | Copied in from FilmCraft and Isocast, then extended |
+| `player` | Demux, decode, audio, A/V sync, subtitles, wgpu frames | New |
+| `library` | Scanner, header parsing, OSHash, filename parsing, TMDB matching, catalog | New |
+| `media` | Play planner, fMP4 HLS remux, transcode sessions, analysis | New |
+| `server` | HTTPS API, auth and tokens, pairing windows, DNS-SD, service install, `flicks` CLI | New; daemon, local API and mutual-TLS patterns from Isocast |
 | `jellyfin` | Jellyfin 12 API subset and Quick Connect | New |
-| `client` | Server list, address racing, auth, catalog and progress merge, media fetching; UniFFI bindings | New |
-| `player` | Demux, decode, audio, A/V sync, subtitles, wgpu frames; libmpv fallback | New, on FilmCraft's media crates |
+| `client` | Server list, address racing, auth, catalog and progress merge, media fetching; C ABI for mobile | New |
 | `app` | Rune client UI (library, player) | New |
 | `admin` | Rune server admin window | New |
 
-The server's header parsing and remux can use FilmCraft's `matroska` and `isobmff` crates too, instead of a new EBML reader.
+## Rune contributions
 
-## Rune dependencies
+What Flicks needs from Rune, to build upstream rather than work around:
 
-To report to Rune, not work around:
-
-1. **Showing our frames on Windows and Linux.** Rune's `NativeSurface` imports frames without copies only on macOS. The player needs a way to hand Rune a wgpu texture (or decoded frames) on every platform.
-2. **TV platforms.** tvOS and Android TV aren't on Rune's platform list, so those apps start as native shells around the Rust client core and player.
+1. **Frames on Windows and Linux.** `NativeSurface` imports frames without copies only on macOS. The player needs zero-copy hand-off of a wgpu texture (from D3D11/D3D12 and VA-API/DMA-BUF) on every platform.
+2. **A cross-platform `Player`.** Offer `player` as Rune's backend (above).
+3. **Ten-foot UI.** Focus navigation by arrow keys, remotes and game controllers, and overscan-safe layouts, for the TV-style home screen on desktop.
+4. **TV platforms.** tvOS and Android TV aren't on Rune's platform list, so those apps start as native shells around the Rust client core and player.
 
 ## Open questions
 
-1. Ports: is 7686 free of common conflicts, and should the server try UPnP for a public port when iroh is off?
-2. FilmCraft's crates: depend on them from git, or vendor the ones we use?
+1. **Third-party crates:** the rule above covers other projects' repos. Do foundations (tokio, iroh, rustls, wgpu, redb, OS bindings) stay as crates.io dependencies, or should we replace those too over time?
+2. Ports: is 7686 free of common conflicts, and should the server try UPnP for a public port when iroh is off?
 3. Live TV and DVR: later?

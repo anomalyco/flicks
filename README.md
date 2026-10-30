@@ -1,25 +1,18 @@
 # flicks
 
-A lightweight, distributed alternative to Plex. Every machine in the house (and a friend's) shares one library, one watch history and one pool of transcoders, with no account server, no paywall on remote playback and no throttled relay.
+A lightweight Plex alternative. Run a Flicks server on any Mac, Windows or Linux machine pointed at your folders; the Flicks app connects to any number of servers and shows them as one Netflix-style library. No account, no paywall, nothing we host: reach a server on your LAN, your tailnet, a tunnel, or peer to peer.
 
-Status: research. No code yet.
+Status: design. Device keys, pairing and sync are copied from Deadbolt; no Flicks product code yet.
 
-## Plan
-
-- **Transport:** iroh, tuned (16–32 MiB stream windows, BBR, 2–4 parallel range streams), with a relay embedded in every server.
-- **Playback:** direct byte-range play first; in-process fMP4 HLS remux from a scan-time keyframe index next; a pinned jellyfin-ffmpeg transcode on whichever household GPU has headroom last.
-- **Library:** folder-hash rescans, in-process header parsing, OSHash file identity, SQLite in WAL mode with one writer.
-- **Sync:** Deadbolt's signed membership log and QR pairing, plus a single-writer catalog feed per server and last-writer-wins watch progress.
-- **Clients:** a Jellyfin 12 compatible API so Infuse, Swiftfin and the TV apps work from day one; a native client later for the multi-server features.
-- **Extras:** trickplay, skip intro and credits, and loudness from one shared analysis pass per file, shared between servers by content hash.
+Everything is built here, in Rust, with every UI in Rune. No FFmpeg, no libmpv, no dependencies on other projects' repos. See [`docs/architecture.md`](docs/architecture.md).
 
 ## First slices
 
-1. Benchmark and tune iroh on Linux and macOS.
-2. Scanner with keyframe index.
-3. QR pairing and direct play into a desktop mpv client.
-4. Catalog and progress sync.
-5. Jellyfin API layer and in-process HLS.
+1. Media stack: copy in FilmCraft's containers and decoders, cut to playback, with benchmarks.
+2. Player in Rune: direct-play an MKV from disk with hardware decode, A/V sync and seeking, on macOS first.
+3. Server: folders, scanner with keyframe index, HTTPS API with device-key pairing, Rune admin window.
+4. Client: add servers by any address, merged library, progress across servers.
+5. Jellyfin-compatible API, then remux and transcode for clients that need them.
 
 ## Docs
 
