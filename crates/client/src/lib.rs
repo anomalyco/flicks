@@ -329,6 +329,7 @@ fn check(response: &net::Response) -> Result<(), Error> {
 }
 
 /// A server reached at one address that proved it holds the server key.
+#[derive(Clone)]
 pub struct Connection {
     /// The winning `host:port`.
     pub addr: String,
