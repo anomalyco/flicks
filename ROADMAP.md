@@ -53,6 +53,18 @@ Done when: the same server runs on a Linux box as a systemd service, and the Mac
 | FLK-20 | **VA-API decode** and DMA-BUF import into `gpu` | `crates/platform/src/linux*`, `crates/gpu/src/import*` | M3 | 4K HEVC 10-bit plays smoothly on an Intel iGPU |
 | FLK-41 | **Linux audio output and app packaging** | `crates/audio/src/linux*`, packaging | M3 | The app installs and plays on Ubuntu and Fedora |
 
+## Added 2026-10-30 (Ryan)
+
+| ID | Card | Owns | Needs | Done when |
+|---|---|---|---|---|
+| FLK-45 | **Downloads.** Download a title's best source to the device (resumable byte ranges, size and OSHash checked), play the local copy when present (offline too), progress syncs when back online; a Downloads screen | `crates/client/src/download*`, `apps/desktop/src/downloads*` | FLK-5 for playback of the local copy | A downloaded episode plays with the network off and its progress reaches the server later |
+| FLK-46 | **Share downloads nearby.** A device's downloads become a source other devices of the same user can play from on the LAN (the app runs a small Flicks server over its downloads folder) | later design | FLK-45 | A second Mac plays a title from the first Mac's download with the real server offline |
+| FLK-47 | **Adaptive streaming.** The server offers a quality ladder (direct, then transcoded renditions) as HLS/CMAF; the player measures throughput, prefetches ahead and switches quality at segment boundaries | `crates/player/src/abr*`, server HLS routes | FLK-19, FLK-26 | On a throttled link (e.g. 8 Mbps dropping to 3 and back) playback doesn't stall and returns to full quality |
+| FLK-48 | **App look: Netflix x Apple TV.** Big hero with backdrop and logo at the top (Apple TV top shelf), Netflix-style rows, focus and hover scale, blurred backdrops behind detail pages, smooth Rune motion; one look for every client | `apps/desktop/src/style*` and views | FLK-6 | Ryan approves screenshots |
+| FLK-49 | **Web app.** The Rune app compiled to wasm (Rune's web host), served by the Flicks server at `/` so the API is same-origin, signing with WebCrypto P-256; browse, detail, search; reached through any HTTPS front with a real certificate (tailnet, tunnel) | `apps/web/`, a static route in `crates/server` | FLK-14 | Ryan opens it on his phone over the tailnet and browses the library |
+
+Order: FLK-19 (HLS/CMAF writer) now, since adaptive streaming, AVPlayer and web playback all need it; FLK-26 (transcode) after it; then FLK-47.
+
 ## Milestone 5: Windows
 
 Server (Windows service, ReadDirectoryChangesW, owner-only ACLs) and app (Media Foundation decode with D3D11 import, WASAPI output). Cards written when M4 is done.
