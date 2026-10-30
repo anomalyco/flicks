@@ -1,6 +1,6 @@
 # Flicks architecture
 
-2026-10-30. Third draft. No product code yet; `crates/core`, `crates/net` and `crates/store` are copied from Deadbolt (`../deadbolt`, commit 7595d31) and renamed. Research: `research/2026-10-30-fast-stack.md`.
+2026-10-30. Third draft. No product code yet; `crates/core`, `crates/net` and `crates/store` are copied from Deadbolt (commit 7595d31), and the containers and decoders from FilmCraft and craft-libs (see `THIRD_PARTY_NOTICES`). Research: `research/2026-10-30-fast-stack.md`.
 
 ## Principles
 
@@ -107,9 +107,9 @@ All ours, in this repo. The starting point is FilmCraft's pure-Rust media code (
 
 | Area | Crate | Starts from | Then add |
 |---|---|---|---|
-| Containers | `container` | FilmCraft's Matroska (with Cues), MP4/MOV (fragmented), MPEG-TS readers; Isocast's MP4 writer | fMP4 HLS segmenting for the server's remux |
-| Video decode | `video` | FilmCraft's H.264 (500–600 fps at 1080p in software), HEVC Main/Main 10 (~225 fps), AV1 (incl. film grain), VP9 | Dolby Vision (profiles 5, 7, 8) metadata and reshaping |
-| Audio decode | `audio` | FilmCraft's AAC, Opus, AC-3; their FLAC/MP3/Vorbis go through a third-party crate there, so we write those | E-AC-3 and Atmos metadata, DTS, TrueHD, passthrough to receivers |
+| Containers | `container`, `mpegts` (copied in) | craft-libs' Matroska (with Cues) and MP4/MOV (fragmented) demuxers and muxers, FilmCraft's MPEG-TS demuxer | fMP4 HLS segmenting for the server's remux |
+| Video decode | `h264`, `hevc`, `av1`, `vp9` (copied in) | FilmCraft's H.264 (500–600 fps at 1080p in software), HEVC Main/Main 10 (~225 fps), AV1 (incl. film grain), VP9 | Dolby Vision (profiles 5, 7, 8) metadata and reshaping |
+| Audio decode | `aac`, `ac3`, `opus` (copied in) | FilmCraft's AAC, Opus, AC-3 and E-AC-3; their FLAC/MP3/Vorbis go through a third-party crate there, so we write those | Atmos metadata, DTS, TrueHD, passthrough to receivers |
 | Hardware | `platform` | FilmCraft's VideoToolbox, Media Foundation and VA-API decode; Isocast's macOS, Windows and Linux layers | VA-API AV1/VP9, hardware encode on all three for the server |
 | Encode | `encode` | FilmCraft's H.264 and AAC encoders | Only for the server's transcodes |
 | Subtitles | `subtitle` | — | SRT, WebVTT, PGS (bitmap, simple), ASS/SSA rendering on Rune's text engine |
@@ -152,7 +152,8 @@ Jellyfin clients sign in with a username and password or with **Quick Connect**,
 | `core` | Device keys, signed entries, membership and roles, profile logs, progress registers | Copied from Deadbolt; strip password items, rename vault to profile |
 | `store` | Encrypted redb for keys and logs | Copied from Deadbolt |
 | `net` | iroh endpoint (tuned), membership gate, pairing, sync sessions | Copied from Deadbolt; add tuning and the new pairing payload |
-| `container`, `video`, `audio`, `platform`, `encode`, `subtitle`, `gpu` | The media stack above | Copied in from FilmCraft and Isocast, then extended |
+| `container`, `mpegts`, `h264`, `hevc`, `av1`, `vp9`, `aac`, `ac3`, `opus`, `testkit` | Containers, decoders, test oracles | Copied in from FilmCraft and craft-libs (see `THIRD_PARTY_NOTICES`) |
+| `platform`, `gpu`, `encode`, `subtitle` | The rest of the media stack above | New; FilmCraft's and Isocast's platform code is the starting point |
 | `player` | Demux, decode, audio, A/V sync, subtitles, wgpu frames | New |
 | `library` | Scanner, header parsing, OSHash, filename parsing, TMDB matching, catalog | New |
 | `media` | Play planner, fMP4 HLS remux, transcode sessions, analysis | New |
