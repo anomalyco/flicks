@@ -6,8 +6,9 @@
 
 1. **Everything lives in this repo.** Flicks never depends on another project's repo: no git dependencies on FilmCraft, Isocast, Deadbolt or anything else. Code we want from them is copied in, renamed, owned and maintained here, as `core`, `net` and `store` were. Copied code keeps its original copyright and licence notice in `THIRD_PARTY_NOTICES` (FilmCraft is MIT or Apache-2.0, which requires that).
 2. **Rune is the one exception.** It's our UI framework, so Flicks depends on it, builds every UI in it, and contributes what's missing upstream instead of working around it.
-3. **No FFmpeg, no libmpv.** Demuxing, decoding, encoding, remuxing, subtitles and playback are our own Rust code, with the operating system's hardware decoders and encoders called directly.
-4. **Insanely optimized.** Every hot path has a budget and a benchmark that fails CI when it regresses: idle memory, cold start, time to first frame, seek, scan of an unchanged library, and frames dropped. Zero-copy from hardware decoder to GPU texture to screen. No process spawned per stream. Nothing runs when nothing changes.
+3. **Foundation crates from crates.io are fine** (decided 2026-10-30): tokio, iroh, rustls, wgpu, redb and OS bindings stay normal dependencies. Media, playback, library and protocol code is ours.
+4. **No FFmpeg, no libmpv.** Demuxing, decoding, encoding, remuxing, subtitles and playback are our own Rust code, with the operating system's hardware decoders and encoders called directly.
+5. **Insanely optimized.** Every hot path has a budget and a benchmark that fails CI when it regresses: idle memory, cold start, time to first frame, seek, scan of an unchanged library, and frames dropped. Zero-copy from hardware decoder to GPU texture to screen. No process spawned per stream. Nothing runs when nothing changes.
 
 ## Shape
 
@@ -172,6 +173,5 @@ What Flicks needs from Rune, to build upstream rather than work around:
 
 ## Open questions
 
-1. **Third-party crates:** the rule above covers other projects' repos. Do foundations (tokio, iroh, rustls, wgpu, redb, OS bindings) stay as crates.io dependencies, or should we replace those too over time?
-2. Ports: is 7686 free of common conflicts, and should the server try UPnP for a public port when iroh is off?
-3. Live TV and DVR: later?
+1. Ports: is 7686 free of common conflicts, and should the server try UPnP for a public port when iroh is off?
+2. Live TV and DVR: later?
