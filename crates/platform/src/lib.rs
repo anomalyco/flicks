@@ -11,6 +11,11 @@ mod config;
 #[allow(unsafe_code)]
 mod ffi;
 
+#[cfg(windows)]
+#[allow(unsafe_code)]
+#[path = "permissions_ffi.rs"]
+pub mod permissions;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]

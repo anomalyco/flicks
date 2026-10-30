@@ -79,6 +79,8 @@ pub fn generate() -> Result<SigningKey, Error> {
 
 /// Loads a key file (the raw 32-byte scalar).
 pub fn load(path: &Path) -> Result<SigningKey, Error> {
+    #[cfg(windows)]
+    flicks_platform::permissions::owner_only(path)?;
     let bad = || Error::KeyFile(path.to_path_buf());
     let mut bytes = Vec::with_capacity(32);
     std::fs::File::open(path)?.take(33).read_to_end(&mut bytes)?;
@@ -98,6 +100,8 @@ pub fn load_or_create(path: &Path) -> Result<SigningKey, Error> {
             #[cfg(unix)]
             std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
             let mut file = options.open(path)?;
+            #[cfg(windows)]
+            flicks_platform::permissions::owner_only(path)?;
             file.write_all(&key.to_bytes())?;
             file.sync_all()?;
             Ok(key)

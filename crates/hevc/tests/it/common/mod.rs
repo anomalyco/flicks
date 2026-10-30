@@ -232,6 +232,12 @@ pub fn pix_fmt(bd: u32) -> &'static str {
 /// Generate (if needed) the fixture stream and its ffmpeg reference decode.
 /// Returns None (with a message) when ffmpeg or the encoder is unavailable.
 pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
+    // Several tests request the same seed. Windows cannot replace a fixture while ffmpeg is
+    // reading it, so finish publishing both files before a second generator checks the cache.
+    #[cfg(windows)]
+    static GENERATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    #[cfg(windows)]
+    let _generate = GENERATE.lock().unwrap_or_else(|e| e.into_inner());
     let ff = flicks_testkit::ffmpeg_or_skip(f.name)?;
     let dir = fixtures_dir();
     let hevc = dir.join(format!("{}.hevc", f.name));

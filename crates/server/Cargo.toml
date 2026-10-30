@@ -35,6 +35,10 @@ time = "0.3.55"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "signal", "io-util", "fs"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring"] }
 
+[target.'cfg(windows)'.dependencies]
+flicks-platform = { path = "../platform" }
+socket2 = "0.6"
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1.54.1", features = ["test-util"] }

@@ -161,8 +161,14 @@ impl Client {
         // An existing directory may have been created with looser permissions.
         #[cfg(unix)]
         std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+        #[cfg(windows)]
+        flicks_platform::permissions::owner_only(dir)?;
         let key = keys::load_or_create(&dir.join(KEY_FILE))?;
         let path = dir.join(SERVERS_FILE);
+        #[cfg(windows)]
+        if path.try_exists()? {
+            flicks_platform::permissions::owner_only(&path)?;
+        }
         let servers = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| Error::ServerList(path))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -219,7 +225,11 @@ impl Client {
         options.write(true).create(true).truncate(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        std::io::Write::write_all(&mut options.open(&temp)?, bytes)?;
+        let mut file = options.open(&temp)?;
+        #[cfg(windows)]
+        flicks_platform::permissions::owner_only(&temp)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        drop(file);
         std::fs::rename(&temp, self.dir.join(name))?;
         Ok(())
     }
