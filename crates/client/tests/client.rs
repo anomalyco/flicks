@@ -144,15 +144,19 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     let setup = setup("pair").await;
 
     // On localhost: the TLS certificate carries the server key.
+    // An existing data directory with looser permissions is made private.
     let home = dir("pair-local");
+    std::fs::create_dir_all(&home).unwrap();
     let mut local = Client::open(&home).unwrap();
+    let server = local.pair(&link(&setup, "ana", setup.addr.to_string()).await, "Laptop").await.unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(home.join(flicks_client::KEY_FILE)).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&home), 0o700);
+        assert_eq!(mode(&home.join(flicks_client::KEY_FILE)), 0o600);
+        assert_eq!(mode(&home.join(flicks_client::SERVERS_FILE)), 0o600);
     }
-    let server = local.pair(&link(&setup, "ana", setup.addr.to_string()).await, "Laptop").await.unwrap();
     assert_eq!((server.name.as_str(), server.user.as_str(), server.admin), ("127.0.0.1", "ana", false));
     assert_eq!(list_and_read(&mut local, &server, &setup.media).await, setup.addr.to_string());
     // The address that answered is saved first, and gets the head start next time.

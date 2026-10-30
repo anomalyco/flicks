@@ -155,6 +155,9 @@ impl Client {
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
         builder.create(dir)?;
+        // An existing directory may have been created with looser permissions.
+        #[cfg(unix)]
+        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
         let key = keys::load_or_create(&dir.join(KEY_FILE))?;
         let path = dir.join(SERVERS_FILE);
         let servers = match std::fs::read(&path) {
@@ -210,7 +213,11 @@ impl Client {
     fn save(&self) -> Result<(), Error> {
         let bytes = serde_json::to_vec_pretty(&self.servers).map_err(|_| Error::BadResponse)?;
         let temp = self.dir.join(format!("{SERVERS_FILE}.tmp"));
-        std::fs::write(&temp, bytes)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        std::io::Write::write_all(&mut options.open(&temp)?, &bytes)?;
         std::fs::rename(&temp, self.dir.join(SERVERS_FILE))?;
         Ok(())
     }
