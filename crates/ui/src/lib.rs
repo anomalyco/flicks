@@ -15,8 +15,8 @@ mod tests;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use rune::{
-    AppSpec, Color, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, SpringPair, TextEdit, Transition, Tx, col, el,
-    row, spacer, text,
+    AppSpec, Color, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, SpringPair, SurfaceFit, TextEdit, Transition, Tx,
+    col, el, row, spacer, text,
 };
 
 pub use library::catalog::{self, Catalog, GroupKey};
@@ -96,6 +96,8 @@ pub struct Flicks {
     /// `requested` oldest first, for evicting.
     order: VecDeque<String>,
     images: Option<ImageCache>,
+    /// The lockup, rasterized once the image cache starts.
+    logo: Option<Image>,
     /// Sends a request to the app's network, once it has started.
     pub network: Option<Box<dyn Fn(Request)>>,
 }
@@ -123,6 +125,7 @@ impl Flicks {
             requested: HashSet::new(),
             order: VecDeque::new(),
             images: None,
+            logo: None,
             network: None,
         }
     }
@@ -368,12 +371,24 @@ fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>, solid: bool) -> El {
         .window_drag()
         .child(frost)
         .child(fill)
-        .child(text("FLICKS").font(style::BRAND).color(style::accent()).mr(22.0))
+        .child(logo(s).mr(22.0))
         .child(nav("Home", "nav-home", Screen::Home))
         .child(nav("Search", "nav-search", Screen::Search))
         .child(spacer())
         .children(servers)
         .child(nav("Add Server", "nav-add-server", Screen::AddServer))
+}
+
+/// The lockup, drawn from its SVG at three device pixels a point so it stays sharp on every
+/// screen.
+const LOCKUP: &[u8] = include_bytes!("../../../assets/brand/lockup.svg");
+
+fn logo(s: &Flicks) -> El {
+    let mut logo = el().key("logo").size(style::LOGO_W, style::LOGO_H).label("Flicks");
+    if let Some(image) = &s.logo {
+        logo = logo.pixels_fit(image.pixels(), SurfaceFit::Fit);
+    }
+    logo
 }
 
 fn on_key(s: &mut Flicks, event: &KeyEvent, _: &mut Tx) -> bool {
@@ -407,7 +422,11 @@ pub fn spec() -> AppSpec<Flicks> {
     AppSpec {
         min_size: Some((720.0, 480.0)),
         scenes: library::fixture::SCENES,
-        setup: Some(|s, waker| s.images = Some(ImageCache::new(waker))),
+        setup: Some(|s, waker| {
+            let images = ImageCache::new(waker);
+            s.logo = Some(images.svg(LOCKUP, style::LOGO_W, 3.0));
+            s.images = Some(images);
+        }),
         on_key: Some(on_key),
         ..AppSpec::new("Flicks", (1180.0, 760.0), Flicks::new, view)
     }

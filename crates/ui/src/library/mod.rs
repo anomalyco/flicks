@@ -85,7 +85,7 @@ fn hero(s: &Flicks) -> Option<El> {
         .press(Color::WHITE.alpha(0.2))
         .cursor(Cursor::Pointer)
         .focusable(true)
-        .focus_ring(2.0, 3.0, Color::WHITE)
+        .focus_ring(2.0, 3.0, style::focus())
         .label("More Info")
         .child(text("More Info").font(style::BUTTON).color(style::text()))
         .on_press(move |s: &mut Flicks| s.go(Screen::Detail(key.clone())));
@@ -257,7 +257,7 @@ fn tile(s: &Flicks, t: usize, place: &str, whole_group: bool, card: bool) -> El 
         .label(format!("{}, {sub}", group.name))
         .cursor(Cursor::Pointer)
         .focusable(true)
-        .focus_ring(3.0, 4.0, Color::WHITE)
+        .focus_ring(3.0, 4.0, style::focus())
         .press_scale(0.97)
         .on_hover_change(move |s: &mut Flicks, on, _| {
             if on {
@@ -287,7 +287,7 @@ fn progress_bar(watched: f32) -> El {
         .h(4.0)
         .radius(2.0)
         .fill(Color::WHITE.alpha(0.28))
-        .child(el().w_frac(watched).h_full().radius(2.0).fill(style::accent()))
+        .child(el().w_frac(watched).h_full().radius(2.0).linear_gradient(PI / 2.0, style::progress()))
 }
 
 /// The hue of a title without artwork, from its name.
@@ -458,15 +458,15 @@ fn play_button(label: &str, media: usize) -> El {
         .center_y()
         .self_start()
         .radius(10.0)
-        .fill(Color::WHITE)
-        .hover(Color::BLACK.alpha(0.1))
-        .press(Color::BLACK.alpha(0.2))
+        .linear_gradient(PI / 2.0, style::primary())
+        .hover(Color::WHITE.alpha(0.12))
+        .press(Color::BLACK.alpha(0.15))
         .cursor(Cursor::Pointer)
         .focusable(true)
-        .focus_ring(2.0, 3.0, Color::WHITE)
+        .focus_ring(2.0, 3.0, style::focus())
         .label(label.to_string())
-        .child(play_icon(Color::BLACK, 14.0))
-        .child(text(label.to_string()).font(style::BUTTON).color(Color::BLACK))
+        .child(play_icon(Color::WHITE, 14.0))
+        .child(text(label.to_string()).font(style::BUTTON).color(Color::WHITE))
         .on_press(move |s: &mut Flicks| s.play(media))
 }
 
@@ -538,7 +538,7 @@ fn episode_row(s: &Flicks, title: &Title, show: &str, t: usize, offline: bool) -
     row.hover(style::faint())
         .cursor(Cursor::Pointer)
         .focusable(true)
-        .focus_ring(2.0, 0.0, Color::WHITE)
+        .focus_ring(2.0, 0.0, style::focus())
         .on_press(move |s: &mut Flicks| s.play(t))
 }
 

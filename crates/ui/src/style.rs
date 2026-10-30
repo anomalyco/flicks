@@ -1,5 +1,5 @@
-//! Colours, type and motion: near-black, artwork first, white text, springs for everything that
-//! moves.
+//! Colours, type and motion: near-black, artwork first, warm white text, the logo's violet to
+//! amber for what's primary, springs for everything that moves.
 
 use rune::{Color, Spring, TextStyle, oklch, oklcha};
 
@@ -9,8 +9,9 @@ pub fn bg() -> Color {
 pub fn raised() -> Color {
     oklch(0.22, 0.004, 265.0)
 }
+/// The wordmark's off-white.
 pub fn text() -> Color {
-    oklch(0.97, 0.0, 0.0)
+    oklch(0.95, 0.012, 80.0)
 }
 pub fn muted() -> Color {
     oklch(0.72, 0.006, 265.0)
@@ -18,8 +19,30 @@ pub fn muted() -> Color {
 pub fn faint() -> Color {
     oklcha(1.0, 0.0, 0.0, 0.08)
 }
-pub fn accent() -> Color {
-    oklch(0.63, 0.22, 27.0)
+// The logo's frames, back to front: violet, orchid, coral and amber.
+pub fn violet() -> Color {
+    oklch(0.504, 0.229, 282.0)
+}
+pub fn orchid() -> Color {
+    oklch(0.589, 0.213, 310.5)
+}
+pub fn coral() -> Color {
+    oklch(0.715, 0.18, 16.8)
+}
+pub fn amber() -> Color {
+    oklch(0.826, 0.148, 73.8)
+}
+/// Primary buttons, left to right.
+pub fn primary() -> [(f32, Color); 3] {
+    [(0.0, violet()), (0.6, orchid()), (1.0, coral())]
+}
+/// How far in a title is: the logo's front frame.
+pub fn progress() -> [(f32, Color); 2] {
+    [(0.0, coral()), (1.0, amber())]
+}
+/// Keyboard focus rings.
+pub fn focus() -> Color {
+    amber()
 }
 pub fn error() -> Color {
     oklch(0.72, 0.15, 27.0)
@@ -29,7 +52,9 @@ pub fn glass() -> Color {
     oklcha(1.0, 0.0, 0.0, 0.16)
 }
 
-pub const BRAND: TextStyle = TextStyle::new(20.0, 850.0).tracking(-0.4);
+/// The lockup (mark and wordmark) in the top bar.
+pub const LOGO_H: f32 = 26.0;
+pub const LOGO_W: f32 = LOGO_H * 383.48 / 119.0;
 pub const NAV: TextStyle = TextStyle::new(14.0, 550.0);
 /// A featured title's name on Home and a title's page.
 pub const DISPLAY: TextStyle = TextStyle::new(56.0, 800.0).lh(60.0).tracking(-1.6);
