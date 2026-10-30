@@ -346,6 +346,27 @@ async fn two_servers_merge_into_one_library() {
     );
     assert_eq!(shared.progress, Some(later));
 
+    // Servers are reached at once: two that hang (accepting TCP but never answering TLS) cost one
+    // connect timeout for the whole refresh, not one each, and the live server's titles are there.
+    let hang = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hanging = hang.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        loop {
+            held.push(hang.accept().await.unwrap());
+        }
+    });
+    library.client.servers.iter_mut().find(|s| s.key == b.key).unwrap().addrs = vec![hanging.clone()];
+    let gone = keys::encode(&keys::public_bytes(keys::generate().unwrap().verifying_key()));
+    let addrs = vec![hanging];
+    library.client.servers.push(Server { key: gone, name: "Gone".into(), addrs, user: "ana".into(), admin: false });
+    let started = std::time::Instant::now();
+    library.refresh().await.unwrap();
+    let took = started.elapsed();
+    assert!(took >= Duration::from_secs(5) && took < Duration::from_secs(8), "{took:?}");
+    assert_eq!(names(&library), one_down);
+    assert!(library.connection(&a.key).is_some());
+
     // A fresh start shows the cached catalogs, every title unavailable until a refresh.
     let reopened = Library::open(Client::open(&home).unwrap());
     let all_down = vec![("Only A".into(), 1, false), ("Only B".into(), 1, false), ("Shared".into(), 2, false)];

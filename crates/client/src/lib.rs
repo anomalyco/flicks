@@ -188,7 +188,7 @@ impl Client {
     /// the server (replacing an earlier entry for the same key).
     pub async fn pair(&mut self, link: &str, device_name: &str) -> Result<Server, Error> {
         let link = pair::parse_link(link.trim()).ok_or(Error::BadLink)?;
-        let (connection, name) = self.race(&link.server_key, &link.addrs).await?;
+        let (connection, name) = race(self.key.clone(), self.web.clone(), &link.server_key, &link.addrs).await?;
         let server_key = keys::public_bytes(&link.server_key);
         let request = pair::Request::new(&self.key, &server_key, &link.code, device_name)?;
         let body = serde_json::to_vec(&request).map_err(|_| Error::BadResponse)?;
@@ -229,56 +229,80 @@ impl Client {
     /// reachable server costs one probe (unauthenticated requests share one rate limit there).
     /// A server renamed since is saved under its new name.
     pub async fn connect(&mut self, key: &str) -> Result<Connection, Error> {
-        let server = self.servers.iter().find(|s| s.key == key).ok_or(Error::NotPaired)?;
-        let (connection, name) = self.race(&server.verifying_key()?, &server.addrs).await?;
-        let server = self.servers.iter_mut().find(|s| s.key == key).ok_or(Error::NotPaired)?;
-        let moved = server.addrs.iter().position(|a| *a == connection.addr).filter(|at| *at > 0);
-        if let Some(at) = moved {
-            server.addrs[..=at].rotate_right(1);
-        }
-        if moved.is_some() || server.name != name {
-            server.name = name;
-            self.save()?;
-        }
+        let (connection, server) = self.reach(key).await?;
+        self.update(server)?;
         Ok(connection)
     }
 
-    /// The first address whose probe verifies, and the server's name.
-    async fn race(&self, server_key: &VerifyingKey, addrs: &[String]) -> Result<(Connection, String), Error> {
-        let tls = Arc::new(net::client_config(server_key, self.web.clone())?);
-        let mut addrs = addrs.iter().take(MAX_ADDRS);
-        let tried = addrs.len();
-        let mut probes = JoinSet::new();
-        if let Some(first) = addrs.next() {
-            probes.spawn(probe(first.clone(), tls.clone(), *server_key));
-        }
-        let mut racing = false;
-        let mut last = Error::BadAddress;
-        loop {
-            let joined = if racing {
-                probes.join_next().await
-            } else {
-                tokio::time::timeout(HEAD_START, probes.join_next()).await.unwrap_or(None)
-            };
-            match joined {
-                Some(Ok(Ok((addr, name)))) => {
-                    let server_key = keys::public_bytes(server_key);
-                    return Ok((Connection { addr, tls, key: self.key.clone(), server_key }, name));
-                }
-                Some(Ok(Err(error))) if telling(&error) >= telling(&last) => last = error,
-                None if racing => break,
-                _ => {}
+    /// [`Client::connect`] without saving, so several servers can be reached at once: the
+    /// connection, and the server's record with the winning address first and its current name,
+    /// for [`Client::update`].
+    pub fn reach(&self, key: &str) -> impl Future<Output = Result<(Connection, Server), Error>> + Send + 'static {
+        let server = self.servers.iter().find(|s| s.key == key).cloned();
+        let (device_key, web) = (self.key.clone(), self.web.clone());
+        async move {
+            let mut server = server.ok_or(Error::NotPaired)?;
+            let (connection, name) = race(device_key, web, &server.verifying_key()?, &server.addrs).await?;
+            if let Some(at) = server.addrs.iter().position(|a| *a == connection.addr) {
+                server.addrs[..=at].rotate_right(1);
             }
-            // The first address failed or is slow: race the rest alongside it.
-            if !racing {
-                racing = true;
-                for addr in addrs.by_ref() {
-                    probes.spawn(probe(addr.clone(), tls.clone(), *server_key));
-                }
-            }
+            server.name = name;
+            Ok((connection, server))
         }
-        Err(Error::Unreachable { tried, last: Box::new(last) })
     }
+
+    /// Saves a server's record from [`Client::reach`], if it changed.
+    pub fn update(&mut self, server: Server) -> Result<(), Error> {
+        match self.servers.iter_mut().find(|s| s.key == server.key) {
+            Some(saved) if *saved != server => {
+                *saved = server;
+                self.save()
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The first address whose probe verifies, and the server's name.
+async fn race(
+    key: SigningKey,
+    web: Arc<WebPkiServerVerifier>,
+    server_key: &VerifyingKey,
+    addrs: &[String],
+) -> Result<(Connection, String), Error> {
+    let tls = Arc::new(net::client_config(server_key, web)?);
+    let mut addrs = addrs.iter().take(MAX_ADDRS);
+    let tried = addrs.len();
+    let mut probes = JoinSet::new();
+    if let Some(first) = addrs.next() {
+        probes.spawn(probe(first.clone(), tls.clone(), *server_key));
+    }
+    let mut racing = false;
+    let mut last = Error::BadAddress;
+    loop {
+        let joined = if racing {
+            probes.join_next().await
+        } else {
+            tokio::time::timeout(HEAD_START, probes.join_next()).await.unwrap_or(None)
+        };
+        match joined {
+            Some(Ok(Ok((addr, name)))) => {
+                let server_key = keys::public_bytes(server_key);
+                return Ok((Connection { addr, tls, key, server_key }, name));
+            }
+            Some(Ok(Err(error))) if telling(&error) >= telling(&last) => last = error,
+            None if racing => break,
+            _ => {}
+        }
+        // The first address failed or is slow: race the rest alongside it.
+        if !racing {
+            racing = true;
+            for addr in addrs.by_ref() {
+                probes.spawn(probe(addr.clone(), tls.clone(), *server_key));
+            }
+        }
+    }
+    Err(Error::Unreachable { tried, last: Box::new(last) })
 }
 
 /// How much an error says about a server: an answer beats a refused handshake, which beats no

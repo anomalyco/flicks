@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use hyper::Method;
+use tokio::task::JoinSet;
 
 use crate::{Client, Connection, Entry, Error, Item, Progress, Server};
 
@@ -107,7 +108,7 @@ impl Library {
         self.connections.get(server)
     }
 
-    /// Fetches every saved server's catalog (one at a time), caches what answered, merges, and
+    /// Fetches every saved server's catalog (all at once), caches what answered, merges, and
     /// writes the newest progress back to sources that are behind. A server that doesn't answer
     /// keeps its titles from its last catalog, unavailable.
     pub async fn refresh(&mut self) -> Result<&[Title], Error> {
@@ -115,12 +116,21 @@ impl Library {
         catalogs.retain(|key, _| self.client.servers.iter().any(|s| s.key == *key));
         self.connections.clear();
         let mut latencies = HashMap::new();
-        let keys: Vec<String> = self.client.servers.iter().map(|s| s.key.clone()).collect();
-        for key in keys {
-            let started = Instant::now();
-            let Ok(connection) = self.client.connect(&key).await else { continue };
-            let latency = started.elapsed();
-            let Ok(entries) = connection.items().await else { continue };
+        // Every server at once, so one that doesn't answer costs one timeout for the whole refresh.
+        let mut fetches = JoinSet::new();
+        for server in &self.client.servers {
+            let (key, reach) = (server.key.clone(), self.client.reach(&server.key));
+            fetches.spawn(async move {
+                let started = Instant::now();
+                let (connection, server) = reach.await?;
+                let latency = started.elapsed();
+                let entries = connection.items().await?;
+                Ok::<_, Error>((key, connection, server, latency, entries))
+            });
+        }
+        while let Some(fetched) = fetches.join_next().await {
+            let Ok(Ok((key, connection, server, latency, entries))) = fetched else { continue };
+            self.client.update(server)?;
             catalogs.insert(key.clone(), entries);
             latencies.insert(key.clone(), latency);
             self.connections.insert(key, connection);
