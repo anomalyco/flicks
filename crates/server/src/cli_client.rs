@@ -95,11 +95,13 @@ pub async fn get(connection: &Connection, id: i64, start: u64, end: u64, out: &m
 }
 
 async fn ls(client: &mut Client, server: &Server) {
-    let header = format!("{} ({}, {})", server.name, server.user, role(server));
     let entries = match client.connect(&server.key).await {
         Ok(connection) => connection.items().await.map(|items| (connection.addr, items)),
         Err(e) => Err(e),
     };
+    // Connecting saves the name the server gives now, if it was renamed.
+    let server = client.servers.iter().find(|s| s.key == server.key).unwrap_or(server);
+    let header = format!("{} ({}, {})", server.name, server.user, role(server));
     match entries {
         Err(e) => println!("{header}: {e}"),
         Ok((addr, entries)) => {
