@@ -34,10 +34,16 @@ const MIGRATIONS: &[&str] = &["
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
+/// How many jobs may wait for the database thread; past that, callers wait for room.
+const QUEUE: usize = 256;
+
 /// A handle to the database thread.
+///
+/// Other crates may keep their own tables in this database through [`Db::call`], but must never
+/// read or write `PRAGMA user_version`: it tracks this crate's migrations alone.
 #[derive(Clone)]
 pub struct Db {
-    jobs: mpsc::UnboundedSender<Job>,
+    jobs: mpsc::Sender<Job>,
 }
 
 impl Db {
@@ -48,7 +54,7 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "wal")?;
         conn.pragma_update(None, "foreign_keys", true)?;
         migrate(&mut conn)?;
-        let (jobs, mut rx) = mpsc::unbounded_channel::<Job>();
+        let (jobs, mut rx) = mpsc::channel::<Job>(QUEUE);
         std::thread::Builder::new().name("flicks-db".into()).spawn(move || {
             while let Some(job) = rx.blocking_recv() {
                 job(&mut conn);
@@ -68,6 +74,7 @@ impl Db {
             .send(Box::new(move |conn| {
                 let _ = tx.send(f(conn));
             }))
+            .await
             .map_err(|_| Error::DbClosed)?;
         rx.await.map_err(|_| Error::DbClosed)?
     }

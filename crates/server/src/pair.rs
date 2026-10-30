@@ -1,18 +1,18 @@
 //! Pairing a device (docs/architecture.md, "Pairing").
 //!
-//! The link carries the server key, a 128-bit one-time code and the server's addresses. The device
+//! The link carries the server key, a 128-bit one-time code and the server's `host:port`
+//! addresses. The device
 //! never sends the code; it proves it knows it:
 //!
 //! ```text
 //! transcript = "flicks-pair-v1\0" ‖ lp(server key) ‖ lp(device key) ‖ lp(device name)
 //! proof      = HMAC-SHA256(HKDF-SHA256(salt = "flicks pair v1" ‖ server key, ikm = code), transcript)
 //! signature  = Sign(device key, "flicks-pair-req-v1\0" ‖ lp(transcript) ‖ proof)
-//! reply      = Sign(server key, "flicks-pair-ok-v1\0" ‖ lp(transcript))
+//! reply      = Sign(server key, "flicks-pair-ok-v1\0" ‖ lp(transcript) ‖ lp(user) ‖ admin (1 byte))
 //! ```
 //!
 //! The transcript holds the device key, so a relayed request can only ever pair that key.
 
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use hkdf::Hkdf;
@@ -32,6 +32,12 @@ pub const PROOF_LEN: usize = 32;
 /// Longest user or device name, in bytes.
 pub const MAX_NAME: usize = 64;
 
+/// Longest address in a link, in bytes.
+pub const MAX_ADDR: usize = 256;
+
+/// The most addresses an admin may add to a link.
+pub const MAX_EXTRA_ADDRS: usize = 16;
+
 /// What a device sends to `POST /pair/redeem`, every binary field base64url.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -46,7 +52,7 @@ pub struct Request {
 pub struct Reply {
     pub user: String,
     pub admin: bool,
-    /// `Sign(server key, "flicks-pair-ok-v1\0" ‖ lp(transcript))`, base64url.
+    /// `Sign(server key, "flicks-pair-ok-v1\0" ‖ lp(transcript) ‖ lp(user) ‖ admin)`, base64url.
     pub signature: String,
 }
 
@@ -67,6 +73,17 @@ impl Window {
     pub fn is_open(&self) -> bool {
         Instant::now() < self.expires
     }
+}
+
+/// A link address: `host:port`, with no whitespace, control characters, `&`, `=` or `#`.
+pub fn valid_addr(addr: &str) -> bool {
+    let Some((host, port)) = addr.rsplit_once(':') else {
+        return false;
+    };
+    addr.len() <= MAX_ADDR
+        && !host.is_empty()
+        && port.parse::<u16>().is_ok()
+        && !addr.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '&' | '=' | '#'))
 }
 
 /// A user or device name: 1 to 64 bytes, no control characters, no surrounding spaces.
@@ -96,8 +113,12 @@ pub fn request_message(transcript: &[u8], proof: &[u8]) -> Vec<u8> {
     keys::Message::new("flicks-pair-req-v1").field(transcript).fixed(proof).into_bytes()
 }
 
-pub fn ok_message(transcript: &[u8]) -> Vec<u8> {
-    keys::Message::new("flicks-pair-ok-v1").field(transcript).into_bytes()
+pub fn ok_message(transcript: &[u8], user: &str, admin: bool) -> Vec<u8> {
+    keys::Message::new("flicks-pair-ok-v1")
+        .field(transcript)
+        .field(user.as_bytes())
+        .fixed(&[u8::from(admin)])
+        .into_bytes()
 }
 
 impl Request {
@@ -151,17 +172,19 @@ pub fn check(server_key: &[u8], code: &[u8], body: &[u8]) -> Result<Checked, Ref
     Ok(Checked { key, name: request.name, transcript })
 }
 
-/// Whether a reply was signed by the server for this transcript.
+/// Whether a reply, its user and admin flag included, was signed by the server for this
+/// transcript.
 pub fn verify_reply(server_key: &VerifyingKey, transcript: &[u8], reply: &Reply) -> bool {
-    keys::decode(&reply.signature, 64).is_some_and(|sig| keys::verify(server_key, &ok_message(transcript), &sig))
+    let message = ok_message(transcript, &reply.user, reply.admin);
+    keys::decode(&reply.signature, 64).is_some_and(|sig| keys::verify(server_key, &message, &sig))
 }
 
 /// The pairing link: `flicks://pair?key=<server key>&code=<code>&addr=<host:port>…`.
-pub fn link(server_key: &[u8], code: &[u8], addrs: &[SocketAddr]) -> String {
+pub fn link(server_key: &[u8], code: &[u8], addrs: &[String]) -> String {
     let mut link = format!("flicks://pair?key={}&code={}", keys::encode(server_key), keys::encode(code));
     for addr in addrs {
         link.push_str("&addr=");
-        link.push_str(&addr.to_string());
+        link.push_str(addr);
     }
     link
 }
@@ -171,7 +194,8 @@ pub fn link(server_key: &[u8], code: &[u8], addrs: &[SocketAddr]) -> String {
 pub struct Link {
     pub server_key: VerifyingKey,
     pub code: Vec<u8>,
-    pub addrs: Vec<SocketAddr>,
+    /// `host:port` each.
+    pub addrs: Vec<String>,
 }
 
 pub fn parse_link(link: &str) -> Option<Link> {
@@ -181,7 +205,8 @@ pub fn parse_link(link: &str) -> Option<Link> {
         match pair.split_once('=')? {
             ("key", v) => key = keys::parse_public(&keys::decode(v, keys::PUBLIC_KEY_LEN)?),
             ("code", v) => code = keys::decode(v, CODE_LEN).filter(|c| c.len() == CODE_LEN),
-            ("addr", v) => addrs.push(v.parse().ok()?),
+            ("addr", v) if valid_addr(v) => addrs.push(v.to_string()),
+            ("addr", _) => return None,
             _ => {}
         }
     }
@@ -220,10 +245,13 @@ mod tests {
     fn links_round_trip() {
         let key = keys::generate().unwrap();
         let server = keys::public_bytes(key.verifying_key());
-        let addrs = ["192.168.1.5:7686".parse().unwrap(), "[fd7a::1]:7686".parse().unwrap()];
+        let addrs = ["192.168.1.5:7686", "[fd7a::1]:7686", "nas.tail1234.ts.net:7686"].map(String::from);
         let link = parse_link(&link(&server, &[3; CODE_LEN], &addrs)).unwrap();
         assert_eq!(&link.server_key, key.verifying_key());
         assert_eq!(link.code, [3; CODE_LEN]);
         assert_eq!(link.addrs, addrs);
+        for bad in ["", "nas", "nas:", ":7686", "nas:99999", "a b:1", "a&b=c:1", "a#b:1", "a\nb:1"] {
+            assert!(!valid_addr(bad), "{bad:?}");
+        }
     }
 }

@@ -14,6 +14,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use p256::ecdsa::SigningKey;
 use sha2::{Digest, Sha256};
@@ -119,38 +120,66 @@ pub fn fresh(timestamp: u64, now: u64) -> bool {
     timestamp.abs_diff(now) <= MAX_SKEW
 }
 
-/// Nonces of accepted requests. A request is only fresh for `MAX_SKEW` either side of the
-/// server's clock, so a nonce is remembered for twice that (plus a second) and then forgotten.
+/// How long a nonce is remembered. A request is only fresh for `MAX_SKEW` either side of the
+/// server's clock, so twice that (plus a second) covers every request that could still pass.
+const NONCE_TTL: Duration = Duration::from_secs(2 * MAX_SKEW + 1);
+
+/// The most nonces remembered at once. When full, new requests are refused rather than letting
+/// an unexpired nonce be forgotten (and so replayable).
+pub const MAX_NONCES: usize = 65_536;
+
+/// Why a nonce can't be used.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NonceRefusal {
+    /// It was used before.
+    Replayed,
+    /// The cache is full of unexpired nonces.
+    Full,
+}
+
+/// Nonces of accepted requests, each forgotten [`NONCE_TTL`] after it was recorded (by the
+/// monotonic clock, so a wall-clock jump can't expire them early).
 #[derive(Default)]
 pub struct Nonces(Mutex<NonceSet>);
 
 #[derive(Default)]
 struct NonceSet {
     seen: HashSet<[u8; NONCE_LEN]>,
-    order: VecDeque<(u64, [u8; NONCE_LEN])>,
+    order: VecDeque<(Instant, [u8; NONCE_LEN])>,
+}
+
+impl NonceSet {
+    fn check(&mut self, nonce: &[u8; NONCE_LEN], now: Instant) -> Result<(), NonceRefusal> {
+        while let Some(&(at, old)) = self.order.front() {
+            if now.saturating_duration_since(at) <= NONCE_TTL {
+                break;
+            }
+            self.seen.remove(&old);
+            self.order.pop_front();
+        }
+        if self.seen.contains(nonce) {
+            return Err(NonceRefusal::Replayed);
+        }
+        if self.seen.len() >= MAX_NONCES {
+            return Err(NonceRefusal::Full);
+        }
+        Ok(())
+    }
 }
 
 impl Nonces {
-    pub fn seen(&self, nonce: &[u8; NONCE_LEN]) -> bool {
-        let set = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        set.seen.contains(nonce)
+    /// Whether a nonce could be recorded at `now`, without recording it.
+    pub fn check(&self, nonce: &[u8; NONCE_LEN], now: Instant) -> Result<(), NonceRefusal> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).check(nonce, now)
     }
 
-    /// Records a nonce at server time `now`; false if it was already there.
-    pub fn insert(&self, nonce: [u8; NONCE_LEN], now: u64) -> bool {
+    /// Records a nonce at `now`.
+    pub fn insert(&self, nonce: [u8; NONCE_LEN], now: Instant) -> Result<(), NonceRefusal> {
         let mut set = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        while let Some(&(at, old)) = set.order.front() {
-            if at.saturating_add(2 * MAX_SKEW + 1) >= now {
-                break;
-            }
-            set.seen.remove(&old);
-            set.order.pop_front();
-        }
-        if !set.seen.insert(nonce) {
-            return false;
-        }
+        set.check(&nonce, now)?;
+        set.seen.insert(nonce);
         set.order.push_back((now, nonce));
-        true
+        Ok(())
     }
 }
 
@@ -183,15 +212,27 @@ mod tests {
     }
 
     #[test]
-    fn nonces_are_single_use_and_expire() {
+    fn nonces_are_single_use_expire_and_fill_up() {
         let nonces = Nonces::default();
-        assert!(nonces.insert([1; 16], 1000));
-        assert!(nonces.seen(&[1; 16]));
-        assert!(!nonces.insert([1; 16], 1100));
-        assert!(nonces.insert([2; 16], 1121));
-        assert!(nonces.seen(&[1; 16]));
-        assert!(nonces.insert([3; 16], 1122));
-        assert!(!nonces.seen(&[1; 16]));
-        assert!(nonces.seen(&[2; 16]));
+        let t = Instant::now();
+        let at = |secs| t + Duration::from_secs(secs);
+        assert_eq!(nonces.insert([1; 16], t), Ok(()));
+        assert_eq!(nonces.check(&[1; 16], t), Err(NonceRefusal::Replayed));
+        assert_eq!(nonces.insert([1; 16], at(100)), Err(NonceRefusal::Replayed));
+        assert_eq!(nonces.insert([2; 16], at(121)), Ok(()));
+        assert_eq!(nonces.check(&[1; 16], at(121)), Err(NonceRefusal::Replayed));
+        assert_eq!(nonces.insert([3; 16], at(122)), Ok(()));
+        assert_eq!(nonces.check(&[1; 16], at(122)), Ok(()));
+        assert_eq!(nonces.check(&[2; 16], at(122)), Err(NonceRefusal::Replayed));
+
+        // Full of unexpired nonces: new ones are refused until the old ones expire.
+        let full = Nonces::default();
+        for i in 0..MAX_NONCES as u32 {
+            let mut nonce = [0; 16];
+            nonce[..4].copy_from_slice(&i.to_be_bytes());
+            assert_eq!(full.insert(nonce, t), Ok(()));
+        }
+        assert_eq!(full.insert([9; 16], at(121)), Err(NonceRefusal::Full));
+        assert_eq!(full.insert([9; 16], at(122)), Ok(()));
     }
 }

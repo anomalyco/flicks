@@ -1,13 +1,13 @@
-//! Which folders may be added: never one that is, is inside, or holds a system or secret location
-//! (docs/architecture.md, "Folders"), judged after resolving symlinks.
+//! Which folders may be added: never one that is, is inside, or holds a system or secret location,
+//! nor the home folder or one that holds it (docs/architecture.md, "Folders"), judged after
+//! resolving symlinks. Folders inside the OS temp folder are fine even where that is under `/var`
+//! (macOS).
 
 use std::path::{Path, PathBuf};
 
 /// System locations, refused on every platform where they exist.
-const SYSTEM: &[&str] = &[
-    "/etc", "/private", "/var", "/usr", "/bin", "/sbin", "/System", "/Library", "/dev", "/proc", "/sys", "/boot",
-    "/root",
-];
+const SYSTEM: &[&str] =
+    &["/etc", "/var", "/usr", "/bin", "/sbin", "/System", "/Library", "/dev", "/proc", "/sys", "/boot", "/root"];
 
 /// Secret locations under the home directory.
 const SECRET: &[&str] = &[".ssh", ".gnupg", ".aws", ".config", ".kube", ".docker", "Library"];
@@ -18,9 +18,17 @@ pub fn check(path: &Path, data_dir: &Path) -> Result<PathBuf, String> {
     if !resolved.is_dir() {
         return Err(format!("{} is not a folder", resolved.display()));
     }
-    let home = crate::home_dir();
+    let home = crate::home_dir().map(|home| home.canonicalize().unwrap_or(home));
+    if let Some(home) = &home
+        && home.starts_with(&resolved)
+    {
+        return Err(format!("{} is or holds your home folder", resolved.display()));
+    }
+    let temp = std::env::temp_dir().canonicalize().ok();
+    let in_temp = temp.is_some_and(|temp| resolved.starts_with(temp));
     let denied = SYSTEM
         .iter()
+        .filter(|_| !in_temp)
         .map(PathBuf::from)
         .chain(home.iter().flat_map(|home| SECRET.iter().map(move |s| home.join(s))))
         .chain([data_dir.to_path_buf()]);
@@ -49,6 +57,8 @@ mod tests {
         }
         assert!(check(&data, &data).is_err());
         assert!(check(&data.join(".."), &data).is_err());
+        let temp = std::env::temp_dir();
+        assert_eq!(check(&temp, &data).unwrap(), temp.canonicalize().unwrap());
         if let Some(home) = crate::home_dir() {
             assert!(check(&home, &data).is_err());
             if home.join(".ssh").is_dir() {
