@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod admin;
+mod sound;
 mod worker;
 
 use rune::App;
@@ -17,7 +18,18 @@ const ICON: &[u8] = include_bytes!("../../../assets/brand/app-icon.png");
 
 fn main() {
     rune::prewarm_gpu();
-    let app = App::new(flicks_ui::spec());
+    let mut app = App::new(flicks_ui::spec());
+    // A launch of the app itself, or a traced one in a window (`--native --trace`), opens on the
+    // intro; headless renders (`--snap`, `--script`) don't.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() || args.iter().any(|a| a == "--native") {
+        let sound = sound::start();
+        app = app.init(move || {
+            let mut s = flicks_ui::Flicks::new();
+            s.intro = Some(flicks_ui::Intro::new(sound));
+            s
+        });
+    }
     let handle = app.handle();
     // The network starts after the first frame, so launch draws at once.
     app.on_ready(move |_| {

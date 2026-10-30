@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+flicks-audio = { path = "../../crates/audio" }
 flicks-client = { path = "../../crates/client" }
 flicks-ui = { path = "../../crates/ui" }
 rune = { git = "https://github.com/anomalyco/rune", rev = "e450c92b26a6bf4a85304f6ee4a2fe5d55db617b", default-features = false }
