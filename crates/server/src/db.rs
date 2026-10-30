@@ -49,6 +49,21 @@ pub struct Db {
 impl Db {
     /// Opens (or creates) the database, migrates it, and starts its thread.
     pub fn open(path: &Path) -> Result<Db, Error> {
+        #[cfg(windows)]
+        {
+            // Secure an existing database and sidecars before SQLite reads or writes them.
+            let file = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(path)?;
+            flicks_platform::permissions::owner_only(path)?;
+            drop(file);
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut sidecar = path.as_os_str().to_os_string();
+                sidecar.push(suffix);
+                let sidecar = Path::new(&sidecar);
+                if sidecar.try_exists()? {
+                    flicks_platform::permissions::owner_only(sidecar)?;
+                }
+            }
+        }
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "wal")?;

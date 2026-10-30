@@ -106,6 +106,8 @@ fn create_private_dir(dir: &Path) -> Result<(), Error> {
     // An existing directory may have been created with looser permissions.
     #[cfg(unix)]
     std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    #[cfg(windows)]
+    flicks_platform::permissions::owner_only(dir)?;
     Ok(())
 }
 
@@ -114,7 +116,20 @@ pub async fn serve(data_dir: &Path, name: Option<String>) -> Result<(), Error> {
     if name.as_deref().is_some_and(|name| !pair::valid_name(name)) {
         return Err(Error::Usage("--name is 1 to 64 bytes, without control characters or surrounding spaces"));
     }
-    let listener = match TcpListener::bind((Ipv6Addr::UNSPECIFIED, crate::PORT)).await {
+    // Windows defaults an IPv6 socket to IPv6-only. Explicit dual-stack is needed for both
+    // the local admin CLI (127.0.0.1) and IPv4 LAN/tailnet clients to reach the one listener.
+    #[cfg(windows)]
+    let ipv6 = (|| -> std::io::Result<TcpListener> {
+        let socket = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::STREAM, None)?;
+        socket.set_only_v6(false)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, crate::PORT)).into())?;
+        socket.listen(128)?;
+        TcpListener::from_std(socket.into())
+    })();
+    #[cfg(not(windows))]
+    let ipv6 = TcpListener::bind((Ipv6Addr::UNSPECIFIED, crate::PORT)).await;
+    let listener = match ipv6 {
         Ok(listener) => listener,
         Err(_) => TcpListener::bind(("0.0.0.0", crate::PORT)).await?,
     };
