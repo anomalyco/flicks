@@ -247,3 +247,25 @@ fn pass_through_by_speaker() {
         assert_eq!(out, want, "{src:?} on {device} channels");
     }
 }
+
+/// AAC channel configuration 7 (front wide 7.1, C Lc Rc L R Ls Rs LFE): the centre pair joins
+/// its side's front channel at unity, even on an 8-channel device (it has no Lc/Rc slots).
+#[test]
+fn aac_front_wide_71() {
+    use Channel::*;
+    let order = layout::aac(7, 8).unwrap();
+    assert_eq!(order, [C, Lc, Rc, L, R, Ls, Rs, Lfe]);
+    assert_eq!(layout::aac(7, 6), None);
+    let g = std::f32::consts::FRAC_1_SQRT_2;
+    for device in [2, 8] {
+        for (k, want) in
+            [(0, [g, g]), (1, [1.0, 0.0]), (2, [0.0, 1.0]), (3, [1.0, 0.0]), (5, [g, 0.0]), (7, [0.0, 0.0])]
+        {
+            let mut frame = [0f32; 8];
+            frame[k] = 1.0;
+            let out = remix(order, device, &frame);
+            assert_eq!(out[..2], want, "{:?} on {device} channels", order[k]);
+            assert!(out[2..].iter().all(|v| *v == 0.0));
+        }
+    }
+}

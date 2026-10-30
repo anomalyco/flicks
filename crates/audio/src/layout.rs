@@ -1,7 +1,7 @@
 //! Speaker positions and each decoder's output channel order.
 
 /// A speaker position. The declaration order is the canonical channel order (WAV / SMPTE for
-/// 5.1: L R C LFE Ls Rs, then the 7.1 rear pair and the back centre).
+/// 5.1: L R C LFE Ls Rs, then the 7.1 rear pair, the back centre and the front centre pair).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Channel {
     L,
@@ -16,13 +16,16 @@ pub enum Channel {
     Rb,
     /// Back centre (6.1, AC-3 2/1 and 3/1).
     Cb,
+    /// Left centre, between L and C (AAC front-wide 7.1, where L and R are the wide pair).
+    Lc,
+    Rc,
 }
 
 use Channel::*;
 
 /// `flicks-aac` output order (AAC element order) for an `AudioSpecificConfig` channel
 /// configuration. Configuration 0 (layout from a PCE) is taken from the channel count. `None` for
-/// configuration 7 (front wide 7.1) and anything else not in the table.
+/// anything not in the table.
 pub fn aac(channel_config: u8, channels: usize) -> Option<&'static [Channel]> {
     let by_count: &[&[Channel]] = &[
         &[C],
@@ -37,6 +40,8 @@ pub fn aac(channel_config: u8, channels: usize) -> Option<&'static [Channel]> {
     let layout: &'static [Channel] = match channel_config {
         0 => by_count.get(channels.checked_sub(1)?)?,
         1..=6 => by_count.get(channel_config as usize - 1)?,
+        // Front wide 7.1 (ISO/IEC 14496-3 Table 1.19): C, Lc Rc, then the outside L R pair.
+        7 => &[C, Lc, Rc, L, R, Ls, Rs, Lfe],
         11 => by_count.get(6)?,
         12 => by_count.get(7)?,
         _ => return None,

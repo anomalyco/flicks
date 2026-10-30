@@ -11,7 +11,8 @@ const G: f32 = std::f32::consts::FRAC_1_SQRT_2; // -3 dB
 ///   channel goes to its canonical index ([`Channel`] declaration order, the device's WAV / SMPTE
 ///   order), so 5.1 leaves as L R C LFE Ls Rs, and 4.0 on a 5.1 device as L R - - Ls Rs.
 /// - Otherwise the BS.775 Lo/Ro downmix into the first two device channels: Lo = L + 0.707 C +
-///   0.707 Ls (+ 0.707 Lb), Ro likewise; back centre at 0.5 to both; LFE dropped. A mono source
+///   0.707 Ls (+ 0.707 Lb), Ro likewise; back centre at 0.5 to both; LFE dropped. A front
+///   centre-pair channel (Lc, Rc) is a front channel of its side, so it joins L or R at unity. A mono source
 ///   plays as phantom centre (0.707 to both). Gains are not normalised, as BS.775 specifies; a
 ///   loud 5.1 mix can exceed full scale.
 /// - A mono device gets (Lo + Ro) / 2.
@@ -26,8 +27,8 @@ pub fn matrix(src: &[Channel], out_channels: usize) -> Vec<f32> {
     }
     for (i, ch) in src.iter().enumerate() {
         let (lo, ro) = match ch {
-            L => (1.0, 0.0),
-            R => (0.0, 1.0),
+            L | Lc => (1.0, 0.0),
+            R | Rc => (0.0, 1.0),
             C => (G, G),
             Lfe => (0.0, 0.0),
             Ls | Lb => (G, 0.0),
