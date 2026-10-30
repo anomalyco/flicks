@@ -106,6 +106,8 @@ pub struct Decoder {
     #[cfg(target_os = "macos")]
     skip_rasl: bool,
     #[cfg(target_os = "macos")]
+    h264_recovery_pts: Option<i64>,
+    #[cfg(target_os = "macos")]
     finished: bool,
 }
 
@@ -125,6 +127,7 @@ impl Decoder {
                 last_pts: None,
                 first: true,
                 skip_rasl: false,
+                h264_recovery_pts: None,
                 finished: false,
             })
         }
@@ -184,13 +187,20 @@ impl Decoder {
 impl Decoder {
     fn decode_inner(&mut self, sample: &[u8], pts: i64) -> Result<Vec<Frame>> {
         let kinds = self.info.validate_sample(sample)?;
+        if self.info.codec == Codec::Hevc && !kinds.iter().any(|&t| t <= 21) {
+            // EOS/EOB-only samples are not pictures. Leave delayed output for flush().
+            return Ok(Vec::new());
+        }
         if self.first {
             let random_access = match self.info.codec {
-                Codec::H264 => kinds.contains(&5),
+                Codec::H264 => kinds.contains(&5) || self.info.h264_intra(sample)?,
                 Codec::Hevc => kinds.iter().any(|t| (16..=21).contains(t)),
             };
             if !random_access {
                 return Err(Error::InvalidData("run must start at a random-access picture"));
+            }
+            if self.info.codec == Codec::H264 && !kinds.contains(&5) {
+                self.h264_recovery_pts = Some(pts);
             }
             self.skip_rasl = self.info.codec == Codec::Hevc && kinds.iter().any(|t| matches!(t, 16..=18 | 21));
             self.first = false;
@@ -202,6 +212,11 @@ impl Decoder {
             if self.skip_rasl && kinds.iter().any(|t| matches!(t, 8 | 9)) {
                 return Ok(Vec::new());
             }
+        }
+        // Leading pictures of an open GOP need references from before the seek.
+        // Do not submit them to hardware or present them before the recovery picture.
+        if self.h264_recovery_pts.is_some_and(|start| pts < start) {
+            return Ok(Vec::new());
         }
         self.session.submit(sample, pts)?;
         self.in_flight.push(pts);
@@ -254,6 +269,17 @@ mod tests {
     use flicks_container::isobmff;
 
     fn fixture(codec: Codec, bits: u8, full: bool, size: &str, frames: usize) -> (Vec<u8>, Vec<(Vec<u8>, i64)>) {
+        fixture_gop(codec, bits, full, size, frames, false)
+    }
+
+    fn fixture_gop(
+        codec: Codec,
+        bits: u8,
+        full: bool,
+        size: &str,
+        frames: usize,
+        open_gop: bool,
+    ) -> (Vec<u8>, Vec<(Vec<u8>, i64)>) {
         let ff = flicks_testkit::ffmpeg().expect("ffmpeg fixture oracle");
         let path = flicks_testkit::temp_path(&flicks_testkit::fixtures_dir("platform").join("video.mp4"));
         let mut cmd = std::process::Command::new(ff);
@@ -286,7 +312,7 @@ mod tests {
                     "-preset",
                     "fast",
                     "-x264-params",
-                    &format!("bframes=3:keyint=24:min-keyint=24:scenecut=0:colorprim=bt709:transfer=bt709:colormatrix=bt709:fullrange={}", if full { "on" } else { "off" }),
+                    &format!("open-gop={}:bframes=3:keyint=24:min-keyint=24:scenecut=0:colorprim=bt709:transfer=bt709:colormatrix=bt709:fullrange={}", u8::from(open_gop), if full { "on" } else { "off" }),
                 ]);
             }
             Codec::Hevc => {
@@ -439,6 +465,71 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn h264_open_gop_seek_decodes_non_idr_keyframe() {
+        let _ff = flicks_testkit::require_ffmpeg!();
+        let (record, samples) = fixture_gop(Codec::H264, 8, false, "318x242", 72, true);
+        let info = config::StreamInfo::parse(Codec::H264, &record).unwrap();
+        let start = samples
+            .iter()
+            .position(|(data, _)| !info.validate_sample(data).unwrap().contains(&5) && info.h264_intra(data).unwrap())
+            .expect("generated open-GOP non-IDR keyframe");
+        assert!(start > 0);
+        assert!(info.validate_sample(&samples[start].0).unwrap().contains(&6), "recovery point SEI");
+        let decode = |samples: &[(Vec<u8>, i64)]| {
+            let mut decoder = Decoder::new(Codec::H264, &record).unwrap();
+            let mut out = Vec::new();
+            for (data, pts) in samples {
+                out.extend(decoder.decode(data, *pts).unwrap());
+            }
+            out.extend(decoder.flush().unwrap());
+            out
+        };
+        let full = decode(&samples);
+        let seek = decode(&samples[start..]);
+        let recovery_pts = samples[start].1;
+        let full: Vec<_> = full.iter().filter(|f| f.pts >= recovery_pts).collect();
+        assert!(seek.iter().all(|f| f.pts >= recovery_pts));
+        assert_eq!(seek.len(), full.len());
+        assert!(seek.len() >= 24);
+        for (a, b) in seek.iter().zip(full) {
+            assert_eq!(a.pts, b.pts);
+            assert_eq!(planar(a), planar(b));
+        }
+        // A normal inter picture is not a random-access point.
+        let inter = samples.iter().find(|(data, _)| !info.h264_intra(data).unwrap()).unwrap();
+        assert!(Decoder::new(Codec::H264, &record).unwrap().decode(&inter.0, inter.1).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn hevc_end_markers_preserve_all_delayed_frames() {
+        let _ff = flicks_testkit::require_ffmpeg!();
+        let (record, samples) = fixture(Codec::Hevc, 8, false, "64x64", 32);
+        for appended in [false, true] {
+            let mut decoder = Decoder::new(Codec::Hevc, &record).unwrap();
+            let mut out = Vec::new();
+            let markers = [0, 0, 0, 3, 36 << 1, 1, 0x80, 0, 0, 0, 3, 37 << 1, 1, 0x80];
+            for (i, (data, pts)) in samples.iter().enumerate() {
+                let mut data = data.clone();
+                if appended && i == samples.len() - 1 {
+                    data.extend_from_slice(&markers);
+                }
+                out.extend(decoder.decode(&data, *pts).unwrap());
+            }
+            if !appended {
+                assert!(decoder.decode(&markers, i64::MAX).unwrap().is_empty());
+            }
+            let delayed = decoder.flush().unwrap();
+            assert!(!delayed.is_empty(), "fixture must exercise delayed output");
+            out.extend(delayed);
+            let mut expected: Vec<_> = samples.iter().map(|(_, pts)| *pts).collect();
+            expected.sort();
+            assert_eq!(out.iter().map(|f| f.pts).collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[test]
     fn hostile_configuration_and_samples() {
         let _ff = flicks_testkit::require_ffmpeg!();
         let mut seed = 7u64;
@@ -464,6 +555,9 @@ mod tests {
                 checked += 1;
             }
             let sample = &samples[0].0;
+            if codec == Codec::H264 {
+                assert!(info.h264_intra(sample).unwrap());
+            }
             for n in 0..sample.len() {
                 let _ = info.validate_sample(&sample[..n]);
                 checked += 1;
