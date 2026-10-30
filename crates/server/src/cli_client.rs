@@ -4,7 +4,8 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use flicks_client::{Client, MAX_READ, Server};
+use flicks_client::{Client, Connection, Item, MAX_READ, Server};
+use hyper::Method;
 
 use crate::Error;
 
@@ -33,10 +34,10 @@ pub enum Command {
 }
 
 pub async fn run(command: Command) -> Result<(), Error> {
-    let mut client = Client::open(&crate::data_dir()?).map_err(client_error)?;
+    let mut client = Client::open(&crate::data_dir()?)?;
     match command {
         Command::Connect { link } => {
-            let server = client.pair(&link, DEVICE_NAME).await.map_err(client_error)?;
+            let server = client.pair(&link, DEVICE_NAME).await?;
             println!("Paired with {} as {} ({}).", server.name, server.user, role(&server));
         }
         Command::Ls => {
@@ -54,34 +55,53 @@ pub async fn run(command: Command) -> Result<(), Error> {
                 .filter(|(a, b)| a <= b)
                 .ok_or(Error::Usage("--range is START-END, inclusive byte offsets"))?;
             let key = pick(&client.servers, server.as_deref())?.key.clone();
-            let connection = client.connect(&key).await.map_err(client_error)?;
+            let connection = client.connect(&key).await?;
             let mut out: Box<dyn Write> = match out {
                 Some(path) => Box::new(std::fs::File::create(path)?),
                 None => Box::new(std::io::stdout().lock()),
             };
-            let mut at = start;
-            // One request per MAX_READ bytes; stops early at the end of the file.
-            while at <= end {
-                let last = end.min(at.saturating_add(MAX_READ - 1));
-                let bytes = connection.read(id, at, last).await.map_err(client_error)?;
-                out.write_all(&bytes)?;
-                if bytes.is_empty() || last == u64::MAX || (bytes.len() as u64) < last - at + 1 {
-                    break;
-                }
-                at = last + 1;
-            }
-            out.flush()?;
+            get(&connection, id, start, end, &mut out).await?;
         }
     }
     Ok(())
 }
 
+/// Writes bytes `start..=end` of file `id` to `out`, one request per [`MAX_READ`] bytes. The range
+/// is clamped to the file's size, which `/items/{id}` gives first, so a range running past the end
+/// stops there without asking for bytes that aren't there.
+pub async fn get(connection: &Connection, id: i64, start: u64, end: u64, out: &mut dyn Write) -> Result<(), Error> {
+    #[derive(serde::Deserialize)]
+    struct Detail {
+        item: Item,
+    }
+    let detail: Detail = connection.call(Method::GET, &format!("/items/{id}"), None::<&()>).await?;
+    let Some(end) = detail.item.size.checked_sub(1).map(|last| end.min(last)).filter(|end| start <= *end) else {
+        return Err(Error::Usage("--range starts past the end of the file"));
+    };
+    let mut at = start;
+    while at <= end {
+        let last = end.min(at.saturating_add(MAX_READ - 1));
+        let bytes = connection.read(id, at, last).await?;
+        out.write_all(&bytes)?;
+        // Short: the file shrank since it was scanned.
+        if (bytes.len() as u64) < last - at + 1 {
+            break;
+        }
+        // `end` is below the file size, so this can't overflow.
+        at = last + 1;
+    }
+    out.flush()?;
+    Ok(())
+}
+
 async fn ls(client: &mut Client, server: &Server) {
-    let header = format!("{} ({}, {})", server.name, server.user, role(server));
     let entries = match client.connect(&server.key).await {
         Ok(connection) => connection.items().await.map(|items| (connection.addr, items)),
         Err(e) => Err(e),
     };
+    // Connecting saves the name the server gives now, if it was renamed.
+    let server = client.servers.iter().find(|s| s.key == server.key).unwrap_or(server);
+    let header = format!("{} ({}, {})", server.name, server.user, role(server));
     match entries {
         Err(e) => println!("{header}: {e}"),
         Ok((addr, entries)) => {
@@ -117,8 +137,4 @@ fn pick<'a>(servers: &'a [Server], name: Option<&str>) -> Result<&'a Server, Err
 
 fn role(server: &Server) -> &'static str {
     if server.admin { "admin" } else { "viewer" }
-}
-
-fn client_error(error: flicks_client::Error) -> Error {
-    Error::Io(std::io::Error::other(error))
 }

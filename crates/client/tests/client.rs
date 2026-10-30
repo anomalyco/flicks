@@ -25,7 +25,7 @@ fn dir(name: &str) -> PathBuf {
 struct Setup {
     addr: SocketAddr,
     state: Arc<State>,
-    root: flicks_server::cli::Client,
+    root: flicks_client::Connection,
     media: Vec<u8>,
     proxy: SocketAddr,
     proxied: Arc<AtomicUsize>,
@@ -36,7 +36,8 @@ struct Setup {
 /// A server with one generated MP4 in its folder, and a proxy in front of it.
 async fn setup(name: &str) -> Setup {
     let (addr, state) = server::spawn(&dir(&format!("{name}-server")), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let root = flicks_server::cli::Client::new(state.key.clone(), state.key.verifying_key(), addr).unwrap();
+    let root =
+        flicks_client::Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
     let folder = tempfile::tempdir().unwrap();
     let media = mp4();
     std::fs::write(folder.path().join("Example (2020).mp4"), &media).unwrap();
@@ -78,8 +79,9 @@ async fn proxy(server: SocketAddr, state: &State) -> (SocketAddr, Arc<AtomicUsiz
         .unwrap();
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     let acceptor = TlsAcceptor::from(Arc::new(config));
+    let web = flicks_client::net::web_verifier(&[]).unwrap();
     let upstream =
-        TlsConnector::from(Arc::new(flicks_server::tls::pinned_client_config(state.key.verifying_key()).unwrap()));
+        TlsConnector::from(Arc::new(flicks_client::net::client_config(state.key.verifying_key(), web).unwrap()));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -101,8 +103,8 @@ async fn proxy(server: SocketAddr, state: &State) -> (SocketAddr, Arc<AtomicUsiz
     (addr, count, ca.der().clone())
 }
 
-/// Opens a pairing window whose link names `addr` after the server's interface addresses (which
-/// don't answer: the server listens on 127.0.0.1 only, so pairing has to win the race elsewhere).
+/// Opens a pairing window whose link names `addr` first, then the server's interface addresses
+/// (which don't answer: the server listens on 127.0.0.1 only).
 async fn link(setup: &Setup, user: &str, addr: String) -> String {
     let request = OpenPairing { user: user.into(), admin: false, addrs: vec![addr] };
     let pairing: Pairing = setup.root.call(Method::POST, "/admin/pair", Some(&request)).await.unwrap();
@@ -144,16 +146,21 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     let setup = setup("pair").await;
 
     // On localhost: the TLS certificate carries the server key.
+    // An existing data directory with looser permissions is made private.
     let home = dir("pair-local");
+    std::fs::create_dir_all(&home).unwrap();
     let mut local = Client::open(&home).unwrap();
+    let server = local.pair(&link(&setup, "ana", setup.addr.to_string()).await, "Laptop").await.unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(home.join(flicks_client::KEY_FILE)).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&home), 0o700);
+        assert_eq!(mode(&home.join(flicks_client::KEY_FILE)), 0o600);
+        assert_eq!(mode(&home.join(flicks_client::SERVERS_FILE)), 0o600);
     }
-    let server = local.pair(&link(&setup, "ana", setup.addr.to_string()).await, "Laptop").await.unwrap();
-    assert_eq!((server.name.as_str(), server.user.as_str(), server.admin), ("127.0.0.1", "ana", false));
+    // Named as the server calls itself, not by its address.
+    assert_eq!((&server.name, server.user.as_str(), server.admin), (&setup.state.name, "ana", false));
     assert_eq!(list_and_read(&mut local, &server, &setup.media).await, setup.addr.to_string());
     // The address that answered is saved first, and gets the head start next time.
     assert_eq!(server.addrs[0], setup.addr.to_string());
@@ -166,7 +173,7 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     let mut proxied = Client::open(&home).unwrap();
     proxied.trust(setup.authority.clone()).unwrap();
     let server = proxied.pair(&link(&setup, "bo", via.clone()).await, "Phone").await.unwrap();
-    assert_eq!((server.name.as_str(), server.user.as_str()), ("localhost", "bo"));
+    assert_eq!((&server.name, server.user.as_str()), (&setup.state.name, "bo"));
     let before = setup.proxied.load(Ordering::SeqCst);
     assert_eq!(list_and_read(&mut proxied, &server, &setup.media).await, via);
     assert!(setup.proxied.load(Ordering::SeqCst) > before);
@@ -175,6 +182,10 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     let mut reopened = Client::open(&home).unwrap();
     reopened.trust(setup.authority.clone()).unwrap();
     assert_eq!((reopened.public_key(), &reopened.servers), (proxied.public_key(), &vec![server.clone()]));
+    // A server renamed since pairing is saved under its new name on the next connect.
+    reopened.servers[0].name = "Old name".into();
+    reopened.connect(&server.key).await.unwrap();
+    assert_eq!(Client::open(&home).unwrap().servers[0].name, setup.state.name);
     let device_key = keys::encode(&proxied.public_key());
     let devices: Vec<Device> = setup.root.call(Method::GET, "/admin/devices", None::<&()>).await.unwrap();
     assert!(devices.iter().any(|d| d.key == device_key && d.name == "Phone" && d.user == "bo"));

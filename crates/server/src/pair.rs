@@ -6,16 +6,13 @@ use std::time::{Duration, Instant};
 
 pub use flicks_client::pair::{
     CODE_LEN, Link, PROOF_LEN, Reply, Request, ok_message, parse_link, proof_matches, request_message, transcript,
-    valid_addr, verify_reply,
+    valid_addr, valid_name, verify_reply,
 };
 
 use crate::{Error, db, keys};
 
 /// How long a pairing window stays open.
 pub const WINDOW: Duration = Duration::from_secs(5 * 60);
-
-/// Longest user or device name, in bytes.
-pub const MAX_NAME: usize = 64;
 
 /// The most addresses an admin may add to a link.
 pub const MAX_EXTRA_ADDRS: usize = 16;
@@ -37,11 +34,6 @@ impl Window {
     pub fn is_open(&self) -> bool {
         Instant::now() < self.expires
     }
-}
-
-/// A user or device name: 1 to 64 bytes, no control characters, no surrounding spaces.
-pub fn valid_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= MAX_NAME && name.trim() == name && !name.chars().any(char::is_control)
 }
 
 /// Why a redemption was refused.
@@ -126,6 +118,8 @@ mod tests {
         assert_eq!(&link.server_key, key.verifying_key());
         assert_eq!(link.code, [3; CODE_LEN]);
         assert_eq!(link.addrs, addrs);
+        // A link with no addresses can't be used.
+        assert!(parse_link(&super::link(&server, &[3; CODE_LEN], &[])).is_none());
         for bad in [
             "",
             "nas",
@@ -135,6 +129,7 @@ mod tests {
             "a b:1",
             "a&b=c:1",
             "a#b:1",
+            "a'b:1",
             "a\nb:1",
             "https://host:443",
             "host/path:443",
