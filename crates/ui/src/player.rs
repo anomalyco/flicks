@@ -298,7 +298,7 @@ fn subtitles(cues: &[Cue], controls: bool) -> El {
                     styled = styled.italic();
                 }
                 if span.bold {
-                    styled = styled.bold();
+                    styled = styled.weight(700.0);
                 }
                 if span.underline {
                     styled = styled.underline(Color::WHITE);
@@ -322,7 +322,7 @@ fn subtitles(cues: &[Cue], controls: bool) -> El {
     col().key("subtitles").pin(Some(48.0), None, Some(48.0), Some(bottom)).items_center().child(lines)
 }
 
-const SUBTITLE: rune::TextStyle = rune::TextStyle::new(26.0, 550.0).lh(34.0);
+const SUBTITLE: rune::TextStyle = rune::TextStyle::new(26.0, 500.0).lh(34.0);
 const TIME: rune::TextStyle = rune::TextStyle::new(13.0, 550.0).features("'tnum' 1");
 
 fn top(p: &Screen, cx: &mut Cx<Flicks>) -> El {

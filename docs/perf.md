@@ -640,3 +640,53 @@ flk48-bench --native --trace pacing.jsonl   # prints Rune's present summary on e
 # Per phase: split frames into bursts at gaps > 150 ms, 8 bursts per phase in order; intervals
 # from present_dt_ms, CPU from quality.cpu_ms, missed = intervals > 1.5 refresh periods.
 ```
+
+## FLK-6 — player screen (2026-10-30)
+
+Apple M5 Max, macOS 27.2, release builds of `flicks-desktop` and `flicks`, Rune `e450c92`. The
+app window on the 60 Hz LG 5K display (the trace header's `hz`); the 120 Hz MacBook (exonbook)
+didn't resolve on the network during this card, so 5:5 at 120 Hz is reasoned, not measured. A
+local `flicks serve` (temporary HOME) shared the read-only test-media TV folder over signed
+HTTPS on this Mac; the app paired with it like any device. Other agents' builds and apps shared
+the machine.
+
+| Check | Result |
+|---|---|
+| 1080p H.264/AAC episode, 199 s with the controls and a menu showing | 4,768 displayed, **0 dropped**, hardware decode |
+| Same episode in four more plays, about 6 minutes (normal viewing, seeks, a sidecar) | **0 dropped** in every play |
+| 4K HEVC Main10 PQ (BT.2020) clip, 20 s, in two plays, to its end | 201 + 279 displayed, **0 dropped**, hardware decode, tone mapped to SDR |
+| CPU while playing 1080p (one core = 100 %) | **6.3–8.1 %** (`top`, 10 s samples) |
+| CPU paused, and with the player closed | **0.0 %**, 0 idle wakeups |
+| Present interval while playing, overlay up (222 s, 11,872 frames) | p50 **16.667**, p95 16.668, p99 16.668, max 33.3 ms; **9 missed** (> 25 ms), 0 bunched |
+| Encode CPU per frame while playing | p50 0.25, p99 0.55 ms |
+| A session with every screen change and two plays (5,649 frames) | p50 / p95 16.67, max 116.7 ms, 5 missed |
+
+Every playback miss was encoded about 23 ms ahead of its target with under 1 ms of CPU, so they
+are on the GPU or WindowServer side, not the app's or Rune's CPU; the 116.7 ms gap is a capture
+by the test driver. Rune's own summary is printed on exit with `--native --trace <file>`.
+
+**Video cadence.** 24 fps on 60 Hz should alternate 2 and 3 refreshes a frame. Counting, per
+video frame, the refreshes it stayed on screen and how often a count repeated the previous one
+(a 2,2 or 3,3 is a frame shown a refresh early or late):
+
+| Frames shown | Repeats | How frames were chosen |
+|---|---:|---|
+| 6,673 | 656 (9.8 %) | the newest frame the playback thread had handed over (it polls every 4 ms) |
+| 1,824 | 39 (2.1 %) | the frame due by each display tick, ticks from Rune's frame clock |
+| 1,825 | **2 (0.1 %)** | the same, with frames due on a smoothed audio clock (both at the start) |
+
+The playback thread stamps each frame with when the audio clock passed it, through a media-to-
+wall mapping of slope 1 that follows the clock's readings slowly (1/64 a step, snapping after
+a seek, a stall or a resume); the compositor shows the newest frame due 8 ms before each tick,
+reading ticks from `Runtime::t`, which steps by the display link's targets. The same rule gives
+5 refreshes a frame at 120 Hz. The cost is latency: a frame reaches the screen about 8 ms plus
+one to two refreshes after its audio, because `flicks-player` hands frames over only once due.
+
+Measured with a temporary counter in the compositor (not committed); the app logs each play's
+stats when it stops (`flicks: stopped at …: N decoded, N displayed, N dropped, …`).
+
+```sh
+HOME=$TMP/server flicks serve &                     # then folder add, user add, pair
+HOME=$TMP/app flicks connect '<link>'
+HOME=$TMP/app target/release/flicks-desktop --native --trace pacing.jsonl
+```
