@@ -232,3 +232,31 @@ fn a_launch_in_the_background_is_silent() {
     assert!(rt.state.intro.is_none());
     assert!(cues.borrow().is_empty());
 }
+
+#[test]
+fn home_and_detail_request_separate_episode_stills_and_series_art() {
+    let mut rt = runtime("home");
+    let (tx, rx) = std::sync::mpsc::channel();
+    rt.state.network = Some(Box::new(move |request| {
+        if let Request::Artwork(_, name) = request {
+            let _ = tx.send(name);
+        }
+    }));
+    let group = rt.state.catalog.groups[0].key.clone();
+    let episodes = rt.state.catalog.groups[0].titles.clone();
+    let mut titles = rt.state.catalog.titles.clone();
+    for &i in &episodes {
+        for source in &mut titles[i].sources {
+            source.item.still = Some(format!("episode-{i}.jpg"));
+            source.item.backdrop = Some("series.jpg".into());
+        }
+    }
+    rt.update(|s, tx| s.loaded(Catalog::build(titles), None, true, tx));
+    let home = rx.try_iter().collect::<Vec<_>>();
+    assert!(home.contains(&"series.jpg".to_string()), "Home requests the hero");
+    assert!(home.contains(&format!("episode-{}.jpg", episodes[0])), "Continue Watching requests its still");
+    rt.state.go(Screen::Detail(group));
+    let detail = rx.try_iter().collect::<Vec<_>>();
+    assert!(detail.contains(&format!("episode-{}.jpg", episodes[1])), "all episode rows request their own still");
+    assert!(!detail.contains(&"series.jpg".to_string()), "series image was already requested");
+}

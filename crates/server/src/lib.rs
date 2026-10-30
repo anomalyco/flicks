@@ -13,6 +13,7 @@ pub mod folders;
 pub mod pair;
 pub mod server;
 pub mod service;
+pub mod stills;
 pub mod tls;
 pub mod web;
 

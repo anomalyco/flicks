@@ -69,6 +69,18 @@ impl Tmdb {
         self.search(p, media, false)
     }
 
+    /// An episode's own image, not its series backdrop. Missing episodes/images allow a local still.
+    pub fn episode_still(&self, show: u64, season: u16, episode: u16) -> Result<Option<String>, Error> {
+        let url = format!("{API}/tv/{show}/season/{season}/episode/{episode}?api_key={}", self.key);
+        let body = match (self.fetch)(&url) {
+            Ok(body) => body,
+            Err(Error::NotFound) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let json: Value = serde_json::from_slice(&body).map_err(|e| Error::Json(e.to_string()))?;
+        Ok(json.get("still_path").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string))
+    }
+
     fn search(&self, p: &Parsed, media: Media, with_year: bool) -> Result<Option<Match>, Error> {
         let (path, year_param) = match media {
             Media::Movie => ("search/movie", "year"),
@@ -137,7 +149,10 @@ fn encode(s: &str) -> String {
 
 fn live(agent: &ureq::Agent, key: &str, url: &str) -> Result<Vec<u8>, Error> {
     // The URL carries the API key, so errors here never repeat it.
-    let mut response = agent.get(url).call().map_err(|e| Error::Http(redact(&e.to_string(), key, url)))?;
+    let mut response = agent.get(url).call().map_err(|e| match e {
+        ureq::Error::StatusCode(404) => Error::NotFound,
+        e => Error::Http(redact(&e.to_string(), key, url)),
+    })?;
     response
         .body_mut()
         .with_config()

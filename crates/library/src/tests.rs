@@ -217,8 +217,15 @@ fn tmdb(requests: Arc<AtomicUsize>) -> Tmdb {
         if url.contains("image.tmdb.org") {
             return Ok(vec![0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]);
         }
+        if url.contains("/episode/3?") {
+            return Err(flicks_metadata::Error::NotFound);
+        }
         let body = if url.contains("search/tv") && url.contains("Severance") {
             r#"{"results":[{"id":95396,"name":"Severance","original_name":"Severance","first_air_date":"2022-02-17","poster_path":"/p1.jpg","backdrop_path":"/b1.jpg"}]}"#
+        } else if url.contains("/episode/1?") {
+            r#"{"still_path":"/e1.jpg"}"#
+        } else if url.contains("/episode/2?") {
+            r#"{"still_path":"/e2.jpg"}"#
         } else {
             r#"{"results":[]}"#
         };
@@ -239,6 +246,7 @@ fn matches_on_tmdb_once_per_title_and_works_without_a_key() {
     scanner().scan(&mut conn, dir.path()).unwrap();
     assert_eq!(count(&conn), 4);
     assert_eq!(pending_count(&conn), 4);
+    conn.execute("UPDATE library_files SET still='still-0123456789abcdef.jpg', backdrop='still-0123456789abcdef.jpg' WHERE season=1", []).unwrap();
 
     // A key later: the next scan matches what is waiting, one request per distinct title.
     let requests = Arc::new(AtomicUsize::new(0));
@@ -246,20 +254,47 @@ fn matches_on_tmdb_once_per_title_and_works_without_a_key() {
     let with_key = Scanner::new(Some(tmdb(requests.clone())), art.path().to_path_buf());
     with_key.scan(&mut conn, dir.path()).unwrap();
     // Two searches for the unknown title (with the year, then without), one for the show,
-    // and two images.
-    assert_eq!(requests.load(Ordering::SeqCst), 5);
+    // two series images, three episode lookups and two episode images.
+    assert_eq!(requests.load(Ordering::SeqCst), 10);
     assert_eq!(pending_count(&conn), 0);
     let shows: Vec<Item> = (2..=4).map(|id| item(&conn, id).unwrap().unwrap()).collect();
     assert_eq!(shows.len(), 3);
     assert!(shows.iter().all(|i| i.tmdb_id == Some(95396) && i.poster.as_deref() == Some("/p1.jpg")));
     assert_eq!(shows.iter().map(|i| i.episode).collect::<Vec<_>>(), [Some(1), Some(2), Some(3)]);
+    assert_eq!(
+        shows.iter().map(|i| i.still.as_deref()).collect::<Vec<_>>(),
+        [Some("/e1.jpg"), Some("/e2.jpg"), Some("still-0123456789abcdef.jpg")]
+    );
+    assert!(shows.iter().all(|i| i.backdrop.as_deref() == Some("/b1.jpg")));
+    assert!(art.path().join("w780-e1.jpg").is_file() && art.path().join("w780-e2.jpg").is_file());
     assert!(art.path().join("w342-p1.jpg").is_file());
     let home = item(&conn, 1).unwrap().unwrap();
     assert_eq!((home.title.as_str(), home.tmdb_id), ("Home Video", None));
 
     // Settled: another scan makes no requests.
     with_key.scan(&mut conn, dir.path()).unwrap();
-    assert_eq!(requests.load(Ordering::SeqCst), 5);
+    assert_eq!(requests.load(Ordering::SeqCst), 10);
+}
+
+#[test]
+fn still_migration_preserves_series_art_and_backfills_existing_episodes() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("Show.S01E01.mkv"), &mkv(1));
+    let mut conn = db();
+    scanner().scan(&mut conn, dir.path()).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE library_files DROP COLUMN still;
+        UPDATE library_files SET matched=1, tmdb_media='tv', backdrop='still-0123456789abcdef.jpg';",
+    )
+    .unwrap();
+    migrate(&conn).unwrap();
+    let file = item(&conn, 1).unwrap().unwrap();
+    assert_eq!(file.still, file.backdrop);
+    assert_eq!(pending_count(&conn), 1);
+    conn.execute("UPDATE library_files SET matched=1, backdrop='/series.jpg'", []).unwrap();
+    migrate(&conn).unwrap();
+    assert_eq!(pending_count(&conn), 0, "migration runs only once");
+    assert_eq!(item(&conn, 1).unwrap().unwrap().backdrop.as_deref(), Some("/series.jpg"));
 }
 
 fn pending_count(conn: &Connection) -> i64 {

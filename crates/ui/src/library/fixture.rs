@@ -70,6 +70,7 @@ pub fn item(id: i64, name: &str, episode: Option<u16>, added_at: i64, minutes: u
         tmdb_media: None,
         poster: None,
         backdrop: None,
+        still: None,
         added_at,
         size: 1_200_000_000,
         oshash: format!("{id:016x}"),

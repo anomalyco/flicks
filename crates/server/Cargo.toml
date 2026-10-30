@@ -18,6 +18,9 @@ flicks-client = { path = "../client" }
 flicks-container = { path = "../container", features = ["matroska"] }
 flicks-h264 = { path = "../h264" }
 flicks-hevc = { path = "../hevc" }
+flicks-av1 = { path = "../av1" }
+flicks-vp9 = { path = "../vp9" }
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 flicks-library = { path = "../library" }
 flicks-metadata = { path = "../metadata" }
 clap = { version = "4.6.7", features = ["derive"] }
