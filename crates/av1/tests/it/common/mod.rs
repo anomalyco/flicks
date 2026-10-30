@@ -16,21 +16,31 @@ pub fn ffmpeg_dav1d() -> Option<PathBuf> {
     ffmpeg_with(&[("-decoders", "libdav1d")])
 }
 
-/// ffmpeg with libaom (4:2:2 and 4:4:4 fixtures, which SVT-AV1 cannot make) and libdav1d.
+/// ffmpeg with libaom (4:2:2 and 4:4:4 fixtures, which SVT-AV1 cannot make) and libdav1d. libaom is not in every
+/// stock ffmpeg, so its absence skips even under `FLICKS_REQUIRE_ORACLES=1`; libdav1d is required.
 pub fn ffmpeg_libaom() -> Option<PathBuf> {
-    ffmpeg_with(&[("-encoders", "libaom-av1"), ("-decoders", "libdav1d")])
+    let ff = ffmpeg_dav1d()?;
+    if !has(&ff, "-encoders", "libaom-av1") {
+        flicks_testkit::skip_optional("av1 oracle", "ffmpeg has no libaom-av1 (see `ffmpeg -encoders`)");
+        return None;
+    }
+    Some(ff)
 }
 
-/// Builds such as the Windows "essentials" ones lack these libraries; skip rather than fail.
+fn has(ff: &Path, list: &str, lib: &str) -> bool {
+    Command::new(ff)
+        .args(["-hide_banner", list])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(lib))
+        .unwrap_or(false)
+}
+
+/// Builds such as the Windows "essentials" ones lack these libraries; skip rather than fail (a failure with
+/// `FLICKS_REQUIRE_ORACLES=1`).
 fn ffmpeg_with(needs: &[(&str, &str)]) -> Option<PathBuf> {
     let ff = flicks_testkit::ffmpeg_or_skip("av1 oracle")?;
     for &(list, lib) in needs {
-        let out = Command::new(&ff)
-            .args(["-hide_banner", list])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
-        if !out.contains(lib) {
+        if !has(&ff, list, lib) {
             flicks_testkit::skip("av1 oracle", &format!("ffmpeg has no {lib} (see `ffmpeg {list}`)"));
             return None;
         }
@@ -268,7 +278,7 @@ pub fn test_vector(name: &str) -> Option<PathBuf> {
     let tmp = flicks_testkit::temp_path(&path);
     let url = format!("https://storage.googleapis.com/aom-test-data/{name}");
     let ok = Command::new("curl")
-        .args(["-sfL", "--max-time", "120", "-o"])
+        .args(["-sfL", "--retry", "3", "--max-time", "120", "-o"])
         .arg(&tmp)
         .arg(&url)
         .status()

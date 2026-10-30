@@ -1,7 +1,7 @@
 #!/bin/sh
 # The one gate: formatting, Clippy with warnings as errors, the dependency policy, and every test.
-# CI sets FLICKS_REQUIRE_ORACLES=1 with a full ffmpeg build (libaom-av1, libkvazaar), so oracle tests
-# fail there instead of skipping; locally they skip what this ffmpeg can't encode.
+# CI sets FLICKS_REQUIRE_ORACLES=1 with a stock ffmpeg (libx264, libx265, libvpx, libsvtav1, libdav1d), so oracle
+# tests fail there instead of skipping; seeds that need libaom or libkvazaar skip everywhere that lacks them.
 set -eu
 cd "$(dirname "$0")/.."
 cargo fmt --all --check

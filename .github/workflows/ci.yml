@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A missing ffmpeg or a missing stock encoder fails the run instead of skipping the oracle tests.
+  FLICKS_REQUIRE_ORACLES: "1"
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg (the distribution's stock build)
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install ffmpeg
+          else
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -1
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      # The AV1 conformance vectors are downloaded on first use; keep them between runs.
+      - name: Fixtures directory
+        run: echo "FLICKS_FIXTURES_DIR=$RUNNER_TEMP/fixtures" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/fixtures/av1/aom-test-data
+          key: av1-vectors-${{ hashFiles('crates/av1/tests/it/conformance.rs') }}
+
+      - run: scripts/check.sh

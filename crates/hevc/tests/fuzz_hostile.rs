@@ -100,7 +100,13 @@ fn sweep() {
     let depth = Depth::from_env();
     for &(name, enc, args, pix) in SEEDS {
         if !flicks_testkit::ffmpeg_has_encoder(&ff, enc) {
-            flicks_testkit::skip("hevc fuzz", &format!("this ffmpeg has no {enc} encoder (seed {name})"));
+            let why = format!("this ffmpeg has no {enc} encoder (seed {name})");
+            // libkvazaar is not in every stock ffmpeg; the x265 seeds are
+            if enc == "libkvazaar" {
+                flicks_testkit::skip_optional("hevc fuzz", &why);
+            } else {
+                flicks_testkit::skip("hevc fuzz", &why);
+            }
             continue;
         }
         let Some(seed) = make(&ff, name, enc, args, pix) else {

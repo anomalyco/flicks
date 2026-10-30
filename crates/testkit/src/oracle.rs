@@ -119,6 +119,12 @@ pub fn skip(context: &str, reason: &str) {
     eprintln!("SKIPPED ({context}): {reason}");
 }
 
+/// Report a skip for something only some ffmpeg builds have (libkvazaar, libaom): prints `SKIPPED` and never
+/// fails, even with `FLICKS_REQUIRE_ORACLES=1`. Use [`skip`] for anything every stock ffmpeg has.
+pub fn skip_optional(context: &str, reason: &str) {
+    eprintln!("SKIPPED ({context}): {reason} (optional)");
+}
+
 fn tool_or_skip(name: &str, found: Option<PathBuf>, context: &str) -> Option<PathBuf> {
     if found.is_none() {
         skip(context, &format!("{name} not found (set {} or put {name} on PATH)", env_var(name)));
