@@ -13,4 +13,5 @@ CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_PROFILE_RELEASE_STRIP=debuginfo cargo bu
 rm -rf "$out"
 wasm-bindgen --target web --no-typescript --remove-name-section --out-dir "$out" --out-name app target/wasm32-unknown-unknown/release/flicks_web.wasm
 cp apps/web/index.html apps/web/start.js "$out/"
+cp assets/brand/mark.svg "$out/favicon.svg"
 echo "Built $out ($(wc -c < "$out/app_bg.wasm" | tr -d ' ') bytes of wasm)"

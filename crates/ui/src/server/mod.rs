@@ -492,7 +492,7 @@ fn remove_button(s: &Flicks, key: &str, op: Op) -> El {
         .key(key.to_string())
         .font(style::META)
         .color(if armed { Color::WHITE } else { style::muted() })
-        .fill(if armed { style::accent() } else { Color::TRANSPARENT })
+        .fill(if armed { style::error() } else { Color::TRANSPARENT })
         .py(6.0)
         .px(10.0)
         .radius(6.0)

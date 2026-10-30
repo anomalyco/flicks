@@ -33,10 +33,15 @@ fn rect(element: &Value) -> [f32; 4] {
 fn library_and_server_screens_render_headless() {
     // Each scene: texts it shows, and keyed elements (by prefix) whose box must be drawn.
     let scenes: [(&str, &[&str], &[&str]); 8] = [
-        ("home", &["Continue Watching", "Recently Added", "S1 · E2", "S1 · E6"], &["title-"]),
+        // The featured title over Home's first row.
+        (
+            "home",
+            &["VisionQuest", "Resume", "More Info", "Continue Watching", "S1 · E2  ·  31m left"],
+            &["title-", "play"],
+        ),
         (
             "detail",
-            &["VisionQuest", "2026  ·  2 episodes  ·  4K  ·  HDR", "Resume  S1 · E2", "Episode 2", "Episode 6"],
+            &["VisionQuest", "2026  ·  2 episodes  ·  4K  ·  HDR", "Resume  S1 · E2", "Season 1", "Episode 2"],
             &["play"],
         ),
         ("search", &["S1 · E2", "S1 · E6"], &["title-"]),

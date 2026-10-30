@@ -14,7 +14,10 @@ mod tests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use rune::{AppSpec, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, TextEdit, Tx, col, row, spacer, text};
+use rune::{
+    AppSpec, Color, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, SpringPair, SurfaceFit, TextEdit, Transition, Tx,
+    col, el, row, spacer, text,
+};
 
 pub use library::catalog::{self, Catalog, GroupKey};
 
@@ -79,6 +82,13 @@ pub struct Flicks {
     pub pairing: bool,
     pub pair_error: Option<String>,
     pub play: Option<PlayChoice>,
+    /// The tile the pointer is over, which lifts (its key).
+    pub lifted: Option<String>,
+    /// The season a show's page lists.
+    pub season: Option<u16>,
+    /// Where each Home row is scrolled to, for its arrows: row key to x offset. The rows' scroll
+    /// views write it as they move, without re-running the view.
+    pub row_x: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     pub servers: server::Servers,
     /// Decoded artwork by `<server key>/<name>`.
     pub artwork: HashMap<String, Image>,
@@ -86,6 +96,8 @@ pub struct Flicks {
     /// `requested` oldest first, for evicting.
     order: VecDeque<String>,
     images: Option<ImageCache>,
+    /// The lockup, rasterized once the image cache starts.
+    logo: Option<Image>,
     /// Sends a request to the app's network, once it has started.
     pub network: Option<Box<dyn Fn(Request)>>,
 }
@@ -105,11 +117,15 @@ impl Flicks {
             pairing: false,
             pair_error: None,
             play: None,
+            lifted: None,
+            season: None,
+            row_x: Default::default(),
             servers: server::Servers::default(),
             artwork: HashMap::new(),
             requested: HashSet::new(),
             order: VecDeque::new(),
             images: None,
+            logo: None,
             network: None,
         }
     }
@@ -121,7 +137,11 @@ impl Flicks {
                 self.back = self.screen.clone();
             }
             self.want_backdrop(key);
+            if self.screen != screen {
+                self.season = None;
+            }
         }
+        self.lifted = None;
         if screen == Screen::Search {
             self.query.focused = true;
         }
@@ -270,54 +290,105 @@ pub fn artwork_key(server: &str, name: &str) -> String {
 }
 
 fn view(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
-    let body = match &s.screen {
-        Screen::Home => library::home(s),
-        Screen::Detail(key) => library::detail(s, key),
-        Screen::Search => library::search(s),
-        Screen::AddServer => add_server::view(s),
-        Screen::Servers => server::list(s),
-        Screen::Server(key, tab) => server::view(s, key, *tab),
+    // Home and a title's page run full-bleed under the top bar; the rest start below it.
+    let (name, body, hero) = match &s.screen {
+        Screen::Home => ("home", library::home(s, cx), Some("hero")),
+        Screen::Detail(key) => ("detail", library::detail(s, key), Some("detail-hero")),
+        Screen::Search => ("search", library::search(s), None),
+        Screen::AddServer => ("add-server", add_server::view(s), None),
+        Screen::Servers => ("servers", server::list(s), None),
+        Screen::Server(key, tab) => ("server", server::view(s, key, *tab), None),
     };
-    let mut page = col().w_full().h_full().fill(style::bg()).child(top_bar(s, cx));
+    // The bar turns solid once the hero has scrolled up under it.
+    let solid = hero.and_then(|key| cx.layout_with(key, |r| r[1] + r[3] < style::BAR_H + 160.0)).unwrap_or(true);
+    let body =
+        if hero.is_some() { body } else { col().w_full().h_full().pt(style::BAR_H).child(body.grow(1.0).min_h(0.0)) };
+    let screen = el()
+        .key(format!("screen-{name}"))
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .transition(screen_transition())
+        .child(body.w_full().h_full());
+    let mut page = el().key("root").w_full().h_full().fill(style::bg()).child(screen).child(top_bar(s, cx, solid));
     if let Some(error) = &s.error {
         let line = format!("Couldn't refresh the library: {error}");
-        page = page.child(text(line).font(style::SMALL).color(style::error()).px(style::GUTTER).pb(8.0).truncate());
+        page = page.child(
+            text(line)
+                .key("refresh-error")
+                .absolute(style::GUTTER, style::BAR_H)
+                .font(style::SMALL)
+                .color(style::error())
+                .truncate(),
+        );
     }
-    page.child(body.w_full().grow(1.0).min_h(0.0))
+    page
 }
 
-fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
+/// A screen replacing another: the new one fades up from slightly small, the old one fades out
+/// growing slightly, both on one spring.
+fn screen_transition() -> Transition {
+    let enter = Transition::opacity().combined(Transition::scale(0.97));
+    let exit = Transition::opacity().combined(Transition::scale(1.02));
+    Transition::asymmetric(enter, exit).springs(SpringPair::new(style::SCREEN_SPRING, style::SCREEN_SPRING))
+}
+
+/// The bar floating over every screen: frosted over a hero, solid once the page scrolls.
+fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>, solid: bool) -> El {
     let nav = |label: &'static str, key: &'static str, screen: Screen| {
         let on = s.screen == screen;
         text(label)
             .key(key)
             .font(style::NAV)
-            .color(if on { style::text() } else { style::muted() })
-            .py(6.0)
-            .px(10.0)
-            .radius(6.0)
+            .color(if on { style::text() } else { style::text().alpha(0.7) })
+            .fill(if on { style::glass() } else { Color::TRANSPARENT })
+            .py(7.0)
+            .px(14.0)
+            .radius(16.0)
             .hover(style::faint())
             .cursor(Cursor::Pointer)
             .focusable(true)
+            // The bar comes after the screen in the tree, to draw over it, but first for Tab.
+            .tab_index(1)
             .on_press(move |s: &mut Flicks| s.go(screen.clone()))
     };
     let left = (cx.titlebar_inset() + 16.0).max(style::GUTTER);
     let servers = s.servers.any_admin().then(|| nav("Servers", "nav-servers", Screen::Servers));
+    // Behind the bar: frosted glass, lightly tinted over a hero, and the page colour over it
+    // once the page scrolls (its opacity springs).
+    let frost = el().absolute(0.0, 0.0).w_full().h_full().backdrop_blur(30.0).fill(style::bg().alpha(0.22));
+    let fill =
+        el().absolute(0.0, 0.0).w_full().h_full().fill(style::bg().alpha(0.94)).opacity(if solid { 1.0 } else { 0.0 });
     row()
         .key("top-bar")
+        .absolute(0.0, 0.0)
         .w_full()
-        .h(56.0)
+        .h(style::BAR_H)
         .pl(left)
-        .pr(style::GUTTER - 10.0)
-        .gap(6.0)
+        .pr(style::GUTTER - 14.0)
+        .gap(4.0)
         .center_y()
         .window_drag()
-        .child(text("FLICKS").font(style::BRAND).color(style::accent()).mr(18.0))
+        .child(frost)
+        .child(fill)
+        .child(logo(s).mr(22.0))
         .child(nav("Home", "nav-home", Screen::Home))
         .child(nav("Search", "nav-search", Screen::Search))
         .child(spacer())
         .children(servers)
         .child(nav("Add Server", "nav-add-server", Screen::AddServer))
+}
+
+/// The lockup, drawn from its SVG at three device pixels a point so it stays sharp on every
+/// screen.
+const LOCKUP: &[u8] = include_bytes!("../../../assets/brand/lockup.svg");
+
+fn logo(s: &Flicks) -> El {
+    let mut logo = el().key("logo").size(style::LOGO_W, style::LOGO_H).label("Flicks");
+    if let Some(image) = &s.logo {
+        logo = logo.pixels_fit(image.pixels(), SurfaceFit::Fit);
+    }
+    logo
 }
 
 fn on_key(s: &mut Flicks, event: &KeyEvent, _: &mut Tx) -> bool {
@@ -351,7 +422,11 @@ pub fn spec() -> AppSpec<Flicks> {
     AppSpec {
         min_size: Some((720.0, 480.0)),
         scenes: library::fixture::SCENES,
-        setup: Some(|s, waker| s.images = Some(ImageCache::new(waker))),
+        setup: Some(|s, waker| {
+            let images = ImageCache::new(waker);
+            s.logo = Some(images.svg(LOCKUP, style::LOGO_W, 3.0));
+            s.images = Some(images);
+        }),
         on_key: Some(on_key),
         ..AppSpec::new("Flicks", (1180.0, 760.0), Flicks::new, view)
     }
