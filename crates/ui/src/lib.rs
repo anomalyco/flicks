@@ -217,6 +217,10 @@ impl Flicks {
         self.refreshed = refreshed;
         self.error = error;
         self.status = Status::Ready;
+        self.catalog_artwork();
+    }
+
+    fn catalog_artwork(&mut self) {
         self.search_changed();
         let shown: Vec<usize> = self.catalog.rows.iter().flat_map(|r| r.titles.iter().copied()).collect();
         for t in shown {

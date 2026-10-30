@@ -223,11 +223,7 @@ impl Flicks {
     /// The library after a progress save: Continue Watching and the title pages show it.
     pub fn progress_saved(&mut self, catalog: Catalog, _: &mut Tx) {
         self.catalog = catalog;
-        self.search_changed();
-        let shown: Vec<usize> = self.catalog.rows.iter().flat_map(|r| r.titles.iter().copied()).collect();
-        for t in shown {
-            self.want_poster(t);
-        }
+        self.catalog_artwork();
     }
 }
 
