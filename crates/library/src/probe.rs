@@ -92,11 +92,10 @@ fn hdr(transfer: Option<u64>) -> Option<&'static str> {
 }
 
 fn mkv(file: &File) -> io::Result<Parts> {
-    let mut demux = matroska::Demuxer::new(file).map_err(io::Error::other)?;
-    let doc = demux.file();
+    let doc = matroska::open(file).map_err(io::Error::other)?;
     let duration_ms = doc.duration_ns().map(|ns| ns / 1_000_000);
-    let video_index = demux.tracks().iter().position(|t| t.kind == TrackKind::Video);
-    let video = video_index.and_then(|i| demux.tracks().get(i)).and_then(|t| {
+    let video_index = doc.tracks.iter().position(|t| t.kind == TrackKind::Video);
+    let video = video_index.and_then(|i| doc.tracks.get(i)).and_then(|t| {
         let v = t.video.as_ref()?;
         Some(Video {
             codec: t.codec.name(),
@@ -105,8 +104,8 @@ fn mkv(file: &File) -> io::Result<Parts> {
             hdr: hdr(v.color.as_ref().and_then(|c| c.transfer_characteristics)),
         })
     });
-    let streams = demux
-        .tracks()
+    let streams = doc
+        .tracks
         .iter()
         .filter_map(|t| {
             let kind = match t.kind {
@@ -128,11 +127,8 @@ fn mkv(file: &File) -> io::Result<Parts> {
     // Only from Cues: without them the demuxer would scan every Cluster, and a library scan
     // never does that. Such a file has no index and a player builds one on open.
     let mut keyframes = Keyframes::default();
-    if let Some(i) = video_index
-        && let Some(number) = demux.tracks().get(i).map(|t| t.number)
-        && demux.file().cues.iter().any(|c| c.positions.iter().any(|p| p.track == number))
-    {
-        for k in demux.keyframe_index(i).map_err(io::Error::other)? {
+    if let Some(i) = video_index {
+        for k in doc.cue_keyframes(i) {
             keyframes.push(u64::try_from(k.pts_ns).unwrap_or(0) / 1_000_000, k.cluster_offset);
         }
     }

@@ -64,12 +64,40 @@ fn open(root: &str, path: &str) -> io::Result<File> {
         if std::fs::symlink_metadata(part)?.file_type().is_symlink() {
             return Err(denied());
         }
+        if part == root {
+            break;
+        }
     }
     let file = File::open(real)?;
     if !file.metadata()?.is_file() {
         return Err(denied());
     }
     Ok(file)
+}
+
+pub(super) async fn artwork(state: &State, name: &str) -> Result<Reply, Error> {
+    let Some(id) =
+        name.strip_prefix("w342-").or_else(|| name.strip_prefix("w780-")).and_then(|s| s.strip_suffix(".jpg"))
+    else {
+        return Ok(status(StatusCode::BAD_REQUEST));
+    };
+    if !super::image_id(id) {
+        return Ok(status(StatusCode::BAD_REQUEST));
+    }
+    let root = state.data_dir.join("artwork");
+    let path = root.join(name);
+    let opened = tokio::task::spawn_blocking(move || open(&root.to_string_lossy(), &path.to_string_lossy()))
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let file = match opened {
+        Ok(file) => file,
+        Err(error) => return Ok(io_status(error)),
+    };
+    let len = file.metadata()?.len();
+    let mut reply = Response::new(FileBody { file: tokio::fs::File::from_std(file), remaining: len }.boxed());
+    insert(&mut reply, CONTENT_LENGTH, len.to_string())?;
+    reply.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+    Ok(reply)
 }
 
 fn io_status(error: io::Error) -> Reply {
@@ -231,19 +259,16 @@ fn headers(file: &mut File, container: &str, size: u64) -> io::Result<Vec<Range>
     if container == "mp4" {
         let mut offset = 0;
         let mut moov = false;
-        for _ in 0..100_000 {
-            if offset == size {
-                break;
-            }
+        while size.saturating_sub(offset) >= 8 {
             let h = BoxHeader::parse(&read_header(file, offset, size)?).map_err(|_| invalid())?;
             let len = h.size.unwrap_or(size - offset);
-            let end = offset.checked_add(len).filter(|&end| end <= size).ok_or_else(invalid)?;
+            let end = offset.saturating_add(len).min(size);
             let full = h.kind == b"moov" || h.kind == b"ftyp";
             moov |= h.kind == b"moov";
             ranges.push(Range { start: offset, end: if full { end - 1 } else { offset + h.header_len - 1 } });
             offset = end;
         }
-        if offset != size || !moov {
+        if !moov {
             return Err(invalid());
         }
     } else {
@@ -253,26 +278,24 @@ fn headers(file: &mut File, container: &str, size: u64) -> io::Result<Vec<Range>
             ranges.push(Range { start: 0, end: end - 1 });
         }
         for entry in &doc.seek_head {
-            use matroska::element_ids::{CUES, INFO, TRACKS};
-            if !matches!(entry.id, INFO | TRACKS | CUES) {
+            use matroska::element_ids::{CHAPTERS, CUES, INFO, SEEK_HEAD, TRACKS};
+            if !matches!(entry.id, INFO | TRACKS | CUES | SEEK_HEAD | CHAPTERS) {
                 continue;
             }
-            let start = doc.segment_data_start.checked_add(entry.position).ok_or_else(invalid)?;
-            let bytes = read_header(file, start, size)?;
-            let (id, il) = matroska::ebml::read_id(&bytes).ok_or_else(invalid)?;
-            let (matroska::ebml::Size::Known(len), sl) =
-                matroska::ebml::read_size(bytes.get(il..).ok_or_else(invalid)?).ok_or_else(invalid)?
-            else {
-                return Err(invalid());
+            let Some(start) = doc.segment_data_start.checked_add(entry.position) else { continue };
+            let Ok(bytes) = read_header(file, start, size) else { continue };
+            let Some((id, il)) = matroska::ebml::read_id(&bytes) else { continue };
+            let Some(tail) = bytes.get(il..) else { continue };
+            let Some((matroska::ebml::Size::Known(len), sl)) = matroska::ebml::read_size(tail) else {
+                continue;
             };
             if id != entry.id {
-                return Err(invalid());
+                continue;
             }
-            let end = start
-                .checked_add((il + sl) as u64)
-                .and_then(|n| n.checked_add(len))
-                .filter(|&n| n <= size)
-                .ok_or_else(invalid)?;
+            let Some(end) = start.checked_add((il + sl) as u64).and_then(|n| n.checked_add(len)).filter(|&n| n <= size)
+            else {
+                continue;
+            };
             ranges.push(Range { start, end: end - 1 });
         }
     }
@@ -293,6 +316,45 @@ fn headers(file: &mut File, container: &str, size: u64) -> io::Result<Vec<Range>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_above_the_root_do_not_block_serving() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real/library");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("movie"), b"media").unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(dir.path().join("real"), &alias).unwrap();
+        let root = alias.join("library");
+        assert!(open(root.to_str().unwrap(), root.join("movie").to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn mp4_header_mutations_stay_in_bounds() {
+        use std::io::Write;
+        let original = b"\0\0\0\x08moov\0\0\0\x10freepadding!";
+        let mut cases: Vec<_> = (0..=original.len()).map(|len| original[..len].to_vec()).collect();
+        for i in 0..original.len() {
+            for bit in 0..8 {
+                let mut bytes = original.to_vec();
+                bytes[i] ^= 1 << bit;
+                cases.push(bytes);
+            }
+        }
+        let mut file = tempfile::tempfile().unwrap();
+        for bytes in cases {
+            file.set_len(0).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            file.write_all(&bytes).unwrap();
+            if let Ok(ranges) = headers(&mut file, "mp4", bytes.len() as u64) {
+                assert!(!ranges.is_empty());
+                for r in ranges {
+                    assert!(r.start <= r.end && r.end < bytes.len() as u64);
+                }
+            }
+        }
+    }
 
     #[test]
     fn range_mutations_stay_in_bounds() {

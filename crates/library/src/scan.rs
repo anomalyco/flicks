@@ -47,7 +47,7 @@ impl Scanner {
         let root = fs::canonicalize(root)?;
         let mut report = ScanReport::default();
         self.walk(conn, &root, &root, 0, &mut report)?;
-        self.match_pending(conn)?;
+        self.match_pending(conn, &[root])?;
         Ok(report)
     }
 
@@ -67,7 +67,7 @@ impl Scanner {
             };
             self.walk(conn, root, dir, 0, &mut report)?;
         }
-        self.match_pending(conn)?;
+        self.match_pending(conn, &roots)?;
         Ok(report)
     }
 
@@ -83,7 +83,14 @@ impl Scanner {
         if depth > MAX_DEPTH {
             return Ok(());
         }
-        let entries = match list(dir, root) {
+        // A watcher can report a directory that was replaced with a link since the last scan.
+        for part in dir.ancestors().take_while(|p| *p != root) {
+            if fs::symlink_metadata(part).is_ok_and(|m| m.file_type().is_symlink()) {
+                report.removed += catalog::remove_subtree(conn, dir_s)?;
+                return Ok(());
+            }
+        }
+        let entries = match list(dir) {
             Ok(entries) => entries,
             // The library folder itself failing means an unmounted drive or a wrong path, not an
             // empty library: leave the catalog alone.
@@ -176,9 +183,12 @@ impl Scanner {
 
     /// Looks up files that haven't been tried on TMDB. A failed request stops the pass: the files
     /// stay unmatched and the next scan tries again. Without a client nothing happens.
-    fn match_pending(&self, conn: &mut Connection) -> Result<(), Error> {
+    fn match_pending(&self, conn: &mut Connection, roots: &[PathBuf]) -> Result<(), Error> {
         let Some(tmdb) = &self.tmdb else { return Ok(()) };
-        let pending = catalog::pending(conn)?;
+        let mut pending = Vec::new();
+        for root in roots {
+            pending.extend(catalog::pending(conn, root)?);
+        }
         let mut found: HashMap<(String, Option<u16>, bool), Option<Match>> = HashMap::new();
         let mut done = Vec::new();
         for (id, parsed) in pending {
@@ -200,7 +210,7 @@ impl Scanner {
         Ok(())
     }
 
-    /// Best effort: serving a poster that is missing downloads it then.
+    /// Best effort: unavailable artwork does not prevent cataloging a match.
     fn cache_art(&self, tmdb: &Tmdb, m: &Match) {
         if let Some(p) = &m.poster {
             let _ = cache_artwork(tmdb, &self.artwork_dir, ArtworkKind::Poster, p);
@@ -226,15 +236,14 @@ struct Entry {
     mtime_ns: i64,
 }
 
-/// The videos and subfolders of `dir`, by name. Hidden names are skipped, and so are links that
-/// leave `root` and links to folders.
-fn list(dir: &Path, root: &Path) -> io::Result<Vec<Entry>> {
+/// The videos and subfolders of `dir`, by name. Hidden names and all symlinks are skipped.
+fn list(dir: &Path) -> io::Result<Vec<Entry>> {
     let mut out = Vec::new();
     for ent in fs::read_dir(dir)? {
         let Ok(ent) = ent else { continue };
         let Ok(name) = ent.file_name().into_string() else { continue };
         let Ok(kind) = ent.file_type() else { continue };
-        if name.starts_with('.') {
+        if name.starts_with('.') || kind.is_symlink() {
             continue;
         }
         let path = ent.path();
@@ -242,12 +251,7 @@ fn list(dir: &Path, root: &Path) -> io::Result<Vec<Entry>> {
             out.push(Entry { name, path, is_dir: true, size: 0, mtime_ns: 0 });
             continue;
         }
-        let meta = if kind.is_symlink() {
-            match resolve(root, &path).and_then(|real| fs::metadata(real).ok()) {
-                Some(m) if m.is_file() => m,
-                _ => continue,
-            }
-        } else if kind.is_file() {
+        let meta = if kind.is_file() {
             let Ok(m) = ent.metadata() else { continue };
             m
         } else {

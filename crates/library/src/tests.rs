@@ -73,7 +73,7 @@ fn probes_mkv() {
     let report = scanner().scan(&mut conn, dir.path()).unwrap();
     assert_eq!((report.added, report.opened, report.failed), (1, 1, 0));
 
-    let it = &by_root(&conn, &fs::canonicalize(dir.path()).unwrap()).unwrap()[0];
+    let it = item(&conn, 1).unwrap().unwrap();
     assert_eq!((it.title.as_str(), it.year), ("Movie", Some(2010)));
     assert_eq!(it.container, "mkv");
     assert_eq!((it.video_codec.as_deref(), it.width, it.height), (Some("h264"), Some(1920), Some(1080)));
@@ -97,7 +97,7 @@ fn probes_mp4() {
     write(&dir.path().join("Clip.mp4"), &mp4(4));
     let mut conn = db();
     scanner().scan(&mut conn, dir.path()).unwrap();
-    let it = &recent(&conn, 10).unwrap()[0];
+    let it = item(&conn, 1).unwrap().unwrap();
     assert_eq!(it.container, "mp4");
     assert_eq!((it.video_codec.as_deref(), it.width, it.height), (Some("h264"), Some(1280), Some(720)));
     assert_eq!(it.duration_ms, Some(4000));
@@ -155,15 +155,13 @@ fn episodes_are_named_from_their_path() {
     write(&dir.path().join("Severance (2022)/Season 02/Severance - S02E03.mkv"), &mkv(1));
     let mut conn = db();
     scanner().scan(&mut conn, dir.path()).unwrap();
-    let it = &recent(&conn, 1).unwrap()[0];
+    let it = item(&conn, 1).unwrap().unwrap();
     assert_eq!((it.title.as_str(), it.season, it.episode, it.tmdb_id), ("Severance", Some(2), Some(3), None));
-    assert_eq!(search(&conn, "severa", 10).unwrap().len(), 1);
-    assert_eq!(search(&conn, "nothing", 10).unwrap().len(), 0);
 }
 
 #[cfg(unix)]
 #[test]
-fn links_out_of_the_library_are_skipped() {
+fn all_symlinks_are_skipped() {
     let outside = tempfile::tempdir().unwrap();
     write(&outside.path().join("Secret.mkv"), &mkv(1));
     write(&outside.path().join("dir/Hidden.mkv"), &mkv(1));
@@ -172,18 +170,16 @@ fn links_out_of_the_library_are_skipped() {
     std::os::unix::fs::symlink(outside.path().join("Secret.mkv"), dir.path().join("Link.mkv")).unwrap();
     std::os::unix::fs::symlink(outside.path().join("dir"), dir.path().join("Folder")).unwrap();
     std::os::unix::fs::symlink(dir.path().join("Inside.mkv"), dir.path().join("Alias.mkv")).unwrap();
+    std::os::unix::fs::symlink(dir.path(), dir.path().join("Loop")).unwrap();
     let mut conn = db();
     let report = scanner().scan(&mut conn, dir.path()).unwrap();
-    let mut names: Vec<String> = recent(&conn, 10)
-        .unwrap()
-        .iter()
-        .map(|i| Path::new(&i.path).file_name().unwrap().to_string_lossy().into())
-        .collect();
-    names.sort();
-    assert_eq!(names, ["Alias.mkv", "Inside.mkv"]);
-    assert_eq!(report.opened, 2);
+    assert_eq!(count(&conn), 1);
+    assert_eq!(Path::new(&item(&conn, 1).unwrap().unwrap().path).file_name().unwrap(), "Inside.mkv");
+    assert_eq!(report.opened, 1);
 
     let root = fs::canonicalize(dir.path()).unwrap();
+    scanner().scan_changed(&mut conn, std::slice::from_ref(&root), &[root.join("Folder"), root.join("Loop")]).unwrap();
+    assert_eq!(count(&conn), 1, "watcher-reported symlink directories are skipped too");
     assert!(resolve(&root, &dir.path().join("Alias.mkv")).is_some());
     assert!(resolve(&root, &dir.path().join("Link.mkv")).is_none());
 }
@@ -253,13 +249,13 @@ fn matches_on_tmdb_once_per_title_and_works_without_a_key() {
     // and two images.
     assert_eq!(requests.load(Ordering::SeqCst), 5);
     assert_eq!(pending_count(&conn), 0);
-    let shows: Vec<Item> = search(&conn, "severance", 10).unwrap();
+    let shows: Vec<Item> = (2..=4).map(|id| item(&conn, id).unwrap().unwrap()).collect();
     assert_eq!(shows.len(), 3);
     assert!(shows.iter().all(|i| i.tmdb_id == Some(95396) && i.poster.as_deref() == Some("/p1.jpg")));
     assert_eq!(shows.iter().map(|i| i.episode).collect::<Vec<_>>(), [Some(1), Some(2), Some(3)]);
     assert!(art.path().join("w342-p1.jpg").is_file());
-    let home = search(&conn, "home video", 10).unwrap();
-    assert_eq!((home.len(), home[0].tmdb_id), (1, None));
+    let home = item(&conn, 1).unwrap().unwrap();
+    assert_eq!((home.title.as_str(), home.tmdb_id), ("Home Video", None));
 
     // Settled: another scan makes no requests.
     with_key.scan(&mut conn, dir.path()).unwrap();
@@ -294,13 +290,37 @@ fn a_new_file_appears_within_two_seconds() {
     while start.elapsed() < Duration::from_secs(2) && !seen {
         if let Ok(dirs) = rx.recv_timeout(Duration::from_millis(50)) {
             scanner().scan_changed(&mut conn, &roots, &dirs).unwrap();
-            seen = !search(&conn, "new movie", 1).unwrap().is_empty();
+            seen = count(&conn) == 2;
         }
     }
     let took = start.elapsed();
     println!("new file visible after {took:?}");
     assert!(seen, "not in the catalog after {took:?}");
     assert!(took < Duration::from_secs(2));
+}
+
+#[test]
+fn removed_roots_are_not_matched_and_are_pruned() {
+    let removed = tempfile::tempdir().unwrap();
+    let retained = tempfile::tempdir().unwrap();
+    write(&removed.path().join("Old/Severance - S01E01.mkv"), &mkv(1));
+    let mut conn = db();
+    scanner().scan(&mut conn, removed.path()).unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let with_key = Scanner::new(Some(tmdb(requests.clone())), retained.path().join("art"));
+    with_key.scan(&mut conn, retained.path()).unwrap();
+    with_key.scan_changed(&mut conn, &[fs::canonicalize(retained.path()).unwrap()], &[]).unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 0, "unconfigured files must never be looked up");
+    write(&retained.path().join("Kept.mkv"), &mkv(1));
+    scanner().scan(&mut conn, retained.path()).unwrap();
+    retain_roots(&mut conn, &[fs::canonicalize(retained.path()).unwrap()]).unwrap();
+    assert_eq!(count(&conn), 1);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM library_streams", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM library_dirs", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    retain_roots(&mut conn, &[]).unwrap();
+    assert_eq!(count(&conn), 0);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM library_streams", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM library_dirs", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
 }
 
 /// The 10,000-file first scan recorded in docs/perf.md:
