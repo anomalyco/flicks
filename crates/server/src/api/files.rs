@@ -76,8 +76,11 @@ pub(super) fn open(root: &str, path: &str) -> io::Result<File> {
 }
 
 pub(super) async fn artwork(state: &State, name: &str) -> Result<Reply, Error> {
-    let Some(id) =
-        name.strip_prefix("w342-").or_else(|| name.strip_prefix("w780-")).and_then(|s| s.strip_suffix(".jpg"))
+    let Some(id) = name
+        .strip_prefix("w342-")
+        .or_else(|| name.strip_prefix("w780-"))
+        .or_else(|| name.strip_prefix("still-"))
+        .and_then(|s| s.strip_suffix(".jpg"))
     else {
         return Ok(status(StatusCode::BAD_REQUEST));
     };

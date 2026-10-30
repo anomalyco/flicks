@@ -124,7 +124,7 @@ pub struct Item {
     pub tmdb_id: Option<u64>,
     /// `movie` or `tv` when matched.
     pub tmdb_media: Option<String>,
-    /// TMDB image paths, for `metadata::cache_artwork`.
+    /// TMDB image paths, for `metadata::cache_artwork`; a backdrop may be a local `still-*.jpg`.
     pub poster: Option<String>,
     pub backdrop: Option<String>,
     pub added_at: i64,
@@ -272,7 +272,9 @@ pub(crate) fn upsert(conn: &Connection, f: &NewFile, now: i64) -> Result<(), Err
              dir = excluded.dir, root = excluded.root, size = excluded.size, mtime_ns = excluded.mtime_ns,
              oshash = excluded.oshash, container = excluded.container, duration_ms = excluded.duration_ms,
              video_codec = excluded.video_codec, width = excluded.width, height = excluded.height,
-             hdr = excluded.hdr, keyframes = excluded.keyframes
+             hdr = excluded.hdr, keyframes = excluded.keyframes,
+             backdrop = CASE WHEN oshash != excluded.oshash AND backdrop LIKE 'still-%'
+                 THEN NULL ELSE backdrop END
          RETURNING id",
         params![
             f.path,

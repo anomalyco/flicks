@@ -207,6 +207,9 @@ fn image_id(id: &str) -> bool {
 }
 
 fn artwork_name(path: Option<&str>, size: &str) -> Option<String> {
+    if let Some(name) = path.filter(|name| crate::stills::valid_name(name)) {
+        return Some(name.to_string());
+    }
     let id = path?.strip_prefix('/')?.strip_suffix(".jpg")?;
     image_id(id).then(|| format!("{size}-{id}.jpg"))
 }

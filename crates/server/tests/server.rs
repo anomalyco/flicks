@@ -22,6 +22,240 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+/// Exercise the shipped worker, not a fixture decoder. Each child is reaped even on a hang.
+fn still_worker(path: &Path, output: &Path, times: &[u32]) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let exe = std::env::var_os("FLICKS_STILL_EXE").unwrap_or_else(|| env!("CARGO_BIN_EXE_flicks").into());
+    #[cfg(unix)]
+    let mut command = {
+        let mut c = Command::new("nice");
+        c.args(["-n", "19"]).arg(exe);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut command = Command::new(exe);
+    let mut child = command
+        .arg("--still-worker")
+        .env("RAYON_NUM_THREADS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let job = serde_json::json!({"root":path.parent().unwrap(), "path":path, "size":path.metadata().unwrap().len(),
+        "times":times, "output":output});
+    child.stdin.take().unwrap().write_all(&serde_json::to_vec(&job).unwrap()).unwrap();
+    let begin = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status.success();
+        }
+        if begin.elapsed() > Duration::from_secs(5) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("still worker exceeded deadline");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn stills_software_codecs_and_hostile_files() {
+    use std::process::Command;
+    let ffmpeg = flicks_testkit::require_ffmpeg!();
+    let dir = tempfile::tempdir().unwrap();
+    let jpg = dir.path().join("still.jpg");
+    for (codec, ext) in [("libx264", "mp4"), ("libx265", "mp4"), ("libvpx-vp9", "webm"), ("libsvtav1", "mp4")] {
+        let path = dir.path().join(format!("{codec}.{ext}"));
+        let result = Command::new(&ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x96:rate=12",
+                "-t",
+                "2",
+                "-c:v",
+                codec,
+                "-g",
+                "12",
+                "-pix_fmt",
+                "yuv420p",
+                "-threads",
+                "1",
+                "-y",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        assert!(still_worker(&path, &jpg, &[400, 1200]), "{codec}");
+        let image = image::open(&jpg).unwrap().to_rgb8();
+        assert_eq!(image.width() * 9, image.height() * 16);
+        assert!(image.width() <= 1280);
+        let bytes = std::fs::read(&path).unwrap();
+        let bad = dir.path().join("truncated.mp4");
+        for length in [0, 4, 32, bytes.len() / 2] {
+            std::fs::write(&bad, &bytes[..length]).unwrap();
+            let _ = still_worker(&bad, &jpg, &[400]); // partial MKVs may still contain a valid frame
+        }
+    }
+    let black = dir.path().join("black.mp4");
+    assert!(
+        Command::new(&ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:size=160x96:rate=12",
+                "-t",
+                "2",
+                "-c:v",
+                "libx264",
+                "-g",
+                "12",
+                "-y"
+            ])
+            .arg(&black)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::remove_file(&jpg).unwrap();
+    assert!(!still_worker(&black, &jpg, &[0, 400, 800, 1200]));
+    assert!(!jpg.exists());
+    let audio = dir.path().join("audio.mp4");
+    assert!(
+        Command::new(&ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "1", "-c:a", "aac", "-y"])
+            .arg(&audio)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(!still_worker(&audio, &jpg, &[200]));
+    assert!(!jpg.exists());
+    // The first indexed candidate is black; a later keyframe must be tried.
+    let later = dir.path().join("later.mp4");
+    assert!(
+        Command::new(&ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:size=160x96:rate=12:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x96:rate=12:duration=1",
+                "-filter_complex",
+                "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+                "-map",
+                "[v]",
+                "-c:v",
+                "libx264",
+                "-g",
+                "12",
+                "-y"
+            ])
+            .arg(&later)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(still_worker(&later, &jpg, &[0, 1200]));
+}
+
+/// Opt-in measurement against read-only real media; all catalog/artwork writes use a temp dir.
+#[tokio::test]
+#[ignore = "set FLICKS_STILLS_MEDIA to a read-only media directory"]
+async fn stills_real_media() {
+    use http_body_util::BodyExt;
+    use std::time::Instant;
+    let root = std::env::var("FLICKS_STILLS_MEDIA").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path(), 0).unwrap();
+    flicks_server::api::migrate(&state).await.unwrap();
+    let artwork = dir.path().join("artwork");
+    std::fs::create_dir_all(&artwork).unwrap();
+    let tmdb = flicks_metadata::Tmdb::from_env();
+    let keyed = tmdb.is_some();
+    let began = Instant::now();
+    let ids = state
+        .db
+        .call(move |conn| {
+            flicks_server::db::add_folder(conn, &root)?;
+            let report = flicks_library::Scanner::new(tmdb, artwork).scan(conn, Path::new(&root)).unwrap();
+            assert_eq!(report.failed, 0);
+            let mut stmt = conn.prepare("SELECT id FROM library_files ORDER BY episode")?;
+            Ok(stmt.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?)
+        })
+        .await
+        .unwrap();
+    println!("scan: {} ms, {} files, TMDB={keyed}", began.elapsed().as_millis(), ids.len());
+    assert!(!ids.is_empty());
+    for id in ids {
+        let (item, keys) = state
+            .db
+            .call(move |conn| {
+                Ok((flicks_library::item(conn, id).unwrap().unwrap(), flicks_library::keyframes(conn, id).unwrap()))
+            })
+            .await
+            .unwrap();
+        if item.backdrop.is_some() {
+            assert!(keyed);
+            println!("episode {:?}: TMDB backdrop wins (no frame decode)", item.episode);
+            continue;
+        }
+        let duration = item.duration_ms.unwrap();
+        let times: Vec<_> = [20, 25, 15, 30]
+            .into_iter()
+            .filter_map(|percent| {
+                keys.iter().rev().find(|k| u64::from(k.time_ms) <= duration * percent / 100).map(|k| k.time_ms)
+            })
+            .collect();
+        let name = format!("still-{}.jpg", item.oshash);
+        let output = dir.path().join("artwork").join(&name);
+        let mut elapsed = Vec::new();
+        for _ in 0..5 {
+            let started = Instant::now();
+            assert!(still_worker(Path::new(&item.path), &output, &times));
+            elapsed.push(started.elapsed().as_millis());
+        }
+        let image = image::open(&output).unwrap();
+        println!(
+            "episode {:?}: {:?} ms, {}x{}, {} bytes",
+            item.episode,
+            elapsed,
+            image.width(),
+            image.height(),
+            output.metadata().unwrap().len()
+        );
+        state
+            .db
+            .call(move |conn| {
+                conn.execute("UPDATE library_files SET backdrop=?1 WHERE id=?2", rusqlite::params![name, id])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let path = format!("/artwork/still-{}.jpg", item.oshash);
+        let auth = sign(&state.key, &state.public, "GET", &path, b"", b"", flicks_server::unix_now());
+        let reply = server::handle(&state, signed_request(Method::GET, &path, &auth, None, b"")).await;
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert_eq!(reply.headers()["content-type"], "image/jpeg");
+        assert_eq!(reply.into_body().collect().await.unwrap().to_bytes().as_ref(), std::fs::read(&output).unwrap());
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hls_forged_tokens_never_wait_for_database_and_are_rate_limited() {
     let server = start("hls-forgery").await;
@@ -1200,6 +1434,24 @@ async fn catalog_play_ranges_and_private_progress() {
     assert_eq!(reply.headers()["content-type"], "image/jpeg");
     assert_eq!(reply.into_body().collect().await.unwrap().to_bytes().as_ref(), jpeg);
     assert_eq!(server::handle(&server.state, get(art_path)).await.status(), StatusCode::UNAUTHORIZED);
+    std::fs::write(art.join("still-0123456789abcdef.jpg"), jpeg).unwrap();
+    server
+        .state
+        .db
+        .call(move |conn| {
+            conn.execute("UPDATE library_files SET backdrop='still-0123456789abcdef.jpg' WHERE id=?1", [id])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let detail: Value = viewer.call(Method::GET, &format!("/items/{id}"), None::<&()>).await.unwrap();
+    assert_eq!(detail["item"]["backdrop"], "still-0123456789abcdef.jpg");
+    let list: Value = viewer.call(Method::GET, "/items", None::<&()>).await.unwrap();
+    assert_eq!(list[0]["item"], detail["item"]);
+    let reply = api_request(&server.state, &viewer, "/artwork/still-0123456789abcdef.jpg", None).await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert_eq!(reply.headers()["content-type"], "image/jpeg");
+    assert_eq!(reply.into_body().collect().await.unwrap().to_bytes().as_ref(), jpeg);
     for path in [
         "/artwork/../server.key",
         "/artwork/%2e%2e%2fserver.key",
