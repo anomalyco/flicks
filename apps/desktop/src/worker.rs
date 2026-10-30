@@ -95,4 +95,3 @@ async fn refresh(app: &AppHandle<Flicks>, library: &mut Library) {
     app.update(move |s, tx| s.loaded(catalog, error, true, tx));
     crate::admin::refreshed(app, library);
 }
-
