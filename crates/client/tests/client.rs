@@ -170,6 +170,14 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     // The address that answered is saved first, and gets the head start next time.
     assert_eq!(server.addrs[0], setup.addr.to_string());
     assert!(server.addrs.len() > 1);
+    // Artwork bytes come back as cached; a name that would leave `/artwork/` isn't sent.
+    let artwork = setup.state.data_dir.join("artwork");
+    std::fs::create_dir_all(&artwork).unwrap();
+    std::fs::write(artwork.join("w342-abc123.jpg"), b"jpeg bytes").unwrap();
+    let connection = local.connect(&server.key).await.unwrap();
+    assert_eq!(&connection.artwork("w342-abc123.jpg").await.unwrap()[..], b"jpeg bytes");
+    assert!(matches!(connection.artwork("w342-missing.jpg").await, Err(Error::Status(..))));
+    assert!(matches!(connection.artwork("../flicks.db").await, Err(Error::BadResponse)));
 
     // Through the proxy, by name: its certificate is valid for `localhost` under its authority,
     // and the signed probe proves the server is behind it.

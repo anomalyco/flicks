@@ -1,0 +1,22 @@
+[package]
+name = "flicks-desktop"
+description = "Flicks for macOS (Rune): library screens, then the player and Server screens."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+flicks-client = { path = "../../crates/client" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "e450c92b26a6bf4a85304f6ee4a2fe5d55db617b", default-features = false }
+hyper = "1.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.54.1", features = ["rt", "sync"] }
+
+[dev-dependencies]
+flicks-testkit = { path = "../../crates/testkit" }
+serde_json = "1.0.154"

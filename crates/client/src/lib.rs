@@ -353,6 +353,7 @@ fn check(response: &net::Response) -> Result<(), Error> {
 }
 
 /// A server reached at one address that proved it holds the server key.
+#[derive(Clone)]
 pub struct Connection {
     /// The winning `host:port`.
     pub addr: String,
@@ -430,6 +431,17 @@ impl Connection {
             }
         }
         Ok(items)
+    }
+
+    /// The JPEG bytes of an item's `poster` or `backdrop` (`w342-<id>.jpg`) from `/artwork`.
+    pub async fn artwork(&self, name: &str) -> Result<Bytes, Error> {
+        let valid = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'.';
+        if name.is_empty() || name.len() > 80 || !name.bytes().all(valid) {
+            return Err(Error::BadResponse);
+        }
+        let response = self.send(Method::GET, &format!("/artwork/{name}"), None, Vec::new(), true).await?;
+        check(&response)?;
+        Ok(response.body)
     }
 
     /// Bytes `start..=end` of a file, at most [`MAX_READ`]; fewer when the file ends sooner.
