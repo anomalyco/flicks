@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use flicks_client::download::{Downloads, State as DownloadState};
 use flicks_client::merge::{self, Library};
 use flicks_client::{Client, Error, Progress, Server, keys};
 use flicks_server::db::{Device, Folder};
@@ -36,11 +37,14 @@ struct Setup {
 
 /// A server with one generated MP4 in its folder, and a proxy in front of it.
 async fn setup(name: &str) -> Setup {
+    setup_with(name, mp4()).await
+}
+
+async fn setup_with(name: &str, media: Vec<u8>) -> Setup {
     let (addr, state) = server::spawn(&dir(&format!("{name}-server")), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let root =
         flicks_client::Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
     let folder = tempfile::tempdir().unwrap();
-    let media = mp4();
     std::fs::write(folder.path().join("Example (2020).mp4"), &media).unwrap();
     let path = folder.path().to_string_lossy().into_owned();
     let _: Folder = root.call(Method::POST, "/admin/folders", Some(&AddFolder { path })).await.unwrap();
@@ -53,14 +57,18 @@ fn mp4() -> Vec<u8> {
 }
 
 fn mp4_sized(width: u16, height: u16) -> Vec<u8> {
+    mp4_samples(width, height, (0..5).map(|second| vec![second; 100_000]))
+}
+
+fn mp4_samples(width: u16, height: u16, samples: impl Iterator<Item = Vec<u8>>) -> Vec<u8> {
     use flicks_container::isobmff::{
         AvcConfig, Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions,
     };
     let avc = AvcConfig::new(vec![vec![0x67, 0x64, 0, 0x28, 1, 2]], vec![vec![0x68, 3]], 4);
     let mut w = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
     let v = w.add_track(TrackConfig::new(SampleEntry::avc(avc, width, height), 1000)).unwrap();
-    for second in 0..5 {
-        let sample = WriteSample { data: &[second; 100_000], duration: 1000, composition_offset: 0, is_sync: true };
+    for data in samples {
+        let sample = WriteSample { data: &data, duration: 1000, composition_offset: 0, is_sync: true };
         w.write_sample(v, sample).unwrap();
     }
     w.finish().unwrap().into_inner()
@@ -380,4 +388,124 @@ async fn two_servers_merge_into_one_library() {
     let all_down = vec![("Only A".into(), 1, false), ("Only B".into(), 1, false), ("Shared".into(), 2, false)];
     assert_eq!(names(&reopened), all_down);
     assert!(reopened.titles().iter().all(|t| merge::best_source(t).is_none()));
+}
+
+/// Waits (up to 20 s) for `check` to give something.
+async fn until<T>(mut check: impl FnMut() -> Option<T>) -> T {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(found) = check() {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+fn part_files(home: &Path) -> Vec<PathBuf> {
+    let parts = std::fs::read_dir(home.join(flicks_client::download::DIR)).unwrap().flatten();
+    parts.map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "part")).collect()
+}
+
+#[tokio::test]
+async fn downloads_resume_verify_and_keep_progress_offline() {
+    // 40 MB of varied bytes: twenty chunks, so an interruption lands mid-way.
+    let samples = (0..40u32).map(|i| (0..1_000_000u32).map(|j| (j.wrapping_mul(7) ^ (i * 13)) as u8).collect());
+    let media = mp4_samples(1280, 720, samples);
+    let setup = setup_with("download", media.clone()).await;
+    let home = dir("download-client");
+    let mut client = Client::open(&home).unwrap();
+    let server = client.pair(&link(&setup, "ana", setup.addr.to_string()).await, "Laptop").await.unwrap();
+    let mut library = Library::open(client);
+    until_titles(&mut library).await;
+    let title = library.titles()[0].clone();
+    let source = merge::best_source(&title).unwrap().clone();
+    let connection = library.connection(&server.key).unwrap().clone();
+    let total = media.len() as u64;
+    let state = |downloads: &Downloads| downloads.get(&server.key, source.item.id).unwrap();
+
+    // Dropping the manager mid-way is a crash: the partial file stays, and a new manager sees
+    // the download paused at the bytes on disk.
+    let downloads = Downloads::open(&home).unwrap();
+    downloads.start(&connection, &source).unwrap();
+    until(|| (state(&downloads).done >= 4 << 20).then_some(())).await;
+    assert_eq!(state(&downloads).state, DownloadState::Downloading);
+    drop(downloads);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let part = part_files(&home).pop().unwrap();
+    let on_disk = std::fs::metadata(&part).unwrap().len();
+    assert!(on_disk >= 4 << 20 && on_disk < total, "{on_disk} of {total}");
+    let downloads = Downloads::open(&home).unwrap();
+    let paused = state(&downloads);
+    assert_eq!((paused.state, paused.done), (DownloadState::Paused, on_disk));
+    assert_eq!(downloads.local_path(&title), None);
+
+    // Resuming gives a byte-identical copy, with no partial file left.
+    downloads.start(&connection, &source).unwrap();
+    until(|| (state(&downloads).state == DownloadState::Complete).then_some(())).await;
+    let local = downloads.local_path(&title).unwrap();
+    assert_eq!(std::fs::read(&local).unwrap(), media);
+    assert!(part_files(&home).is_empty());
+    assert_eq!(downloads.local_file(&server.key, source.item.id), Some(local.clone()));
+
+    // Removing deletes the copy and its record.
+    downloads.remove(&server.key, source.item.id).await.unwrap();
+    assert!(!local.exists() && downloads.list().is_empty() && downloads.local_path(&title).is_none());
+
+    // Pause keeps the partial copy; a corrupted one is rejected by its hash when it ends, and
+    // deleted.
+    downloads.start(&connection, &source).unwrap();
+    until(|| (state(&downloads).done >= 2 << 20).then_some(())).await;
+    downloads.pause(&server.key, source.item.id).await;
+    let paused = state(&downloads);
+    assert_eq!(paused.state, DownloadState::Paused);
+    assert!(paused.done < total);
+    let part = part_files(&home).pop().unwrap();
+    let mut bytes = std::fs::read(&part).unwrap();
+    bytes[1000] ^= 0xff;
+    std::fs::write(&part, bytes).unwrap();
+    downloads.start(&connection, &source).unwrap();
+    let failed = until(|| matches!(state(&downloads).state, DownloadState::Failed(_)).then(|| state(&downloads))).await;
+    let DownloadState::Failed(why) = failed.state else { panic!() };
+    assert!(why.contains("hash"), "{why}");
+    assert!(part_files(&home).is_empty() && downloads.local_path(&title).is_none());
+    // Trying again starts over and succeeds.
+    downloads.start(&connection, &source).unwrap();
+    until(|| (state(&downloads).state == DownloadState::Complete).then_some(())).await;
+    assert_eq!(std::fs::read(downloads.local_path(&title).unwrap()).unwrap(), media);
+
+    // Progress made while no server answers (a library that hasn't refreshed) is kept, newest
+    // first, and reaches the server on the next refresh.
+    let mut offline = Library::open(Client::open(&home).unwrap());
+    let watched = Progress { position: 90_000, played: false, updated_at: 1_700_000_000_000 };
+    downloads.set_progress(&server.key, source.item.id, watched).unwrap();
+    let older = Progress { position: 1, updated_at: watched.updated_at - 1, ..watched };
+    downloads.set_progress(&server.key, source.item.id, older).unwrap();
+    assert_eq!(downloads.progress(&offline.titles()[0]), Some(watched));
+    assert_eq!(downloads.sync(&offline).await.unwrap(), 0);
+    let saved = |library: &Library| {
+        let connection = library.connection(&server.key).unwrap().clone();
+        async move {
+            let path = format!("/progress/{}", source.item.id);
+            connection.call::<Option<Progress>>(Method::GET, &path, None::<&()>).await.unwrap()
+        }
+    };
+    offline.refresh().await.unwrap();
+    assert_eq!(saved(&offline).await, None);
+    assert_eq!(downloads.sync(&offline).await.unwrap(), 1);
+    assert_eq!(saved(&offline).await, Some(watched));
+    assert_eq!(downloads.sync(&offline).await.unwrap(), 0);
+}
+
+/// Refreshes the library until its first scan has put a title in it.
+async fn until_titles(library: &mut Library) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while library.refresh().await.unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
