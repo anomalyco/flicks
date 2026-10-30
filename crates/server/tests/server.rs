@@ -619,18 +619,27 @@ async fn unauthenticated_routes_fuzzed() {
             assert!(answer.is_empty() || answer.starts_with(b"HTTP/1.1 4"), "{len}");
         }
     }
-    let mut answered = 0;
-    let mut limited = 0;
+    // And it still answers.
+    let response = https(server.addr, pinned(state), get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.unwrap();
+    assert_eq!(response.status, StatusCode::OK);
+}
+
+/// On the paused clock, so how fast this machine answers can't change the count.
+#[tokio::test(start_paused = true)]
+async fn unauthenticated_requests_share_one_rate_limit() {
+    let state = State::open(&data_dir("rate-limit"), 0).unwrap();
+    let mut statuses = Vec::new();
     for _ in 0..40 {
-        let response = https(server.addr, pinned(state), get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.unwrap();
-        match response.status {
-            StatusCode::OK => answered += 1,
-            StatusCode::TOO_MANY_REQUESTS => limited += 1,
-            other => panic!("{other}"),
-        }
+        statuses.push(server::handle(&state, get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.status());
     }
-    // The global limit lets a burst of 20 (plus refill) through and refuses the rest.
-    assert!((20..40).contains(&answered) && limited > 0, "{answered} answered, {limited} limited");
+    // A burst of 20 is answered and the rest refused.
+    assert_eq!(statuses[..20], [StatusCode::OK; 20]);
+    assert_eq!(statuses[20..], [StatusCode::TOO_MANY_REQUESTS; 20]);
+    // It refills at 10 a second.
+    tokio::time::advance(std::time::Duration::from_millis(100)).await;
+    assert_eq!(server::handle(&state, get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.status(), StatusCode::OK);
+    let refused = server::handle(&state, get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.status();
+    assert_eq!(refused, StatusCode::TOO_MANY_REQUESTS);
 }
 
 /// A body that never arrives.
@@ -720,7 +729,7 @@ async fn catalog_ready(client: &Connection, count: usize) -> Vec<serde_json::Val
     .unwrap()
 }
 
-async fn api_request(server: &Server, client: &Connection, path: &str, range: Option<&str>) -> server::Reply {
+async fn api_request(state: &State, client: &Connection, path: &str, range: Option<&str>) -> server::Reply {
     let auth = sign(
         &client.key,
         &client.server_key,
@@ -730,7 +739,7 @@ async fn api_request(server: &Server, client: &Connection, path: &str, range: Op
         b"",
         flicks_server::unix_now(),
     );
-    server::handle(&server.state, signed_request(Method::GET, path, &auth, range, b"")).await
+    server::handle(state, signed_request(Method::GET, path, &auth, range, b"")).await
 }
 
 #[tokio::test]
@@ -761,7 +770,7 @@ async fn catalog_play_ranges_and_private_progress() {
         viewer.call(Method::GET, &format!("/items?library={}&offset=1", folder.id), None::<&()>).await.unwrap();
     assert_eq!(found, json!([]));
     for path in ["/search?q=%GG", "/items?limit=no", "/items?library=-1", "/progress?user=1"] {
-        assert_eq!(api_request(&server, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(api_request(&server.state, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
     }
     let detail: Value = viewer.call(Method::GET, &format!("/items/{id}"), None::<&()>).await.unwrap();
     assert_eq!(detail["streams"][0]["codec"], "aac");
@@ -786,7 +795,7 @@ async fn catalog_play_ranges_and_private_progress() {
     let list: Value = viewer.call(Method::GET, "/items", None::<&()>).await.unwrap();
     assert_eq!(list[0]["item"], detail["item"]);
     let art_path = "/artwork/w342-p1.jpg";
-    let reply = api_request(&server, &viewer, art_path, None).await;
+    let reply = api_request(&server.state, &viewer, art_path, None).await;
     assert_eq!(reply.status(), StatusCode::OK);
     assert_eq!(reply.headers()["content-type"], "image/jpeg");
     assert_eq!(reply.into_body().collect().await.unwrap().to_bytes().as_ref(), jpeg);
@@ -799,13 +808,13 @@ async fn catalog_play_ranges_and_private_progress() {
         "/artwork/w342-.jpg",
         "/artwork/w100-p1.jpg",
     ] {
-        assert_eq!(api_request(&server, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(api_request(&server.state, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
     }
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(server.state.data_dir.join("server.key"), art.join("w342-secret.jpg")).unwrap();
         assert_eq!(
-            api_request(&server, &viewer, "/artwork/w342-secret.jpg", None).await.status(),
+            api_request(&server.state, &viewer, "/artwork/w342-secret.jpg", None).await.status(),
             StatusCode::FORBIDDEN
         );
     }
@@ -872,7 +881,7 @@ async fn catalog_play_ranges_and_private_progress() {
         (Some("bytes=-9999999"), 0, len - 1),
         (Some("bytes=10-9999999"), 10, len - 1),
     ] {
-        let reply = api_request(&server, &viewer, &path, range).await;
+        let reply = api_request(&server.state, &viewer, &path, range).await;
         assert_eq!(reply.status(), if range.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK });
         assert_eq!(reply.headers()["accept-ranges"], "bytes");
         assert_eq!(reply.headers()["content-length"], (end - start + 1).to_string());
@@ -898,7 +907,7 @@ async fn catalog_play_ranges_and_private_progress() {
         "bytes=18446744073709551616-",
         "bytes=+1-2",
     ] {
-        let reply = api_request(&server, &viewer, &path, Some(range)).await;
+        let reply = api_request(&server.state, &viewer, &path, Some(range)).await;
         assert_eq!(reply.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{range}");
         assert_eq!(reply.headers()["content-range"], format!("bytes */{len}"));
     }
@@ -924,8 +933,8 @@ async fn catalog_play_ranges_and_private_progress() {
     std::fs::remove_file(media.path().join("Second.mp4")).unwrap();
     catalog_ready(&viewer, 1).await;
     server.root.call::<()>(Method::DELETE, &format!("/admin/folders/{}", folder.id), None::<&()>).await.unwrap();
-    assert_eq!(api_request(&server, &viewer, &path, None).await.status(), StatusCode::NOT_FOUND);
-    assert_eq!(api_request(&server, &viewer, &format!("/play/{id}"), None).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(api_request(&server.state, &viewer, &path, None).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(api_request(&server.state, &viewer, &format!("/play/{id}"), None).await.status(), StatusCode::NOT_FOUND);
     catalog_ready(&viewer, 0).await;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -964,18 +973,21 @@ async fn catalog_play_ranges_and_private_progress() {
 #[tokio::test]
 async fn catalog_paths_are_checked_at_each_open() {
     use std::os::unix::fs::symlink;
-    let server = start("catalog-paths").await;
+    // No scan worker: under load it could read the folder list after the folder below is added,
+    // then watch it and rescan the files this test swaps out, rewriting the stale entries it checks.
+    let state = State::open(&data_dir("catalog-paths"), 0).unwrap();
+    flicks_server::api::migrate(&state).await.unwrap();
+    // Only signs; requests go straight to `server::handle`.
+    let signer = Connection::pinned(state.key.clone(), state.key.verifying_key(), "unused:0".into()).unwrap();
     let media = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let bytes = catalog_mp4();
     let root = std::fs::canonicalize(media.path()).unwrap();
     let path = root.join("Movie.mp4");
     std::fs::write(&path, &bytes).unwrap();
-    // Populate a real scan, but don't subscribe this test's folder to a watcher: the stale
-    // catalog entry must remain present while we replace its path after scanning.
+    // Populate a real scan; the stale catalog entry must remain while its path is replaced.
     let r = root.clone();
-    let item = server
-        .state
+    let item = state
         .db
         .call(move |conn| {
             flicks_server::db::add_folder(conn, r.to_str().unwrap())?;
@@ -985,15 +997,15 @@ async fn catalog_paths_are_checked_at_each_open() {
         .await
         .unwrap();
     assert_eq!(
-        api_request(&server, &server.root, &format!("/files/{}", item.id), Some("bytes=0-0")).await.status(),
+        api_request(&state, &signer, &format!("/files/{}", item.id), Some("bytes=0-0")).await.status(),
         StatusCode::PARTIAL_CONTENT
     );
     // A truncated-to-empty file is a valid empty 200 without Range; no byte range can satisfy it.
     std::fs::write(&path, []).unwrap();
-    let empty = api_request(&server, &server.root, &format!("/files/{}", item.id), None).await;
+    let empty = api_request(&state, &signer, &format!("/files/{}", item.id), None).await;
     assert_eq!(empty.status(), StatusCode::OK);
     assert_eq!(empty.headers()["content-length"], "0");
-    let empty = api_request(&server, &server.root, &format!("/files/{}", item.id), Some("bytes=0-")).await;
+    let empty = api_request(&state, &signer, &format!("/files/{}", item.id), Some("bytes=0-")).await;
     assert_eq!(empty.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(empty.headers()["content-range"], "bytes */0");
     std::fs::write(outside.path().join("secret"), b"private").unwrap();
@@ -1001,7 +1013,7 @@ async fn catalog_paths_are_checked_at_each_open() {
     symlink(outside.path().join("secret"), &path).unwrap();
     for prefix in ["files", "play"] {
         assert_eq!(
-            api_request(&server, &server.root, &format!("/{prefix}/{}", item.id), None).await.status(),
+            api_request(&state, &signer, &format!("/{prefix}/{}", item.id), None).await.status(),
             StatusCode::FORBIDDEN
         );
     }
@@ -1010,14 +1022,13 @@ async fn catalog_paths_are_checked_at_each_open() {
     std::fs::write(root.join("inside"), &bytes).unwrap();
     symlink(root.join("inside"), &path).unwrap();
     assert_eq!(
-        api_request(&server, &server.root, &format!("/files/{}", item.id), None).await.status(),
+        api_request(&state, &signer, &format!("/files/{}", item.id), None).await.status(),
         StatusCode::FORBIDDEN
     );
     // A directory component repointed after scanning is refused too.
     symlink(outside.path(), root.join("linked")).unwrap();
     let linked = root.join("linked/secret");
-    server
-        .state
+    state
         .db
         .call(move |conn| {
             conn.execute("UPDATE library_files SET path=?1 WHERE id=?2", rusqlite::params![linked.to_str(), item.id])?;
@@ -1026,13 +1037,12 @@ async fn catalog_paths_are_checked_at_each_open() {
         .await
         .unwrap();
     assert_eq!(
-        api_request(&server, &server.root, &format!("/files/{}", item.id), None).await.status(),
+        api_request(&state, &signer, &format!("/files/{}", item.id), None).await.status(),
         StatusCode::FORBIDDEN
     );
     // Lexical traversal in a corrupt/stale catalog cannot escape either.
     let escaped = root.join("..").join(outside.path().file_name().unwrap()).join("secret");
-    server
-        .state
+    state
         .db
         .call(move |conn| {
             conn.execute("UPDATE library_files SET path=?1 WHERE id=?2", rusqlite::params![escaped.to_str(), item.id])?;
@@ -1041,7 +1051,7 @@ async fn catalog_paths_are_checked_at_each_open() {
         .await
         .unwrap();
     assert_eq!(
-        api_request(&server, &server.root, &format!("/files/{}", item.id), None).await.status(),
+        api_request(&state, &signer, &format!("/files/{}", item.id), None).await.status(),
         StatusCode::FORBIDDEN
     );
 }

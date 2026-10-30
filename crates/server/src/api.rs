@@ -28,6 +28,12 @@ fn library_error(error: library::Error) -> Error {
 
 /// Tables exist before accepting requests; slow scans run on a separate connection/thread.
 pub async fn start(state: &Arc<State>) -> Result<(), Error> {
+    migrate(state).await?;
+    scan::start(state)
+}
+
+/// Creates the catalog and progress tables, without starting the scan worker.
+pub async fn migrate(state: &State) -> Result<(), Error> {
     state
         .db
         .call(|conn| {
@@ -45,8 +51,7 @@ pub async fn start(state: &Arc<State>) -> Result<(), Error> {
             )?;
             Ok(())
         })
-        .await?;
-    scan::start(state)
+        .await
 }
 
 pub fn folders_changed(state: &State) {

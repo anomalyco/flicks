@@ -569,17 +569,18 @@ pub fn error(code: StatusCode, message: &str) -> Reply {
     json_bytes(code, serde_json::to_vec(&body).unwrap_or_default())
 }
 
-/// A token bucket shared by every unauthenticated request.
-struct Limiter(Mutex<(f64, Instant)>);
+/// A token bucket shared by every unauthenticated request. It reads tokio's clock (the same as
+/// the system's outside tests) so tests can pause it.
+struct Limiter(Mutex<(f64, tokio::time::Instant)>);
 
 impl Limiter {
     fn new() -> Limiter {
-        Limiter(Mutex::new((RATE_BURST, Instant::now())))
+        Limiter(Mutex::new((RATE_BURST, tokio::time::Instant::now())))
     }
 
     fn allow(&self) -> bool {
         let mut bucket = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
+        let now = tokio::time::Instant::now();
         let refill = now.duration_since(bucket.1).as_secs_f64() * RATE_PER_SECOND;
         *bucket = ((bucket.0 + refill).min(RATE_BURST), now);
         if bucket.0 < 1.0 {
