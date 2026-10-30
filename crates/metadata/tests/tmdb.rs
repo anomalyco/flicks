@@ -1,4 +1,4 @@
-//! TMDB matching against canned responses (`tmdb.json`, see `gen_corpus.py`; the live API is
+//! TMDB matching against canned responses (`tmdb.json`; the live API is
 //! never called) and the artwork cache.
 //!
 //! NOTE: the responses in `tmdb.json` are SYNTHETIC. They follow TMDB's documented v3 search

@@ -23,17 +23,48 @@ impl Parsed {
     }
 }
 
-/// Title key for comparing names: lower case letters and digits only, `&` as "and".
+/// Title key for comparing names: lower case letters and digits only, `&` as "and", common
+/// Latin accents folded ("Shōgun" and "Amélie" match "Shogun" and "Amelie").
 pub fn normalize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c == '&' {
             out.push_str("and");
         } else if c.is_alphanumeric() {
-            out.extend(c.to_lowercase());
+            for c in c.to_lowercase() {
+                match fold(c) {
+                    Some(plain) => out.push_str(plain),
+                    None => out.push(c),
+                }
+            }
         }
     }
     out
+}
+
+/// The plain ASCII spelling of a lower case Latin letter with a diacritic.
+fn fold(c: char) -> Option<&'static str> {
+    Some(match c {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => "a",
+        'ç' | 'ć' | 'č' => "c",
+        'ď' | 'đ' | 'ð' => "d",
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => "e",
+        'ğ' => "g",
+        'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ı' => "i",
+        'ł' => "l",
+        'ñ' | 'ń' | 'ň' => "n",
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => "o",
+        'ř' => "r",
+        'ś' | 'š' | 'ş' => "s",
+        'ť' | 'ţ' => "t",
+        'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' => "u",
+        'ý' | 'ÿ' => "y",
+        'ź' | 'ż' | 'ž' => "z",
+        'æ' => "ae",
+        'œ' => "oe",
+        'ß' => "ss",
+        _ => return None,
+    })
 }
 
 const VIDEO_EXTENSIONS: &[&str] =
@@ -61,6 +92,8 @@ const TAGS: &[&str] = &[
     "telesync",
     "x264",
     "x265",
+    "av1",
+    "vp9",
     "h264",
     "h265",
     "hevc",
@@ -332,10 +365,14 @@ fn take_edition_tag(name: &str) -> (String, Option<String>) {
 fn find_editions(toks: &[Token], start: usize) -> (Option<&'static str>, Vec<bool>) {
     let mut used = vec![false; toks.len()];
     let mut found = None;
+    // Words before a bracketed year are the title ("The Final Cut (2004)"), not an edition.
+    let year = toks.iter().rposition(|t| t.bracket && year_of(t).is_some());
     let mut i = start + 1;
     while i < toks.len() {
+        let in_title = !toks[i].bracket && year.is_some_and(|y| i < y);
         let hit = EDITIONS
             .iter()
+            .filter(|_| !in_title)
             .find(|(words, _)| words.iter().enumerate().all(|(k, w)| toks.get(i + k).is_some_and(|t| t.lower == *w)));
         if let Some((words, label)) = hit {
             found.get_or_insert(*label);
@@ -376,7 +413,10 @@ fn parse_name(raw: &str, mode: Bare) -> Name {
             end = i;
             break;
         }
-        if web || toks.get(i).is_some_and(|t| is_tag(&t.lower)) {
+        // "H.264" and "H.265" split into two tokens.
+        let dotted = toks.get(i).is_some_and(|t| t.lower == "h")
+            && toks.get(i + 1).is_some_and(|t| matches!(t.lower.split('-').next(), Some("264" | "265")));
+        if web || dotted || toks.get(i).is_some_and(|t| is_tag(&t.lower)) {
             end = i;
             break;
         }

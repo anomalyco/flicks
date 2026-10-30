@@ -1,22 +1,19 @@
-"""SYNTHETIC TEST DATA: tmdb.json is generated here in TMDB's v3 shape with made-up ids. It is not
-recorded from the live API (no key was available) until someone with a key re-records it.
-
-Writes tests/corpus.tsv: 2,000 library paths in the naming styles Plex, Jellyfin, scene releases,
+"""Writes tests/corpus.tsv: 2,000 library paths in the naming styles Plex, Jellyfin, scene releases,
 YTS-style, fansubs and old rips use, each with the answer known by construction.
 
     python3 -I crates/metadata/tests/gen_corpus.py crates/metadata/tests
 
-It also writes library.tsv (a 200-title library: path, the TMDB id it should match, kind) and tmdb.json (the TMDB v3 search responses for that library, see below). The output
-is committed, so this only needs running to change the test data.
+It also writes library.tsv (a 200-title library: path, the TMDB id it should match, kind). The
+output is committed, so this only needs running to change the test data.
+
+tests/tmdb.json (the TMDB search responses the library is matched against) is NOT written here:
+it is synthetic (TMDB v3 shape, made-up ids, no live API key was available), and a script that
+could overwrite it would also overwrite real recorded responses once someone replaces it. The
+ids in library.tsv (100000 + position) must stay in step with it.
 
 corpus.tsv columns: path, title, year, season, episode, episode_end, edition (empty = none). Titles
 are the real ones; the test compares them with punctuation and case ignored.
-
-tmdb.json maps "movie|<normalized title>|<year or empty>" (or "tv|...") to the body TMDB's
-/search/movie or /search/tv answers with: its documented v3 shape, with the true entry, same-title
-remakes ranked first in the unfiltered search for one title in ten (TMDB sorts by popularity). The ids are made up; there was no API key to record real ones with.
 """
-import json
 import random
 import re
 import sys
@@ -230,23 +227,8 @@ HAND = [
 ]
 
 
-def norm(s):
-    return "".join("and" if c == "&" else c.lower() for c in s if c == "&" or c.isalnum())
-
-
-def entry(kind, i, title, year, pop):
-    base = {"adult": False, "backdrop_path": f"/back{i}.jpg", "genre_ids": [18, 53], "id": i, "original_language": "en", "overview": "Recorded overview text.", "popularity": pop, "poster_path": f"/poster{i}.jpg", "vote_average": 7.4, "vote_count": 3120}
-    if kind == "movie":
-        return {**base, "original_title": title, "release_date": f"{year}-06-{rng.randrange(10, 28)}", "title": title, "video": False}
-    return {**base, "first_air_date": f"{year}-09-{rng.randrange(10, 28)}", "name": title, "origin_country": ["US"], "original_name": title}
-
-
-def response(results):
-    return {"page": 1, "results": results, "total_pages": 1, "total_results": len(results)}
-
-
 def library(rows):
-    """200 distinct titles (140 films, 60 shows) from the corpus, and the TMDB answers for them."""
+    """200 distinct titles (140 films, 60 shows) from the corpus: path, TMDB id, kind."""
     seen, picked = set(), []
     for r in rows:
         kind = "tv" if r[4] is not None else "movie"
@@ -255,20 +237,7 @@ def library(rows):
             continue
         seen.add(r[1])
         picked.append((kind, r))
-    lib, tmdb = [], {}
-    for n, (kind, r) in enumerate(picked):
-        path, title, year = r[0], r[1], r[2]
-        tmdb_id = 100000 + n
-        key = f"{kind}|{norm(title)}|"
-        true_year = year or rng.randrange(1960, 2023)
-        true = entry(kind, tmdb_id, title, true_year, 40.0)
-        decoy = entry(kind, tmdb_id + 500000, title, true_year - rng.randrange(8, 40), 95.0)
-        other = entry(kind, tmdb_id + 900000, title + " II", true_year + 2, 60.0)
-        pops = [true, other] if n % 10 else [decoy, true, other]
-        tmdb[key] = response(sorted(pops, key=lambda e: -e["popularity"]))
-        tmdb[key + str(true_year)] = response([true])
-        lib.append((path, tmdb_id, kind))
-    return lib, tmdb
+    return [(r[0], 100000 + n, kind) for n, (kind, r) in enumerate(picked)]
 
 
 def main(out):
@@ -278,13 +247,11 @@ def main(out):
     with open(f"{out}/corpus.tsv", "w", encoding="utf-8") as f:
         for r in rows:
             f.write("\t".join("" if c is None else str(c) for c in r) + "\n")
-    lib, tmdb = library(rows)
+    lib = library(rows)
     assert len(lib) == 200, len(lib)
     with open(f"{out}/library.tsv", "w", encoding="utf-8") as f:
         for p, i, kind in lib:
             f.write(f"{p}\t{i}\t{kind}\n")
-    with open(f"{out}/tmdb.json", "w", encoding="utf-8") as f:
-        json.dump(tmdb, f, ensure_ascii=False, sort_keys=True)
 
 
 main(sys.argv[1])

@@ -40,7 +40,13 @@ impl Tmdb {
     pub fn from_env() -> Option<Self> {
         let key = std::env::var("FLICKS_TMDB_KEY").ok()?;
         let key = key.trim();
-        (!key.is_empty()).then(|| Self::new(key, live))
+        if key.is_empty() {
+            return None;
+        }
+        let agent: ureq::Agent =
+            ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(20))).build().into();
+        let secret = key.to_string();
+        Some(Self::new(key, move |url| live(&agent, &secret, url)))
     }
 
     /// A client that gets URLs through `fetch`.
@@ -129,18 +135,19 @@ fn encode(s: &str) -> String {
     out
 }
 
-fn live(url: &str) -> Result<Vec<u8>, Error> {
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(20))).build().into();
+fn live(agent: &ureq::Agent, key: &str, url: &str) -> Result<Vec<u8>, Error> {
     // The URL carries the API key, so errors here never repeat it.
-    let mut response = agent.get(url).call().map_err(|e| Error::Http(redact(&e.to_string(), url)))?;
+    let mut response = agent.get(url).call().map_err(|e| Error::Http(redact(&e.to_string(), key, url)))?;
     response
         .body_mut()
         .with_config()
         .limit(MAX_BODY)
         .read_to_vec()
-        .map_err(|e| Error::Http(redact(&e.to_string(), url)))
+        .map_err(|e| Error::Http(redact(&e.to_string(), key, url)))
 }
 
-fn redact(msg: &str, url: &str) -> String {
-    msg.replace(url, "<url>")
+/// The message without the request URL or the key itself, wherever either appears.
+fn redact(msg: &str, key: &str, url: &str) -> String {
+    let msg = msg.replace(url, "<url>");
+    if key.is_empty() { msg } else { msg.replace(key, "<key>") }
 }
