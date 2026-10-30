@@ -121,6 +121,7 @@ pub async fn serve(data_dir: &Path, name: Option<String>, web: Option<PathBuf>) 
     if name.as_deref().is_some_and(|name| !pair::valid_name(name)) {
         return Err(Error::Usage("--name is 1 to 64 bytes, without control characters or surrounding spaces"));
     }
+    let web = web.map(|dir| crate::web::check(&dir, data_dir)).transpose()?;
     // Windows defaults an IPv6 socket to IPv6-only. Explicit dual-stack is needed for both
     // the local admin CLI (127.0.0.1) and IPv4 LAN/tailnet clients to reach the one listener.
     #[cfg(windows)]
