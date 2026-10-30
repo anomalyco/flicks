@@ -39,3 +39,11 @@ Copied into: crates/core, crates/net, crates/store, and the workspace lint, tool
 deny configuration. Same owner as Flicks; listed here for provenance, no third-party notice
 applies. Changes: renamed from deadbolt-* to flicks-*, with every signing, hashing, encryption,
 ALPN and TLS-exporter label renamed so the two can't accept each other's data.
+
+------------------------------------------------------------------------------------------------
+Inter (https://rsms.me/inter/), Inter Display SemiBold
+Copyright (c) 2016 The Inter Project Authors.
+Licensed under the SIL Open Font License, Version 1.1. Licence text: licenses/Inter-OFL.txt.
+
+Used in: assets/brand/wordmark.svg and assets/brand/lockup.svg, whose "flicks" letters are
+glyph outlines converted from the font (no font file is shipped).
