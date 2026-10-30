@@ -37,6 +37,9 @@ pub const MAX_READ: u64 = 8 * 1024 * 1024;
 /// The most addresses raced for one server.
 const MAX_ADDRS: usize = 64;
 
+/// How long the first address has to answer before the others are raced.
+const HEAD_START: std::time::Duration = std::time::Duration::from_millis(250);
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -63,6 +66,8 @@ pub enum Error {
     WrongServer,
     #[error("couldn't reach the server at any of its {tried} addresses (last: {last})")]
     Unreachable { tried: usize, last: Box<Error> },
+    #[error("this device isn't paired with that server")]
+    NotPaired,
     #[error("{1} ({0})")]
     Status(u16, String),
 }
@@ -186,10 +191,13 @@ impl Client {
         if !pair::verify_reply(&link.server_key, &transcript, &reply) {
             return Err(Error::WrongServer);
         }
+        let mut addrs = link.addrs;
+        addrs.retain(|a| *a != connection.addr);
+        addrs.insert(0, connection.addr.clone());
         let server = Server {
             key: keys::encode(&server_key),
             name: net::host(&connection.addr).to_string(),
-            addrs: link.addrs,
+            addrs,
             user: reply.user,
             admin: reply.admin,
         };
@@ -207,22 +215,38 @@ impl Client {
         Ok(())
     }
 
-    /// Races every saved address of `server` and keeps the first whose `/info` probe verifies.
-    pub async fn connect(&self, server: &Server) -> Result<Connection, Error> {
-        self.race(&server.verifying_key()?, &server.addrs).await
+    /// Races the saved addresses of the server with this key and keeps the first whose `/info`
+    /// probe verifies. The address that won last time goes first and gets a head start, so a
+    /// reachable server costs one probe (unauthenticated requests share one rate limit there).
+    pub async fn connect(&mut self, key: &str) -> Result<Connection, Error> {
+        let server = self.servers.iter().find(|s| s.key == key).ok_or(Error::NotPaired)?;
+        let connection = self.race(&server.verifying_key()?, &server.addrs).await?;
+        let server = self.servers.iter_mut().find(|s| s.key == key).ok_or(Error::NotPaired)?;
+        if let Some(at) = server.addrs.iter().position(|a| *a == connection.addr).filter(|at| *at > 0) {
+            server.addrs[..=at].rotate_right(1);
+            self.save()?;
+        }
+        Ok(connection)
     }
 
     async fn race(&self, server_key: &VerifyingKey, addrs: &[String]) -> Result<Connection, Error> {
         let tls = Arc::new(net::client_config(server_key, self.web.clone())?);
+        let mut addrs = addrs.iter().take(MAX_ADDRS);
+        let tried = addrs.len();
         let mut probes = JoinSet::new();
-        for addr in addrs.iter().take(MAX_ADDRS) {
-            probes.spawn(probe(addr.clone(), tls.clone(), *server_key));
+        if let Some(first) = addrs.next() {
+            probes.spawn(probe(first.clone(), tls.clone(), *server_key));
         }
-        let tried = probes.len();
+        let mut racing = false;
         let mut last = Error::BadAddress;
-        while let Some(joined) = probes.join_next().await {
+        loop {
+            let joined = if racing {
+                probes.join_next().await
+            } else {
+                tokio::time::timeout(HEAD_START, probes.join_next()).await.unwrap_or(None)
+            };
             match joined {
-                Ok(Ok(addr)) => {
+                Some(Ok(Ok(addr))) => {
                     return Ok(Connection {
                         addr,
                         tls,
@@ -230,8 +254,16 @@ impl Client {
                         server_key: keys::public_bytes(server_key),
                     });
                 }
-                Ok(Err(error)) if telling(&error) >= telling(&last) => last = error,
+                Some(Ok(Err(error))) if telling(&error) >= telling(&last) => last = error,
+                None if racing => break,
                 _ => {}
+            }
+            // The first address failed or is slow: race the rest alongside it.
+            if !racing {
+                racing = true;
+                for addr in addrs.by_ref() {
+                    probes.spawn(probe(addr.clone(), tls.clone(), *server_key));
+                }
             }
         }
         Err(Error::Unreachable { tried, last: Box::new(last) })

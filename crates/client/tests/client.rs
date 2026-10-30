@@ -116,8 +116,8 @@ async fn devices(setup: &Setup) -> usize {
 
 /// Lists the catalog (waiting for the first scan) and reads byte ranges, checking them against the
 /// file.
-async fn list_and_read(client: &Client, server: &Server, media: &[u8]) -> String {
-    let connection = client.connect(server).await.unwrap();
+async fn list_and_read(client: &mut Client, server: &Server, media: &[u8]) -> String {
+    let connection = client.connect(&server.key).await.unwrap();
     let items = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let items = connection.items().await.unwrap();
@@ -154,7 +154,10 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     }
     let server = local.pair(&link(&setup, "ana", setup.addr.to_string()).await, "Laptop").await.unwrap();
     assert_eq!((server.name.as_str(), server.user.as_str(), server.admin), ("127.0.0.1", "ana", false));
-    assert_eq!(list_and_read(&local, &server, &setup.media).await, setup.addr.to_string());
+    assert_eq!(list_and_read(&mut local, &server, &setup.media).await, setup.addr.to_string());
+    // The address that answered is saved first, and gets the head start next time.
+    assert_eq!(server.addrs[0], setup.addr.to_string());
+    assert!(server.addrs.len() > 1);
 
     // Through the proxy, by name: its certificate is valid for `localhost` under its authority,
     // and the signed probe proves the server is behind it.
@@ -165,7 +168,7 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     let server = proxied.pair(&link(&setup, "bo", via.clone()).await, "Phone").await.unwrap();
     assert_eq!((server.name.as_str(), server.user.as_str()), ("localhost", "bo"));
     let before = setup.proxied.load(Ordering::SeqCst);
-    assert_eq!(list_and_read(&proxied, &server, &setup.media).await, via);
+    assert_eq!(list_and_read(&mut proxied, &server, &setup.media).await, via);
     assert!(setup.proxied.load(Ordering::SeqCst) > before);
 
     // The key and server list survive a restart.
@@ -210,12 +213,8 @@ async fn a_wrong_pinned_key_is_refused() {
     assert!(client.servers.is_empty());
 
     // A saved server with the wrong key is refused at every address too.
-    let server = Server {
-        key: wrong,
-        name: "x".into(),
-        addrs: vec![setup.addr.to_string(), via],
-        user: "dee".into(),
-        admin: false,
-    };
-    assert!(matches!(client.connect(&server).await, Err(Error::Unreachable { tried: 2, .. })));
+    let addrs = vec![setup.addr.to_string(), via];
+    client.servers.push(Server { key: wrong.clone(), name: "x".into(), addrs, user: "dee".into(), admin: false });
+    assert!(matches!(client.connect(&wrong).await, Err(Error::Unreachable { tried: 2, .. })));
+    assert!(matches!(client.connect(&real).await, Err(Error::NotPaired)));
 }
