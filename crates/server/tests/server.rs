@@ -49,8 +49,8 @@ fn get(path: &str) -> Request<Full<Bytes>> {
 
 /// Opens a pairing window as root.
 async fn open_window(root: &Client, user: &str, admin: bool) -> pair::Link {
-    let pairing: Pairing =
-        root.call(Method::POST, "/admin/pair", Some(&OpenPairing { user: user.into(), admin })).await.unwrap();
+    let request = OpenPairing { user: user.into(), admin, addrs: Vec::new() };
+    let pairing: Pairing = root.call(Method::POST, "/admin/pair", Some(&request)).await.unwrap();
     pair::parse_link(&pairing.link).unwrap()
 }
 
@@ -67,6 +67,11 @@ async fn pair_device(server: &Server, via: SocketAddr, tls: Arc<ClientConfig>, u
     let transcript = pair::transcript(&server_key, &keys::public_bytes(key.verifying_key()), "Test Mac");
     assert!(pair::verify_reply(&link.server_key, &transcript, &reply));
     assert_eq!((reply.user.as_str(), reply.admin), (user, admin));
+    // The user and admin flag are signed too.
+    let tampered = pair::Reply { admin: !admin, ..reply.clone() };
+    assert!(!pair::verify_reply(&link.server_key, &transcript, &tampered));
+    let tampered = pair::Reply { user: format!("{user}x"), ..reply };
+    assert!(!pair::verify_reply(&link.server_key, &transcript, &tampered));
     Client { key, server_key, addr: via, tls }
 }
 
@@ -288,6 +293,15 @@ async fn pairing_works_on_localhost() {
         .unwrap_err();
     assert!(matches!(err, flicks_server::Error::Status(409, _)), "{err}");
 
+    // Tunnel or tailnet names follow the detected addresses in the link; malformed ones are refused.
+    let request = OpenPairing { user: "cy".into(), admin: false, addrs: vec!["nas.tail1234.ts.net:7686".into()] };
+    let pairing: Pairing = server.root.call(Method::POST, "/admin/pair", Some(&request)).await.unwrap();
+    let link = pair::parse_link(&pairing.link).unwrap();
+    assert_eq!(link.addrs.last().map(String::as_str), Some("nas.tail1234.ts.net:7686"));
+    let request = OpenPairing { user: "cy".into(), admin: false, addrs: vec!["nas&code=x:7686".into()] };
+    let err = server.root.call::<Pairing>(Method::POST, "/admin/pair", Some(&request)).await.unwrap_err();
+    assert!(matches!(err, flicks_server::Error::Status(400, _)), "{err}");
+
     // Folders: added once, refused in protected places, removed by id.
     let media = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let add = |path: &Path| AddFolder { path: path.to_string_lossy().into_owned() };
@@ -299,9 +313,18 @@ async fn pairing_works_on_localhost() {
     let err =
         admin.call::<Folder>(Method::POST, "/admin/folders", Some(&add(&server.state.data_dir))).await.unwrap_err();
     assert!(matches!(err, flicks_server::Error::Status(403, _)), "{err}");
+    // A temp folder is fine (on macOS it lives under /var); the home folder and its parents aren't.
+    let temp = tempfile::tempdir().unwrap();
+    let _: Folder = admin.call(Method::POST, "/admin/folders", Some(&add(temp.path()))).await.unwrap();
+    if let Some(home) = flicks_server::home_dir() {
+        for path in home.ancestors() {
+            let err = admin.call::<Folder>(Method::POST, "/admin/folders", Some(&add(path))).await.unwrap_err();
+            assert!(matches!(err, flicks_server::Error::Status(403, _)), "{}: {err}", path.display());
+        }
+    }
     admin.call::<()>(Method::DELETE, &format!("/admin/folders/{}", folder.id), None::<&()>).await.unwrap();
     let folders: Vec<Folder> = admin.call(Method::GET, "/admin/folders", None::<&()>).await.unwrap();
-    assert!(folders.is_empty());
+    assert_eq!(folders.len(), 1);
 }
 
 #[tokio::test]
@@ -593,6 +616,42 @@ async fn unauthenticated_routes_fuzzed() {
     }
     // The global limit lets a burst of 20 (plus refill) through and refuses the rest.
     assert!((20..40).contains(&answered) && limited > 0, "{answered} answered, {limited} limited");
+}
+
+/// A body that never arrives.
+struct Stalled;
+
+impl hyper::body::Body for Stalled {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        std::task::Poll::Pending
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn duplicate_headers_and_stalled_bodies_are_refused() {
+    let state = State::open(&data_dir("stalled"), 0).unwrap();
+    let auth = |method, range: &[u8]| {
+        sign(&state.key, &state.public, method, "/admin/status", range, b"", flicks_server::unix_now())
+    };
+
+    // Each request would pass with its first header alone.
+    let mut request = signed_request(Method::GET, "/admin/status", &auth("GET", b""), None, b"");
+    request.headers_mut().append(AUTHORIZATION, auth("GET", b"").parse().unwrap());
+    assert_eq!(server::handle(&state, request).await.status(), StatusCode::BAD_REQUEST, "two Authorization");
+    let mut request = signed_request(Method::GET, "/admin/status", &auth("GET", b"bytes=0-1"), Some("bytes=0-1"), b"");
+    request.headers_mut().append(RANGE, "bytes=2-3".parse().unwrap());
+    assert_eq!(server::handle(&state, request).await.status(), StatusCode::BAD_REQUEST, "two Range");
+
+    // The paused clock jumps ahead to the body timeout.
+    let request =
+        Request::post("/admin/status").header(HOST, "flicks").header(AUTHORIZATION, auth("POST", b"")).body(Stalled);
+    assert_eq!(server::handle(&state, request.unwrap()).await.status(), StatusCode::REQUEST_TIMEOUT);
 }
 
 #[test]

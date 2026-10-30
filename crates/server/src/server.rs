@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Body, Bytes};
 use hyper::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, RANGE};
@@ -21,19 +22,24 @@ use p256::ecdsa::SigningKey;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
 
 use crate::db::{self, Db};
 use crate::{Error, auth, folders, keys, pair, tls};
 
-/// How long a client gets to finish the TLS handshake or send request headers.
+/// How long a client gets to finish the TLS handshake, send request headers, or send a body.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most connections served at once; more wait to be accepted.
+const MAX_CONNECTIONS: usize = 256;
 
 /// The global limit on unauthenticated requests: bursts of 20, refilled at 10 a second.
 const RATE_BURST: f64 = 20.0;
 const RATE_PER_SECOND: f64 = 10.0;
 
-pub type Reply = Response<Full<Bytes>>;
+/// A response; its body is boxed so the catalog can stream files.
+pub type Reply = Response<BoxBody<Bytes, std::io::Error>>;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -76,6 +82,9 @@ fn create_private_dir(dir: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder.create(dir)?;
+    // An existing directory may have been created with looser permissions.
+    #[cfg(unix)]
+    std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     Ok(())
 }
 
@@ -86,6 +95,7 @@ pub async fn serve(data_dir: &Path) -> Result<(), Error> {
         Err(_) => TcpListener::bind(("0.0.0.0", crate::PORT)).await?,
     };
     let state = Arc::new(State::open(data_dir, crate::PORT)?);
+    crate::api::start(&state)?;
     println!("Flicks is serving on port {} (server key {}).", crate::PORT, keys::encode(&state.public));
     tokio::select! {
         result = run(listener, state) => result,
@@ -98,14 +108,20 @@ pub async fn spawn(data_dir: &Path, addr: SocketAddr) -> Result<(SocketAddr, Arc
     let listener = TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     let state = Arc::new(State::open(data_dir, local.port())?);
+    crate::api::start(&state)?;
     tokio::spawn(run(listener, state.clone()));
     Ok((local, state))
 }
 
-/// Accepts connections forever.
+/// Accepts connections forever, at most [`MAX_CONNECTIONS`] at a time.
 pub async fn run(listener: TcpListener, state: Arc<State>) -> Result<(), Error> {
     let acceptor = TlsAcceptor::from(Arc::new(tls::server_config(&state.key)?));
+    let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
+        // The semaphore is never closed.
+        let Ok(permit) = connections.clone().acquire_owned().await else {
+            return Ok(());
+        };
         let tcp = match listener.accept().await {
             Ok((tcp, _)) => tcp,
             // Out of file descriptors and the like: wait and keep serving.
@@ -117,6 +133,7 @@ pub async fn run(listener: TcpListener, state: Arc<State>) -> Result<(), Error> 
         let acceptor = acceptor.clone();
         let state = state.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let Ok(Ok(stream)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await else {
                 return;
             };
@@ -221,11 +238,9 @@ pub async fn redeem(state: &State, body: &[u8]) -> Reply {
     if state.db.call(move |conn| db::add_device(conn, user, &key, &name)).await.is_err() {
         return status(StatusCode::INTERNAL_SERVER_ERROR);
     }
-    let reply = pair::Reply {
-        user: window.user.name.clone(),
-        admin: window.user.admin,
-        signature: keys::encode(&keys::sign(&state.key, &pair::ok_message(&checked.transcript))),
-    };
+    let (name, admin) = (window.user.name.clone(), window.user.admin);
+    let signature = keys::sign(&state.key, &pair::ok_message(&checked.transcript, &name, admin));
+    let reply = pair::Reply { user: name, admin, signature: keys::encode(&signature) };
     let reply = serde_json::to_vec(&reply).unwrap_or_default();
     window.redeemed = Some((checked.key, reply.clone()));
     json_bytes(StatusCode::OK, reply)
@@ -240,17 +255,25 @@ pub struct Caller {
     pub admin: bool,
 }
 
-/// Checks a signed request, in the order the architecture gives: the device exists, the
-/// timestamp is fresh, the nonce is new, then at most 64 KiB of body is read and the signature
-/// verified.
+/// Checks a signed request, cheapest checks first: one `Authorization` and at most one `Range`
+/// header, the timestamp is fresh, the nonce is new, the key is a P-256 point, the device exists,
+/// then at most 64 KiB of body is read and the signature verified.
 async fn authenticate<B>(state: &State, parts: &Parts, body: B) -> Result<(Caller, Bytes), StatusCode>
 where
     B: Body<Data = Bytes>,
     B::Error: Into<BoxError>,
 {
     let unauthorized = || StatusCode::UNAUTHORIZED;
-    let header =
-        parts.headers.get(AUTHORIZATION).and_then(|value| auth::parse(value.as_bytes())).ok_or_else(unauthorized)?;
+    let headers = &parts.headers;
+    if headers.get_all(AUTHORIZATION).iter().count() > 1 || headers.get_all(RANGE).iter().count() > 1 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let header = headers.get(AUTHORIZATION).and_then(|value| auth::parse(value.as_bytes())).ok_or_else(unauthorized)?;
+    if !auth::fresh(header.timestamp, crate::unix_now()) {
+        return Err(unauthorized());
+    }
+    state.nonces.check(&header.nonce, Instant::now()).map_err(nonce_status)?;
+    let device = keys::parse_public(&header.key).ok_or_else(unauthorized)?;
     let caller = if header.key == state.public {
         Caller { device: None, user: None, admin: true }
     } else {
@@ -263,28 +286,31 @@ where
             .ok_or_else(unauthorized)?;
         Caller { device: Some(owner.device), user: Some(owner.user), admin: owner.admin }
     };
-    let now = crate::unix_now();
-    if !auth::fresh(header.timestamp, now) || state.nonces.seen(&header.nonce) {
-        return Err(unauthorized());
-    }
     let body = read_body(parts, body).await?;
-    let device = keys::parse_public(&header.key).ok_or_else(unauthorized)?;
     let message = auth::message(
         &state.public,
         parts.method.as_str(),
         parts.uri.path_and_query().map_or("", |pq| pq.as_str()),
-        parts.headers.get(RANGE).map_or(&[][..], |v| v.as_bytes()),
+        headers.get(RANGE).map_or(&[][..], |v| v.as_bytes()),
         &body,
         header.timestamp,
         &header.nonce,
     );
-    if !keys::verify(&device, &message, &header.signature) || !state.nonces.insert(header.nonce, now) {
+    if !keys::verify(&device, &message, &header.signature) {
         return Err(unauthorized());
     }
+    state.nonces.insert(header.nonce, Instant::now()).map_err(nonce_status)?;
     Ok((caller, body))
 }
 
-/// Reads a body of at most [`auth::MAX_BODY`] bytes.
+fn nonce_status(refusal: auth::NonceRefusal) -> StatusCode {
+    match refusal {
+        auth::NonceRefusal::Replayed => StatusCode::UNAUTHORIZED,
+        auth::NonceRefusal::Full => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+/// Reads a body of at most [`auth::MAX_BODY`] bytes, sent within [`HANDSHAKE_TIMEOUT`].
 async fn read_body<B>(parts: &Parts, body: B) -> Result<Bytes, StatusCode>
 where
     B: Body<Data = Bytes>,
@@ -295,9 +321,10 @@ where
     if declared.is_some_and(|len| len > auth::MAX_BODY as u64) {
         return Err(too_large());
     }
-    match Limited::new(body, auth::MAX_BODY).collect().await {
-        Ok(collected) => Ok(collected.to_bytes()),
-        Err(_) => Err(too_large()),
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, Limited::new(body, auth::MAX_BODY).collect()).await {
+        Ok(Ok(collected)) => Ok(collected.to_bytes()),
+        Ok(Err(_)) => Err(too_large()),
+        Err(_) => Err(StatusCode::REQUEST_TIMEOUT),
     }
 }
 
@@ -346,6 +373,9 @@ pub struct AddUser {
 pub struct OpenPairing {
     pub user: String,
     pub admin: bool,
+    /// More `host:port` addresses for the link (tunnel or tailnet names), after the detected ones.
+    #[serde(default)]
+    pub addrs: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -388,7 +418,10 @@ async fn admin(state: &State, method: &Method, path: &str, body: &[u8]) -> Resul
                 return Ok(error(StatusCode::BAD_REQUEST, "the path isn't valid UTF-8"));
             };
             match db.call(move |conn| db::add_folder(conn, &path)).await? {
-                Some(folder) => json(&folder),
+                Some(folder) => {
+                    crate::api::folders_changed(state);
+                    json(&folder)
+                }
                 None => error(StatusCode::CONFLICT, "that folder is already added"),
             }
         }
@@ -406,15 +439,20 @@ async fn admin(state: &State, method: &Method, path: &str, body: &[u8]) -> Resul
             }
         }
         (&Method::POST, "pair") => {
-            let Some(OpenPairing { user, admin }) = parse(body) else {
+            let Some(OpenPairing { user, admin, addrs: extra }) = parse(body) else {
                 return Ok(status(StatusCode::BAD_REQUEST));
             };
             if !pair::valid_name(&user) {
                 return Ok(error(StatusCode::BAD_REQUEST, "not a valid user name"));
             }
+            if extra.len() > pair::MAX_EXTRA_ADDRS || !extra.iter().all(|addr| pair::valid_addr(addr)) {
+                return Ok(error(StatusCode::BAD_REQUEST, "addresses must be host:port, at most 16"));
+            }
             let user = db.call(move |conn| db::ensure_user(conn, &user, admin)).await?;
             let window = pair::Window::new(user)?;
-            let link = pair::link(&state.public, &window.code, &addresses(state.port));
+            let mut addrs = addresses(state.port);
+            addrs.extend(extra);
+            let link = pair::link(&state.public, &window.code, &addrs);
             *state.pairing.lock().await = Some(window);
             json(&Pairing { link, expires_in: pair::WINDOW.as_secs() })
         }
@@ -429,15 +467,21 @@ async fn admin(state: &State, method: &Method, path: &str, body: &[u8]) -> Resul
                 "folders" => db.call(move |conn| db::remove_folder(conn, id)).await?,
                 _ => return Ok(status(StatusCode::NOT_FOUND)),
             };
-            if removed { status(StatusCode::NO_CONTENT) } else { error(StatusCode::NOT_FOUND, "no such id") }
+            if !removed {
+                return Ok(error(StatusCode::NOT_FOUND, "no such id"));
+            }
+            if table == "folders" {
+                crate::api::folders_changed(state);
+            }
+            status(StatusCode::NO_CONTENT)
         }
         _ => status(StatusCode::NOT_FOUND),
     })
 }
 
-/// The addresses other devices may reach this server on: every interface address except loopback
-/// and IPv6 link-local.
-pub fn addresses(port: u16) -> Vec<SocketAddr> {
+/// The addresses other devices may reach this server on, as `host:port`: every interface address
+/// except loopback and link-local.
+pub fn addresses(port: u16) -> Vec<String> {
     let mut addrs: Vec<SocketAddr> = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
@@ -450,15 +494,20 @@ pub fn addresses(port: u16) -> Vec<SocketAddr> {
         .collect();
     addrs.sort();
     addrs.dedup();
-    addrs
+    addrs.iter().map(SocketAddr::to_string).collect()
 }
 
 fn parse<T: DeserializeOwned>(body: &[u8]) -> Option<T> {
     serde_json::from_slice(body).ok()
 }
 
+/// A whole body, boxed.
+pub fn full(bytes: impl Into<Bytes>) -> BoxBody<Bytes, std::io::Error> {
+    Full::new(bytes.into()).map_err(|never| match never {}).boxed()
+}
+
 pub fn status(code: StatusCode) -> Reply {
-    let mut reply = Response::new(Full::new(Bytes::new()));
+    let mut reply = Response::new(full(Bytes::new()));
     *reply.status_mut() = code;
     reply
 }
@@ -471,7 +520,7 @@ pub fn json<T: Serialize>(value: &T) -> Reply {
 }
 
 fn json_bytes(code: StatusCode, bytes: Vec<u8>) -> Reply {
-    let mut reply = Response::new(Full::new(Bytes::from(bytes)));
+    let mut reply = Response::new(full(bytes));
     *reply.status_mut() = code;
     reply.headers_mut().insert(CONTENT_TYPE, hyper::header::HeaderValue::from_static("application/json"));
     reply

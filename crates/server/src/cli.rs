@@ -44,6 +44,9 @@ pub enum Command {
         /// Make that user an admin.
         #[arg(long)]
         admin: bool,
+        /// Another address to put in the link, such as a tunnel or tailnet name (repeatable).
+        #[arg(long = "addr", value_name = "HOST:PORT")]
+        addrs: Vec<String>,
     },
     /// List or remove paired devices.
     #[command(subcommand)]
@@ -130,13 +133,14 @@ async fn admin(client: &Client, command: Command) -> Result<(), Error> {
                 println!("{}  {}", user.name, role(user.admin));
             }
         }
-        Command::Pair { user, admin } => {
+        Command::Pair { user, admin, addrs } => {
             let user = match user {
                 Some(user) => user,
                 None if admin => "admin".to_string(),
                 None => return Err(Error::Usage("say who the device is for: --user <name>")),
             };
-            let pairing: Pairing = client.call(Method::POST, "/admin/pair", Some(&OpenPairing { user, admin })).await?;
+            let pairing: Pairing =
+                client.call(Method::POST, "/admin/pair", Some(&OpenPairing { user, admin, addrs })).await?;
             if let Ok(code) = qrcode::QrCode::new(pairing.link.as_bytes()) {
                 use qrcode::render::unicode::Dense1x2;
                 let qr = code.render::<Dense1x2>().dark_color(Dense1x2::Light).light_color(Dense1x2::Dark).build();
