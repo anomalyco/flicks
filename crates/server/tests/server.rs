@@ -898,7 +898,7 @@ async fn catalog_paths_are_checked_at_each_open() {
         .call(move |conn| {
             flicks_server::db::add_folder(conn, r.to_str().unwrap())?;
             flicks_library::Scanner::new(None, r.join("artwork")).scan(conn, &r).unwrap();
-            Ok(flicks_library::recent(conn, 1).unwrap().remove(0))
+            Ok(flicks_library::item(conn, 1).unwrap().unwrap())
         })
         .await
         .unwrap();

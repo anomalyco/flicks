@@ -14,7 +14,7 @@
 //!   crate has no database of its own and never touches `user_version`. Reads and probes happen
 //!   outside transactions and each directory is one short write, so scan on a connection of its own.
 //!
-//! Symlinks that resolve outside the library folder are skipped, and so are symlinked folders.
+//! All symlinks are skipped, both files and folders.
 //! [`resolve`] is the same check for a catalog path at the moment it is opened to be served.
 #![cfg_attr(
     not(test),
@@ -35,7 +35,7 @@ mod scan;
 mod tests;
 mod watch;
 
-pub use catalog::{Item, Keyframe, Stream, StreamKind, by_root, item, keyframes, migrate, recent, search, streams};
+pub use catalog::{Item, Keyframe, Stream, StreamKind, item, keyframes, migrate, retain_roots, streams};
 pub use scan::{ScanReport, Scanner, resolve};
 pub use watch::Watcher;
 

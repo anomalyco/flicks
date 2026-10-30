@@ -1,7 +1,7 @@
 //! The catalog tables and their queries. One file is one item; a show is its episodes sharing a
 //! `tmdb_id` (or a title, when unmatched).
 
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
 use flicks_metadata::{Match, Media, Parsed};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -167,31 +167,32 @@ pub fn item(conn: &Connection, id: i64) -> Result<Option<Item>, Error> {
     Ok(conn.query_row(&sql, [id], item_row).optional()?)
 }
 
-/// The newest files first.
-pub fn recent(conn: &Connection, limit: u32) -> Result<Vec<Item>, Error> {
-    let sql = format!("SELECT {ITEM} FROM library_files ORDER BY added_at DESC, id DESC LIMIT ?1");
-    let mut stmt = conn.prepare(&sql)?;
-    Ok(stmt.query_map([limit], item_row)?.collect::<Result<_, _>>()?)
-}
-
-/// Files whose title contains `text`, ignoring ASCII case, by title.
-pub fn search(conn: &Connection, text: &str, limit: u32) -> Result<Vec<Item>, Error> {
-    let sql = format!(
-        "SELECT {ITEM} FROM library_files
-         WHERE instr(lower(COALESCE(tmdb_title, title)), lower(?1)) > 0 OR instr(lower(title), lower(?1)) > 0
-         ORDER BY COALESCE(tmdb_title, title), season, episode, id LIMIT ?2"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    Ok(stmt.query_map(params![text, limit], item_row)?.collect::<Result<_, _>>()?)
-}
-
-/// Every file found under the library folder `root`, by title, season and episode.
-pub fn by_root(conn: &Connection, root: &Path) -> Result<Vec<Item>, Error> {
-    let sql = format!(
-        "SELECT {ITEM} FROM library_files WHERE root = ?1 ORDER BY COALESCE(tmdb_title, title), season, episode, id"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    Ok(stmt.query_map([root.to_string_lossy()], item_row)?.collect::<Result<_, _>>()?)
+/// Forgets files, streams and directory hashes outside the configured roots. The server's
+/// progress foreign key cascades file deletion; stream deletion also covers older schemas.
+pub fn retain_roots(conn: &mut Connection, roots: &[PathBuf]) -> Result<(), Error> {
+    let tx = conn.transaction()?;
+    let mut stmt = tx.prepare("SELECT id, root FROM library_files")?;
+    let files = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let mut removed = Vec::new();
+    for file in files {
+        let (id, root) = file?;
+        if !roots.iter().any(|r| r == Path::new(&root)) {
+            removed.push(id);
+        }
+    }
+    drop(stmt);
+    delete_files(&tx, &removed)?;
+    let dirs = {
+        let mut stmt = tx.prepare("SELECT path FROM library_dirs")?;
+        stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?
+    };
+    for dir in dirs {
+        if !roots.iter().any(|r| Path::new(&dir).starts_with(r)) {
+            tx.execute("DELETE FROM library_dirs WHERE path = ?1", [dir])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// The audio and subtitle tracks of a file, in file order.
@@ -356,11 +357,11 @@ pub(crate) fn remove_subtree(conn: &Connection, dir: &str) -> Result<u32, Error>
 }
 
 /// Files not yet looked up on TMDB, as their parsed names.
-pub(crate) fn pending(conn: &Connection) -> Result<Vec<(i64, Parsed)>, Error> {
+pub(crate) fn pending(conn: &Connection, root: &Path) -> Result<Vec<(i64, Parsed)>, Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, year, season, episode, episode_end, edition FROM library_files WHERE matched = 0",
+        "SELECT id, title, year, season, episode, episode_end, edition FROM library_files WHERE matched = 0 AND root = ?1",
     )?;
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map([root.to_string_lossy()], |r| {
         let n = |i: usize| r.get::<_, Option<i64>>(i).map(|v| v.and_then(|v| u16::try_from(v).ok()));
         Ok((
             r.get(0)?,
