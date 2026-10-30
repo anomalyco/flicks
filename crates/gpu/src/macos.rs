@@ -38,7 +38,7 @@ impl Importer {
     }
 
     #[allow(non_upper_case_globals)]
-    pub(super) fn import(&self, buffer: &CVPixelBuffer, mut color: Color) -> Result<Frame, Error> {
+    pub(super) fn import(&self, buffer: &CVPixelBuffer, mut color: Color, crop: [u32; 4]) -> Result<Frame, Error> {
         let (format, range) = match CVPixelBufferGetPixelFormatType(buffer) {
             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange => (PixelFormat::Nv12, Range::Limited),
             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange => (PixelFormat::Nv12, Range::Full),
@@ -50,6 +50,7 @@ impl Importer {
         let width = u32::try_from(CVPixelBufferGetWidth(buffer)).map_err(|_| Error::Frame("width overflow"))?;
         let height = u32::try_from(CVPixelBufferGetHeight(buffer)).map_err(|_| Error::Frame("height overflow"))?;
         validate_size(&self.device, [width, height], format)?;
+        validate_crop([width, height], crop)?;
         if CVPixelBufferGetPlaneCount(buffer) != 2 || CVPixelBufferGetIOSurface(Some(buffer)).is_none() {
             return Err(Error::Import("requires two IOSurface-backed planes".into()));
         }
@@ -112,7 +113,7 @@ impl Importer {
         let planes = [plane(0, [width, height])?, plane(1, [width / 2, height / 2])?];
         // Release unused cache entries; live plane owners above keep their mappings alive.
         self.cache.flush(0);
-        Ok(Frame { planes, format, color })
+        Ok(Frame { planes, format, color, crop })
     }
 }
 
@@ -200,6 +201,7 @@ mod tests {
                         .import(
                             &buffer,
                             Color { range: if range == Range::Full { Range::Limited } else { Range::Full }, ..color },
+                            fixture.crop,
                         )
                         .unwrap();
                     let cpu = renderer.upload(&gpu.queue, &fixture.frame()).unwrap();
