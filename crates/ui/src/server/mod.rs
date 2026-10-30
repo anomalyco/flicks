@@ -1,6 +1,7 @@
 //! Server screens, for servers where this device is an admin: the server list, then per server
 //! its folders, users and devices, and Add Device (a pairing window's link as a QR code). They
-//! call the server's `/admin/` routes, the ones the `flicks` CLI uses. The pairing link is a
+//! call the server's `/admin/` routes, the ones the `flicks` CLI uses, through the app's network
+//! ([`Request::Admin`], answered with [`answered`]; the desktop's is `apps/desktop/src/admin.rs`). The pairing link is a
 //! one-time secret: it is shown only as a QR code and copied without clipboard history, and
 //! never logged.
 
@@ -10,14 +11,10 @@ mod tests;
 
 use std::time::Duration;
 
-use flicks_client::merge::Library;
-use flicks_client::{Connection, Error, keys};
-use hyper::Method;
 use rune::{Color, Cursor, El, Path, ScrollSpec, Shape, TextEdit, Tx, canvas, col, row, spacer, text, text_input};
-use serde::de::IgnoredAny;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::{Flicks, Screen, style, worker};
+use crate::{Flicks, Request, Screen, style};
 
 /// How long a pairing window stays open (the server's `pair::WINDOW`) and the copied link with it.
 const PAIRING_OPEN: Duration = Duration::from_secs(5 * 60);
@@ -150,11 +147,11 @@ pub fn send(s: &mut Flicks, op: Op) {
     if s.servers.busy && op != Op::Load {
         return;
     }
-    match &s.worker {
-        Some(worker) => {
+    match &s.network {
+        Some(send) => {
             s.servers.busy = op != Op::Load;
             s.servers.error = None;
-            worker.send(worker::Request::Admin(key.clone(), op));
+            send(Request::Admin(key.clone(), op));
         }
         None => s.servers.error = Some("Not connected to the network yet.".into()),
     }
@@ -193,93 +190,6 @@ pub fn answered(s: &mut Flicks, key: &str, op: Op, result: Result<(Lists, Option
         }
         Err(error) => s.servers.error = Some(error),
     }
-}
-
-// The network thread's side.
-
-/// After a refresh: every paired server, whether it answered, and this device's key.
-pub fn refreshed(app: &rune::AppHandle<Flicks>, library: &Library) {
-    let list: Vec<Row> = library
-        .client
-        .servers
-        .iter()
-        .map(|server| Row {
-            key: server.key.clone(),
-            name: server.name.clone(),
-            admin: server.admin,
-            online: library.connection(&server.key).is_some(),
-        })
-        .collect();
-    let me = keys::encode(&library.client.public_key());
-    app.update(move |s, _| {
-        s.servers.list = list;
-        s.servers.me = me;
-    });
-}
-
-/// Runs `op` on the server with this key and answers with its lists.
-pub async fn run(app: &rune::AppHandle<Flicks>, library: &mut Library, key: String, op: Op) {
-    let result = admin(library, &key, &op).await.map_err(|e| e.to_string());
-    app.update(move |s, _| answered(s, &key, op, result));
-}
-
-#[derive(Serialize)]
-struct AddFolder<'a> {
-    path: &'a str,
-}
-
-#[derive(Serialize)]
-struct AddUser<'a> {
-    name: &'a str,
-    admin: bool,
-}
-
-#[derive(Serialize)]
-struct OpenPairing<'a> {
-    user: &'a str,
-    admin: bool,
-}
-
-#[derive(Deserialize)]
-struct Pairing {
-    link: String,
-}
-
-async fn admin(library: &mut Library, key: &str, op: &Op) -> Result<(Lists, Option<String>), Error> {
-    let connection = match library.connection(key) {
-        Some(connection) => connection.clone(),
-        None => library.client.connect(key).await?,
-    };
-    let c = &connection;
-    let none = None::<&()>;
-    let mut link = None;
-    match op {
-        Op::Load => {}
-        Op::AddFolder(path) => {
-            c.call::<IgnoredAny>(Method::POST, "/admin/folders", Some(&AddFolder { path: path.trim() })).await?;
-        }
-        Op::RemoveFolder(id) => c.call::<()>(Method::DELETE, &format!("/admin/folders/{id}"), none).await?,
-        Op::AddUser { name, admin } => {
-            let body = AddUser { name: name.trim(), admin: *admin };
-            c.call::<IgnoredAny>(Method::POST, "/admin/users", Some(&body)).await?;
-        }
-        Op::RemoveDevice(id) => c.call::<()>(Method::DELETE, &format!("/admin/devices/{id}"), none).await?,
-        Op::Pair { user, admin } => {
-            let body = OpenPairing { user: user.trim(), admin: *admin };
-            link = Some(c.call::<Pairing>(Method::POST, "/admin/pair", Some(&body)).await?.link);
-        }
-    }
-    let lists = lists(c).await?;
-    Ok((lists, link))
-}
-
-async fn lists(c: &Connection) -> Result<Lists, Error> {
-    let none = None::<&()>;
-    Ok(Lists {
-        folders: c.call(Method::GET, "/admin/folders", none).await?,
-        users: c.call(Method::GET, "/admin/users", none).await?,
-        devices: c.call(Method::GET, "/admin/devices", none).await?,
-    })
 }
 
 // Views.

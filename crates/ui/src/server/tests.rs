@@ -1,16 +1,20 @@
+use std::sync::mpsc;
+
 use rune::{App, Env, Key, KeyEvent, Mods, Runtime};
-use tokio::sync::mpsc;
 
 use super::*;
-use crate::worker::{Request, Worker};
 
-/// The app in a scene, with a network thread that only records what it's asked.
-fn runtime(scene: &str) -> (Runtime<Flicks>, mpsc::UnboundedReceiver<Request>) {
+/// The app in a scene, with a network that only records what it's asked.
+fn runtime(scene: &str) -> (Runtime<Flicks>, mpsc::Receiver<Request>) {
     let state = rune::tooling::initial_state(&crate::spec(), Some(scene));
     let app = App::new(crate::spec()).init(move || state);
     let mut rt = app.headless_runtime((1180.0, 760.0), Env { system_dark: true, scale: 2.0 });
-    let (tx, rx) = mpsc::unbounded_channel();
-    rt.update(move |s, _| s.worker = Some(Worker(tx)));
+    let (tx, rx) = mpsc::channel();
+    rt.update(move |s, _| {
+        s.network = Some(Box::new(move |request| {
+            let _ = tx.send(request);
+        }))
+    });
     settle(&mut rt);
     (rt, rx)
 }
@@ -41,7 +45,7 @@ fn shows(rt: &Runtime<Flicks>, text: &str) -> bool {
 }
 
 /// The admin requests sent since the last call, as (server key, change).
-fn sent(rx: &mut mpsc::UnboundedReceiver<Request>) -> Vec<(String, Op)> {
+fn sent(rx: &mut mpsc::Receiver<Request>) -> Vec<(String, Op)> {
     let mut ops = Vec::new();
     while let Ok(request) = rx.try_recv() {
         if let Request::Admin(key, op) = request {

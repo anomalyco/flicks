@@ -26,6 +26,9 @@ pub enum Command {
         /// What devices call this server (default: this machine's name).
         #[arg(long)]
         name: Option<String>,
+        /// Serve the web app at `/` from this folder (built by apps/web/build.sh).
+        #[arg(long, value_name = "DIR")]
+        web: Option<std::path::PathBuf>,
     },
     /// Add, remove or list media folders.
     #[command(subcommand)]
@@ -90,7 +93,7 @@ pub enum DeviceCommand {
 pub async fn run(command: Command) -> Result<(), Error> {
     let data_dir = crate::data_dir()?;
     match command {
-        Command::Serve { name } => server::serve(&data_dir, name).await,
+        Command::Serve { name, web } => server::serve(&data_dir, name, web).await,
         Command::Client(command) => cli_client::run(command).await,
         Command::Service(command) => service::run(command).await,
         command => admin(&local(&data_dir)?, command).await.map_err(|e| match e {

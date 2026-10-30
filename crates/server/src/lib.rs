@@ -14,6 +14,7 @@ pub mod pair;
 pub mod server;
 pub mod service;
 pub mod tls;
+pub mod web;
 
 pub use flicks_client::keys;
 

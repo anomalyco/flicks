@@ -7,11 +7,9 @@ use std::sync::Arc;
 
 use flicks_client::Client;
 use flicks_client::merge::Library;
+use flicks_ui::{Catalog, Flicks, Request};
 use rune::AppHandle;
 use tokio::sync::{Semaphore, mpsc};
-
-use crate::Flicks;
-use crate::library::catalog::Catalog;
 
 /// What this device calls itself to a server it pairs with.
 const DEVICE_NAME: &str = "Flicks for Mac";
@@ -19,17 +17,8 @@ const DEVICE_NAME: &str = "Flicks for Mac";
 /// Artwork downloads at once.
 const ARTWORK_AT_ONCE: usize = 6;
 
-pub enum Request {
-    Refresh,
-    Pair(String),
-    /// A poster or backdrop: the server key and the artwork name.
-    Artwork(String, String),
-    /// A change on a server's admin routes: its key and the change.
-    Admin(String, crate::server::Op),
-}
-
 /// The window's end of the channel.
-pub struct Worker(pub mpsc::UnboundedSender<Request>);
+pub struct Worker(mpsc::UnboundedSender<Request>);
 
 impl Worker {
     pub fn send(&self, request: Request) {
@@ -81,7 +70,7 @@ async fn serve(app: AppHandle<Flicks>, mut rx: mpsc::UnboundedReceiver<Request>)
                     refresh(&app, &mut library).await;
                 }
             }
-            Request::Admin(server, op) => crate::server::run(&app, &mut library, server, op).await,
+            Request::Admin(server, op) => crate::admin::run(&app, &mut library, server, op).await,
             Request::Artwork(server, name) => {
                 let Some(connection) = library.connection(&server).cloned() else {
                     app.update(move |s, _| s.artwork(&server, &name, None));
@@ -105,7 +94,7 @@ async fn refresh(app: &AppHandle<Flicks>, library: &mut Library) {
     let error = library.refresh().await.err().map(|e| e.to_string());
     let catalog = Catalog::build(library.titles().to_vec());
     app.update(move |s, tx| s.loaded(catalog, error, true, tx));
-    crate::server::refreshed(app, library);
+    crate::admin::refreshed(app, library);
 }
 
 /// Where this device's key and server list live: the same directory the `flicks` CLI uses

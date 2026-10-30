@@ -52,7 +52,7 @@ pub fn catalog() -> Catalog {
     ])
 }
 
-fn item(id: i64, name: &str, episode: Option<u16>, added_at: i64, minutes: u64) -> Item {
+pub fn item(id: i64, name: &str, episode: Option<u16>, added_at: i64, minutes: u64) -> Item {
     Item {
         id,
         title: name.into(),
@@ -77,7 +77,7 @@ fn item(id: i64, name: &str, episode: Option<u16>, added_at: i64, minutes: u64) 
     }
 }
 
-fn title(item: Item, progress: Option<Progress>, available: bool) -> Title {
+pub fn title(item: Item, progress: Option<Progress>, available: bool) -> Title {
     let key =
         Key::Name { title: item.title.to_lowercase(), year: item.year, season: item.season, episode: item.episode };
     let server = if available { "fixture" } else { "away" };
