@@ -1,5 +1,6 @@
 //! The server's TLS certificate, minted in memory for the server key on every start, and the
 //! client side's pinned verifier, which trusts a certificate only if it carries the expected key.
+//! Both sides speak TLS 1.3 only.
 
 use std::sync::Arc;
 
@@ -33,7 +34,7 @@ pub fn server_config(key: &SigningKey) -> Result<ServerConfig, Error> {
     let cert = params.self_signed(&key_pair)?;
 
     let mut config = ServerConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
+        .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_no_client_auth()
         .with_single_cert(vec![cert.der().clone()], PrivateKeyDer::Pkcs8(key_der))?;
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
@@ -46,7 +47,7 @@ pub fn pinned_client_config(server_key: &VerifyingKey) -> Result<ClientConfig, E
     let spki = server_key.to_public_key_der().map_err(|_| Error::KeyEncoding)?.into_vec();
     let verifier = Pinned { spki, algorithms: provider.signature_verification_algorithms };
     let mut config = ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
+        .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
@@ -78,13 +79,14 @@ impl ServerCertVerifier for Pinned {
         }
     }
 
+    /// Never called: both sides speak TLS 1.3 only.
     fn verify_tls12_signature(
         &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algorithms)
+        Err(rustls::Error::PeerIncompatible(rustls::PeerIncompatible::Tls12NotOffered))
     }
 
     fn verify_tls13_signature(
