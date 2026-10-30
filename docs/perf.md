@@ -640,3 +640,41 @@ flk48-bench --native --trace pacing.jsonl   # prints Rune's present summary on e
 # Per phase: split frames into bursts at gaps > 150 ms, 8 bursts per phase in order; intervals
 # from present_dt_ms, CPU from quality.cpu_ms, missed = intervals > 1.5 refresh periods.
 ```
+
+## FLK-50 — launch intro pacing (2026-10-30)
+
+Apple M5 Max, macOS 27.2, release profile, code `ea0df52`, Rune `e450c92`. The real app
+(`flicks-desktop --native --trace`, temp HOME paired with a local server) on an LG 5K external
+display at **60 Hz** (the trace header's `hz`). The 120 Hz run on the MacBook (exonbook) is still to
+do: it was unreachable again (no mDNS answer). Intervals are counted from the frame the intro's
+beats start (the first animating `tracks` frame) to the end of the trace.
+
+| Run | Beats start | Intervals | Present interval p50 / p95 / max (ms) | Missed (> 25 ms) | Encode CPU p50 / p95 / max (ms) |
+|---|---:|---:|---:|---:|---:|
+| 1 (`--frames 150`) | frame 5, 269 ms | 144 | 16.67 / 16.67 / 16.67 | 0 | 0.79 / 1.12 / 2.06 |
+| 2 (`--frames 150`) | frame 6, 237 ms | 143 | 16.67 / 16.67 / 16.67 | 0 | 0.79 / 1.18 / 2.34 |
+| 3 (whole intro) | frame 7, 259 ms | 156 | 16.67 / 16.67 / 16.68 | 0 | 0.81 / 1.17 / 2.55 |
+
+- The intro runs on the display link and stops with it: in run 3 the last frame is drawn at
+  2.86 s, the last animating one, and the process sits at 0.0% CPU after (`top`). (`--frames N`
+  keeps a trace redrawing while idle, Rune `window/draw.rs`, so runs 1 and 2 don't show this.)
+- A launch's first frames stall on its own work: 83 to 133 ms and 33 ms gaps in the first 0.3 s
+  (window activation, the first catalog). The intro waits for three on-time frames in a row (at
+  most 0.6 s) before starting its beats; without that wait the first frame's flight lost a 100 ms
+  frame in every run.
+- Two earlier runs of the same logic (with debug logging) each had one 33 ms miss mid-intro
+  (at 116 and 600 ms into the beats, 1.1 to 1.5 ms of CPU, load average 12 to 14 from other
+  agents' builds), so it's not the intro's own work.
+- Sound sync (`flicks-brand/intro/intro.mp4`, rendered with Rune's `--video` and muxed with
+  intro.wav at the beats' start): the middle and front frames reach full size at 0.465 s and
+  0.578 s after the start, the sound's two hits at 0.46 s and 0.58 s (onset analysis of the
+  muxed file).
+
+### Reproduce
+
+```sh
+cargo build --release -p flicks-desktop
+HOME=$tmp target/release/flicks-desktop --native --trace pacing.jsonl   # close the window after the intro
+# Intervals from present_dt_ms after the first frame whose quality.why has "tracks"; CPU from
+# quality.cpu_ms; missed = intervals > 1.5 refresh periods.
+```
