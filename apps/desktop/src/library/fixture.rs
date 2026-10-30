@@ -29,6 +29,11 @@ pub const SCENES: &[(&str, fn(&mut Flicks))] = &[
         s.status = Status::Ready;
         s.screen = Screen::Home;
     }),
+    ("servers", crate::server::fixture::servers),
+    ("server-folders", crate::server::fixture::folders),
+    ("server-users", crate::server::fixture::users),
+    ("server-devices", crate::server::fixture::devices),
+    ("server-pairing", crate::server::fixture::pairing),
 ];
 
 fn ready(s: &mut Flicks, screen: Screen) {

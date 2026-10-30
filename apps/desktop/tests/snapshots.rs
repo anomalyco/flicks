@@ -1,4 +1,4 @@
-//! Headless snapshots of Home, a title's page and search, rendered by the app binary with Rune's
+//! Headless snapshots of Home, a title's page, search and the Server screens, rendered by the app binary with Rune's
 //! `--snap` (the same renderer as the window) and checked against its `--tree`: the texts are on
 //! screen, and the posters and Play button are drawn where the tree puts them.
 
@@ -30,9 +30,9 @@ fn rect(element: &Value) -> [f32; 4] {
 }
 
 #[test]
-fn home_detail_and_search_render_headless() {
+fn library_and_server_screens_render_headless() {
     // Each scene: texts it shows, and keyed elements (by prefix) whose box must be drawn.
-    let scenes: [(&str, &[&str], &[&str]); 3] = [
+    let scenes: [(&str, &[&str], &[&str]); 8] = [
         ("home", &["Continue Watching", "Recently Added", "S1 · E2", "S1 · E6"], &["title-"]),
         (
             "detail",
@@ -40,6 +40,16 @@ fn home_detail_and_search_render_headless() {
             &["play"],
         ),
         ("search", &["S1 · E2", "S1 · E6"], &["title-"]),
+        ("servers", &["Servers", "Living Room Mac", "Online", "Admin", "Ana's PC", "Offline", "Viewer"], &["server-"]),
+        (
+            "server-folders",
+            &["Living Room Mac", "Folders", "/Volumes/Media/TV", "Remove", "Add Folder"],
+            &["folder-field"],
+        ),
+        ("server-users", &["admin", "ana", "Viewer", "Add User"], &["user-field"]),
+        ("server-devices", &["Flicks for Mac", "This device", "Ana's iPhone", "Remove"], &[]),
+        // The QR code (of a dummy link) and Copy Link are drawn; the link itself is never shown.
+        ("server-pairing", &["Open Pairing Window", "Open for 5 minutes, for one device."], &["qr", "copy-link"]),
     ];
     let dir = dir();
     for (scene, texts, drawn) in scenes {

@@ -1502,6 +1502,7 @@ dependencies = [
  "flicks-client",
  "flicks-testkit",
  "hyper",
+ "qrcode",
  "rune",
  "serde",
  "serde_json",
