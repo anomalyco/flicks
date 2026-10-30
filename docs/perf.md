@@ -391,6 +391,71 @@ FLICKS_PLAYER_MEDIA=/absolute/path/to/video.mp4 cargo test -p flicks-player --re
 cargo test -p flicks-player --release two_hour_playback -- --ignored --nocapture
 
 
+## FLK-19 review — HLS tokens, open GOPs and audio clocks (2026-10-30)
+
+Apple M5 Max, macOS 27.2; default unoptimized test profile (including the
+workspace's per-package optimizations). Same pinned-loopback HTTPS measurement
+as below: first signed video-segment request, then 20 byte-identical repeats,
+after scanning and fetching the master. Warm filesystem; no AVPlayer run before
+either timed matrix. Before is `1f90f61`; after is the `fix-hls` review fix.
+
+| Generated input | First ms, before → after | Repeat p50 ms, before → after | Repeat p95 ms, before → after |
+|---|---:|---:|---:|
+| H.264 / AAC | 9.314 → 12.061 | 8.786 → 8.634 | 10.846 → 12.116 |
+| HEVC / AAC | 7.888 → 8.764 | 8.354 → 8.150 | 9.944 → 8.768 |
+| H.264 / AC-3 | 7.879 → 8.668 | 8.527 → 8.468 | 9.173 → 8.997 |
+| HEVC / E-AC-3 | 7.611 → 7.572 | 9.741 → 7.876 | 21.242 → 8.363 |
+
+These shared-host samples do not establish a general speedup. Signed-request
+timings still include P-256 authentication. Native-player grants now use
+HKDF-derived HMAC-SHA256 instead: forged tokens do no SQLite work, verified by
+holding the DB thread blocked while 25 requests finish (20 unauthorized, then
+five rate-limited). Valid grants still check the device for immediate revocation.
+
+Correctness and native playback:
+
+- Six generated cases: the four closed-GOP combinations above, x265 open-GOP
+  HEVC/AAC, and x264 open-GOP H.264/44.1 kHz AAC. All full-playback and eight-second
+  seek video hashes equal the source; each open-GOP final fragment also decodes
+  independently to the exact source tail. Every segment is byte-stable on
+  reverse-order repeated requests. Generated audio SimpleBlock keyframe bits are
+  cleared: output audio is still entirely sync, uses the sample-rate timescale,
+  and AAC durations are exactly 1024 samples.
+- Keep CRA/recovery and leading pictures together in decode order; moving RASL
+  to the preceding segment would remove its CRA reference. Subtract the leading
+  picture count from the next fragment's decode-time anchor and mark those
+  samples as leading. The decoder suppresses pre-recovery output on random
+  access. **Do not advertise `EXT-X-INDEPENDENT-SEGMENTS`**: RFC 8216 requires all
+  samples to be independently decodable, which dependent leading pictures are
+  not. The catalog cannot distinguish IDR from CRA, so it cannot prove this tag.
+- Audio timestamp error at start / eight seconds: 48 kHz AAC 0.353 / 0.353 ms;
+  44.1 kHz AAC 0.232 / 0.228 ms; Dolby 5.353 / 26.647 ms (32 ms frames).
+  x264 open-GOP seeks produce the same FFmpeg `mmco: unref short failure` warning
+  on the source MKV; pixel comparisons still match. HEVC seeks have no errors.
+- Headless Swift AVPlayer, using the test-only loopback HTTP adapter and real
+  token URLs: **6/6 ready, played, sought to eight seconds, and decoded video
+  after the seek**. AVPlayerItemVideoOutput returned 44–45 buffers per case,
+  including 23 after seeking; zero AVPlayer error-log events. The helper mutes
+  playback. This is native decoding, not a Safari visual or listening test.
+  `mediastreamvalidator` is not installed. No real-episode rerun is claimed.
+- Total scanned payload is bounded at 256 MiB (including unselected tracks),
+  retained rendition payload at 64 MiB, plus the existing packet-count limits.
+  Audio's earlier-cue preroll has a separate scan allowance for high-bitrate
+  video. Dolby config reads start at segment preroll for Dolby `.m4s`, not at
+  cluster zero; unrelated renditions do not read Dolby frames.
+- Existing codec SPS parsers replace the duplicate container parsers; 603
+  truncations/bit flips and a no-VUI-restriction DPB regression pass. Container
+  remains codec-independent and its `wasm32-unknown-unknown` check passes.
+
+Verification: `FLICKS_REQUIRE_ORACLES=1 scripts/check.sh` passed 800 tests and
+doctests (35 ignored), Clippy and dependency policy after temporarily normalizing
+an existing extra EOF blank line in `apps/desktop/src/worker.rs`. That unrelated
+file was restored, so the branch's full formatting gate still reports that
+baseline issue. Final targeted server/container Clippy and HLS/native checks
+pass. Use the existing `hls` test filter for the two unit regressions and the two
+integration tests; optional `FLICKS_HLS_AVPLAYER=/absolute/path/to/helper.swift`
+runs a local Swift playback helper with each generated token URL.
+
 ## FLK-19 — On-demand MKV to HLS remux (2026-10-30)
 
 Apple M5 Max, macOS 27.2 (26B5112a), Rust 1.99.0. **Unoptimized test profile**,

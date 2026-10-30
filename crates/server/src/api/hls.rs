@@ -8,12 +8,15 @@ use crate::{
     server::{Caller, Reply, State, full, status},
 };
 use flicks_container::isobmff::cmaf;
+use hkdf::Hkdf;
+use hmac::{Hmac, KeyInit, Mac};
 use hyper::{
     Method, Response, StatusCode,
     header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue},
     http::request::Parts,
 };
 use serde_json::json;
+use sha2::Sha256;
 use std::io;
 
 // Bound simultaneous demux/segment allocations independently of HTTP connections.
@@ -25,7 +28,7 @@ fn location(path: &str) -> Option<(i64, &str)> {
 }
 
 fn message(file: i64, device: i64, expires: u64, key: &[u8]) -> Vec<u8> {
-    let mut msg = b"flicks-hls-v1\0".to_vec();
+    let mut msg = b"flicks-hls-v2\0".to_vec();
     msg.extend(file.to_be_bytes());
     msg.extend(device.to_be_bytes());
     msg.extend(expires.to_be_bytes());
@@ -33,20 +36,47 @@ fn message(file: i64, device: i64, expires: u64, key: &[u8]) -> Vec<u8> {
     msg
 }
 
-/// The only bypass of normal request signing: an expiring server signature over
+fn mac(state: &State, message: &[u8]) -> Result<Hmac<Sha256>, Error> {
+    let mut key = [0; 32];
+    Hkdf::<Sha256>::new(None, &state.key.to_bytes())
+        .expand(b"flicks-hls-v2", &mut key)
+        .map_err(|_| Error::KeyEncoding)?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&key).map_err(|_| Error::KeyEncoding)?;
+    mac.update(message);
+    Ok(mac)
+}
+
+fn no_referrer(mut reply: Reply) -> Reply {
+    reply.headers_mut().insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    reply
+}
+
+/// The only bypass of normal request signing: an expiring server MAC over
 /// this file and device. Never works on /files, /admin, or any non-GET route.
 pub(crate) async fn signed_url(state: &State, parts: &Parts) -> Option<Reply> {
     let (file, _) = location(parts.uri.path())?;
-    let token = parts.uri.query()?.strip_prefix("token=")?;
-    let denied = || status(StatusCode::UNAUTHORIZED);
+    let denied = || no_referrer(status(StatusCode::UNAUTHORIZED));
+    let query = match parts.uri.query() {
+        Some(q) => q,
+        None if parts.headers.contains_key(hyper::header::AUTHORIZATION) => return None,
+        None => return Some(denied()),
+    };
+    let Some(token) = query.strip_prefix("token=") else {
+        return Some(denied());
+    };
     if parts.method != Method::GET || parts.headers.contains_key(hyper::header::AUTHORIZATION) {
         return Some(denied());
     }
-    let Some((device, expires, signature)) = parse_token(token) else {
+    let Some((device, expires, prefix, tag)) = parse_token(token) else {
         return Some(denied());
     };
     let now = crate::unix_now();
     if expires <= now || expires > now.saturating_add(300) {
+        return Some(denied());
+    }
+    // Authenticate bounded input before queuing any database work. Forged grants
+    // are charged to the unauthenticated limiter by handle().
+    if !mac(state, &message(file, device, expires, &prefix)).is_ok_and(|m| m.verify_slice(&tag).is_ok()) {
         return Some(denied());
     }
     // Removal takes effect immediately, including already issued grants.
@@ -65,30 +95,35 @@ pub(crate) async fn signed_url(state: &State, parts: &Parts) -> Option<Reply> {
         Ok(Some(owner)) => owner,
         _ => return Some(denied()),
     };
-    if !keys::verify(state.key.verifying_key(), &message(file, device, expires, &key), &signature) {
+    if key.get(..16) != Some(prefix.as_slice()) {
         return Some(denied());
     }
     Some(match route(state, &Caller { device: Some(device), user: Some(user), admin: false }, parts).await {
         Ok(reply) => reply,
-        Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => no_referrer(status(StatusCode::INTERNAL_SERVER_ERROR)),
     })
 }
 
-fn parse_token(token: &str) -> Option<(i64, u64, Vec<u8>)> {
+fn parse_token(token: &str) -> Option<(i64, u64, Vec<u8>, Vec<u8>)> {
     if token.len() > 150 {
         return None;
     }
     let mut p = token.split('.');
     let device = super::id(p.next()?)?;
     let expires = p.next()?.parse().ok()?;
-    let signature = keys::decode(p.next()?, 64)?;
-    if p.next().is_some() || signature.len() != 64 {
+    let prefix = keys::decode(p.next()?, 16)?;
+    let tag = keys::decode(p.next()?, 32)?;
+    if p.next().is_some() || prefix.len() != 16 || tag.len() != 32 {
         return None;
     }
-    Some((device, expires, signature))
+    Some((device, expires, prefix, tag))
 }
 
 pub(super) async fn route(state: &State, caller: &Caller, parts: &Parts) -> Result<Reply, Error> {
+    render(state, caller, parts).await.map(no_referrer)
+}
+
+async fn render(state: &State, caller: &Caller, parts: &Parts) -> Result<Reply, Error> {
     let Some((id, resource)) = location(parts.uri.path()) else {
         return Ok(status(StatusCode::NOT_FOUND));
     };
@@ -116,9 +151,11 @@ pub(super) async fn route(state: &State, caller: &Caller, parts: &Parts) -> Resu
                 Ok(conn.query_row("SELECT key FROM devices WHERE id=?1", [device], |r| r.get::<_, Vec<u8>>(0))?)
             })
             .await?;
-        let signature = keys::encode(&keys::sign(&state.key, &message(id, device, expires, &key)));
+        let prefix = key.get(..16).ok_or(Error::KeyEncoding)?;
+        let tag = keys::encode(&mac(state, &message(id, device, expires, prefix))?.finalize().into_bytes());
+        let prefix = keys::encode(prefix);
         return Ok(crate::server::json(
-            &json!({"url": format!("/hls/{id}/master.m3u8?token={device}.{expires}.{signature}"), "expires": expires}),
+            &json!({"url": format!("/hls/{id}/master.m3u8?token={device}.{expires}.{prefix}.{tag}"), "expires": expires}),
         ));
     }
     if parts.method != Method::GET {
@@ -128,7 +165,7 @@ pub(super) async fn route(state: &State, caller: &Caller, parts: &Parts) -> Resu
     // ignoring Range with a complete 200 response (native players send bytes=0-).
     let suffix = match parts.uri.query() {
         None => String::new(),
-        Some(q) if q.strip_prefix("token=").and_then(parse_token).is_some() => format!("?{q}"),
+        Some(q) if q.starts_with("token=") => format!("?{q}"),
         _ => return Ok(status(StatusCode::BAD_REQUEST)),
     };
     let resource = resource.to_owned();

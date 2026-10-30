@@ -11,6 +11,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 pub enum Brand {
     /// ISO MP4: `isom` major brand, compatible `isom iso2 avc1 mp41 mp42`.
     Mp4,
+    /// CMAF fragmented MP4: `iso6` major brand, compatible `iso6 cmfc mp41`.
+    Cmaf,
     /// QuickTime MOV: `qt  ` major brand.
     Mov,
 }
@@ -208,6 +210,11 @@ const MATRIX: [i32; 9] = [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x4000_0000];
 fn write_ftyp(b: &mut BoxBuf, brand: Brand) {
     let m = b.start(b"ftyp");
     match brand {
+        Brand::Cmaf => {
+            b.bytes(b"iso6");
+            b.u32(1);
+            b.bytes(b"iso6cmfcmp41");
+        }
         Brand::Mp4 => {
             b.bytes(b"isom");
             b.u32(0x200);

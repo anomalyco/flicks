@@ -23,10 +23,7 @@ fn cmaf_writer_hostile_inputs() {
                 SampleEntry::avc(AvcConfig::new(vec![bytes.clone()], vec![bytes.clone()], rng.next() as u8), 16, 16);
         }
         let _ = cmaf::write_init_segment(&[cfg.clone()]);
-        let _ = cmaf::timing::reorder_depth(&cfg.entry.codec);
-        if let Ok(c) = HevcConfig::parse(&bytes) {
-            let _ = cmaf::timing::reorder_depth(&CodecConfig::Hevc(c));
-        }
+        let _ = cmaf::validate(&cfg);
         let _ = cmaf::dolby_config(&bytes, false);
         let _ = cmaf::dolby_config(&bytes, true);
         let sample = WriteSample {
@@ -86,7 +83,7 @@ fn cmaf_configuration_prefixes_and_bit_flips() {
         let doc = open(source.as_slice()).unwrap();
         let track = doc.tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap();
         let entry = track.entries[0].clone();
-        assert!(cmaf::timing::reorder_depth(&entry.codec).unwrap() <= 16);
+        assert!(cmaf::validate(&TrackConfig::new(entry.clone(), track.timescale)).is_ok());
         let sps = match &entry.codec {
             CodecConfig::Avc(c) => c.sps[0].clone(),
             CodecConfig::Hevc(c) => c.sps()[0].to_vec(),
@@ -107,9 +104,7 @@ fn cmaf_configuration_prefixes_and_bit_flips() {
                 CodecConfig::Hevc(c) => c.arrays.iter_mut().find(|a| a.nal_type == 33).unwrap().nalus = vec![bytes],
                 _ => unreachable!(),
             }
-            if let Ok(depth) = cmaf::timing::reorder_depth(&entry.codec) {
-                assert!(depth <= 16);
-            }
+            let _ = cmaf::validate(&TrackConfig::new(entry.clone(), track.timescale));
             let _ = cmaf::write_init_segment(&[TrackConfig::new(entry, track.timescale)]);
             count += 1;
         }

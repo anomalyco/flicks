@@ -121,7 +121,7 @@ pub fn write_init_segment(tracks: &[TrackConfig]) -> Result<Vec<u8>> {
             _ => {}
         }
     }
-    let mut writer = FragmentedWriter::new(Vec::new(), WriterOptions::new(Brand::Mp4));
+    let mut writer = FragmentedWriter::new(Vec::new(), WriterOptions::new(Brand::Cmaf));
     for track in tracks {
         let mut track = track.clone();
         // Parameter sets live in the sample description, never an hev1 entry.
@@ -137,20 +137,10 @@ pub fn write_init_segment(tracks: &[TrackConfig]) -> Result<Vec<u8>> {
         }
         writer.add_track(track)?;
     }
-    let init = writer.finish()?;
-    let old = super::boxes::BoxHeader::parse(&init)?;
-    let end = usize::try_from(old.size.ok_or(Error::Truncated("ftyp"))?).map_err(|_| Error::TooLarge("ftyp"))?;
-    let mut out = BoxBuf::new();
-    let ftyp = out.start(b"ftyp");
-    out.bytes(b"iso6");
-    out.u32(1);
-    out.bytes(b"iso6cmfcmp41");
-    out.end(ftyp);
-    out.bytes(init.get(end..).ok_or(Error::Truncated("init"))?);
-    Ok(out.buf)
+    writer.finish()
 }
 
-fn validate(t: &TrackConfig) -> Result<()> {
+pub fn validate(t: &TrackConfig) -> Result<()> {
     let bad = || Error::Mux("invalid CMAF track".into());
     if t.timescale == 0
         || t.language.len() > 64
@@ -282,11 +272,18 @@ pub fn write_media_segment(seq: u32, base_decode_time: u64, samples: &[WriteSamp
     b.u32(samples.len() as u32);
     // Fixed headers total 88 bytes, each trun sample is 16 bytes; mdat header is 8.
     b.i32((96 + 16 * samples.len()) as i32);
+    let first_pts = i128::from(base_decode_time) + i128::from(samples.first().map_or(0, |s| s.composition_offset));
+    let mut dts = base_decode_time;
     for s in samples {
         b.u32(s.duration);
         b.u32(s.data.len() as u32);
-        b.u32(if s.is_sync { 0x0200_0000 } else { 0x0101_0000 });
+        // Open-GOP leading pictures precede the recovery point in presentation,
+        // not decode order. Mark them as potentially undecodable on random access
+        // (ISO/IEC 14496-12 sample_is_leading=1); decoders suppress RASL on a seek.
+        let leading = i128::from(dts) + i128::from(s.composition_offset) < first_pts;
+        b.u32((if s.is_sync { 0x0200_0000 } else { 0x0101_0000 }) | if leading { 0x0400_0000 } else { 0 });
         b.i32(s.composition_offset);
+        dts += u64::from(s.duration); // Overflow was checked above.
     }
     b.end(h);
     b.end(traf);
