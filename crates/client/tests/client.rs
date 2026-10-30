@@ -103,8 +103,8 @@ async fn proxy(server: SocketAddr, state: &State) -> (SocketAddr, Arc<AtomicUsiz
     (addr, count, ca.der().clone())
 }
 
-/// Opens a pairing window whose link names `addr` after the server's interface addresses (which
-/// don't answer: the server listens on 127.0.0.1 only, so pairing has to win the race elsewhere).
+/// Opens a pairing window whose link names `addr` first, then the server's interface addresses
+/// (which don't answer: the server listens on 127.0.0.1 only).
 async fn link(setup: &Setup, user: &str, addr: String) -> String {
     let request = OpenPairing { user: user.into(), admin: false, addrs: vec![addr] };
     let pairing: Pairing = setup.root.call(Method::POST, "/admin/pair", Some(&request)).await.unwrap();

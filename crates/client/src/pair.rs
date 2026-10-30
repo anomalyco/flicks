@@ -45,7 +45,8 @@ pub struct Reply {
     pub signature: String,
 }
 
-/// A link address: `host:port` (IPv6 must be bracketed), not a URL or query.
+/// A link address: `host:port` (IPv6 must be bracketed), not a URL or query, and nothing that
+/// would break the single-quoted `flicks connect '<link>'` the server prints.
 pub fn valid_addr(addr: &str) -> bool {
     let Some((host, port)) = addr.rsplit_once(':') else {
         return false;
@@ -58,7 +59,7 @@ pub fn valid_addr(addr: &str) -> bool {
                 .and_then(|h| h.strip_suffix(']'))
                 .is_some_and(|h| h.parse::<std::net::Ipv6Addr>().is_ok()))
         && port.parse::<u16>().is_ok()
-        && !addr.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '&' | '=' | '#' | '/' | '?'))
+        && !addr.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '&' | '=' | '#' | '/' | '?' | '\''))
 }
 
 pub fn transcript(server_key: &[u8], device_key: &[u8], name: &str) -> Vec<u8> {
@@ -142,6 +143,10 @@ pub fn parse_link(link: &str) -> Option<Link> {
             ("addr", _) => return None,
             _ => {}
         }
+    }
+    // A link with nowhere to go is no link.
+    if addrs.is_empty() {
+        return None;
     }
     Some(Link { server_key: key?, code: code?, addrs })
 }

@@ -126,6 +126,8 @@ mod tests {
         assert_eq!(&link.server_key, key.verifying_key());
         assert_eq!(link.code, [3; CODE_LEN]);
         assert_eq!(link.addrs, addrs);
+        // A link with no addresses can't be used.
+        assert!(parse_link(&super::link(&server, &[3; CODE_LEN], &[])).is_none());
         for bad in [
             "",
             "nas",
@@ -135,6 +137,7 @@ mod tests {
             "a b:1",
             "a&b=c:1",
             "a#b:1",
+            "a'b:1",
             "a\nb:1",
             "https://host:443",
             "host/path:443",

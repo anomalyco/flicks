@@ -375,7 +375,7 @@ pub struct AddUser {
 pub struct OpenPairing {
     pub user: String,
     pub admin: bool,
-    /// More `host:port` addresses for the link (tunnel or tailnet names), after the detected ones.
+    /// More `host:port` addresses for the link (tunnel or tailnet names), before the detected ones.
     #[serde(default)]
     pub addrs: Vec<String>,
 }
@@ -452,8 +452,9 @@ async fn admin(state: &State, method: &Method, path: &str, body: &[u8]) -> Resul
             }
             let user = db.call(move |conn| db::ensure_user(conn, &user, admin)).await?;
             let window = pair::Window::new(user)?;
-            let mut addrs = addresses(state.port);
-            addrs.extend(extra);
+            // Names given explicitly (a tunnel, a tailnet name) go first, so they're tried first.
+            let mut addrs = extra;
+            addrs.extend(addresses(state.port));
             let link = pair::link(&state.public, &window.code, &addrs);
             *state.pairing.lock().await = Some(window);
             json(&Pairing { link, expires_in: pair::WINDOW.as_secs() })

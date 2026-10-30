@@ -37,7 +37,7 @@ pub enum Command {
         /// Make that user an admin.
         #[arg(long)]
         admin: bool,
-        /// Another address to put in the link, such as a tunnel or tailnet name (repeatable).
+        /// Another address to put first in the link, such as a tunnel or tailnet name (repeatable).
         #[arg(long = "addr", value_name = "HOST:PORT")]
         addrs: Vec<String>,
     },
@@ -144,11 +144,12 @@ async fn admin(client: &Connection, command: Command) -> Result<(), Error> {
                 let qr = code.render::<Dense1x2>().dark_color(Dense1x2::Light).light_color(Dense1x2::Dark).build();
                 println!("{qr}");
             }
-            println!("{}", pairing.link);
-            println!(
-                "Scan this in Flicks on the new device, or paste the link. It works once, for {} minutes.",
-                pairing.expires_in / 60
-            );
+            println!("Scan this in Flicks on the new device, or run this there:");
+            println!();
+            // Single quotes: zsh would mangle the link's `?`, `&` and `[...]`.
+            println!("  flicks connect '{}'", pairing.link);
+            println!();
+            println!("It works once, for {} minutes.", pairing.expires_in / 60);
         }
         Command::Device(DeviceCommand::Ls) => {
             let devices: Vec<db::Device> = client.call(Method::GET, "/admin/devices", None::<&()>).await?;

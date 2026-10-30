@@ -302,11 +302,13 @@ async fn pairing_works_on_localhost() {
         .unwrap_err();
     assert!(matches!(err, flicks_client::Error::Status(409, _)), "{err}");
 
-    // Tunnel or tailnet names follow the detected addresses in the link; malformed ones are refused.
+    // Tunnel or tailnet names go before the detected addresses in the link; malformed ones are
+    // refused.
     let request = OpenPairing { user: "cy".into(), admin: false, addrs: vec!["nas.tail1234.ts.net:7686".into()] };
     let pairing: Pairing = server.root.call(Method::POST, "/admin/pair", Some(&request)).await.unwrap();
     let link = pair::parse_link(&pairing.link).unwrap();
-    assert_eq!(link.addrs.last().map(String::as_str), Some("nas.tail1234.ts.net:7686"));
+    assert_eq!(link.addrs.first().map(String::as_str), Some("nas.tail1234.ts.net:7686"));
+    assert!(link.addrs.len() > 1, "and the detected addresses after it: {:?}", link.addrs);
     let request = OpenPairing { user: "cy".into(), admin: false, addrs: vec!["nas&code=x:7686".into()] };
     let err = server.root.call::<Pairing>(Method::POST, "/admin/pair", Some(&request)).await.unwrap_err();
     assert!(matches!(err, flicks_client::Error::Status(400, _)), "{err}");
