@@ -52,11 +52,11 @@ The coordinator keeps the README's "Where it's at" section current as cards merg
 
 ## Models
 
-Each card runs on one of three models, all at high reasoning, set on the board roster (`board agent ls`; agent names are `<model> · FLK-n`):
+Each card runs on one of three models (Big Boi at max reasoning, the others at high), set on the board roster (`board agent ls`; agent names are `<model> · FLK-n`):
 
 | Model | Ref | Gets |
 |---|---|---|
-| GPT-6 Astra | `openai/gpt-6-astra#high` | Performance-critical and low-level work: containers, codecs, hardware decode, GPU, player core, transport, transcoding, benchmarks |
+| Big Boi | `console-openai-test/big-boi#max` | Performance-critical and low-level work: containers, codecs, hardware decode and encode, GPU, player core, transport, transcoding, benchmarks. Replaces GPT-6 Astra (2026-10-30) |
 | Opus 5.5 | `claude-agent/opus#high` | Design-heavy work: auth and storage, audio pipeline, Rune contributions, apps and UI |
 | Sonnet 5.5 | `claude-agent/sonnet#high` | Well-specified plumbing: CI, scanner, service install, parsers |
 
