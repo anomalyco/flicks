@@ -352,13 +352,9 @@ fn bottom(p: &Screen) -> El {
         .h(20.0)
         .center_y()
         .cursor(Cursor::Pointer)
-        .child(
-            el().w_full()
-                .h(4.0)
-                .radius(2.0)
-                .fill(Color::WHITE.alpha(0.25))
-                .child(el().w_frac(fraction).h_full().radius(2.0).fill(style::accent())),
-        )
+        .child(el().w_full().h(4.0).radius(2.0).fill(Color::WHITE.alpha(0.25)).child(
+            el().w_frac(fraction).h_full().radius(2.0).linear_gradient(std::f32::consts::PI / 2.0, style::progress()),
+        ))
         .on_drag(move |s: &mut Flicks, drag: &mut Drag, _: &mut Tx| {
             let Some(p) = &mut s.player else { return };
             let at = (drag.x / drag.w.max(1.0)).clamp(0.0, 1.0) as f64 * duration;
@@ -461,7 +457,7 @@ fn menu_panel(p: &Screen, menu: Menu) -> El {
                 .radius(6.0)
                 .hover(style::faint())
                 .cursor(Cursor::Pointer)
-                .child(text(if on { "✓" } else { "" }).font(style::BODY).color(style::accent()).w(14.0))
+                .child(text(if on { "✓" } else { "" }).font(style::BODY).color(style::amber()).w(14.0))
                 .child(text(label).font(style::BODY).color(style::text()).truncate())
                 .on_press(pick),
         );

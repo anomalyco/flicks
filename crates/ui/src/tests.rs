@@ -13,6 +13,11 @@ fn runtime(scene: &str) -> Runtime<Flicks> {
 }
 
 fn press(rt: &mut Runtime<Flicks>, key: &str) {
+    let k = key.to_string();
+    rt.update(move |_, tx| tx.scroll_into_view(k));
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
     let (x, y) = rt.find(key).unwrap_or_else(|| panic!("no {key} on screen"));
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
@@ -53,7 +58,7 @@ fn a_tile_opens_its_show_where_play_opens_the_episode_and_escape_goes_back() {
     let mut rt = runtime("home");
     assert!(shows(&rt, "Recently Added"));
     let newest = rt.state.catalog.rows[1].titles[0];
-    press(&mut rt, &format!("title-{newest}"));
+    press(&mut rt, &format!("title-{newest}-r1"));
     assert!(matches!(rt.state.screen, Screen::Detail(_)));
     assert!(shows(&rt, "Episode 2") && shows(&rt, "Episode 6"));
 
@@ -78,12 +83,12 @@ fn a_title_whose_servers_did_not_answer_is_dimmed_and_cannot_play() {
     let mut rt = runtime("home");
     let arrival = rt.state.catalog.titles.iter().position(|t| t.item.title == "Arrival").unwrap();
     let tile = |rt: &Runtime<Flicks>| {
-        rt.elements().into_iter().find(|e| e.key.as_deref() == Some(&format!("title-{arrival}")))
+        rt.elements().into_iter().find(|e| e.key.as_deref() == Some(&format!("title-{arrival}-r1")))
     };
     assert!(tile(&rt).unwrap().opacity < 0.5);
     assert!(shows(&rt, "Offline"));
 
-    press(&mut rt, &format!("title-{arrival}"));
+    press(&mut rt, &format!("title-{arrival}-r1"));
     assert!(shows(&rt, "Offline: its server didn't answer."));
     assert!(rt.find("play").is_none());
 
