@@ -2,7 +2,6 @@
 //! cached catalogs), and answers the window's requests by updating its state through the app
 //! handle. Nothing here polls; the thread sleeps on its channel.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use flicks_client::Client;
@@ -46,7 +45,7 @@ pub fn start(app: AppHandle<Flicks>) -> Worker {
 }
 
 async fn serve(app: AppHandle<Flicks>, mut rx: mpsc::UnboundedReceiver<Request>) {
-    let Some(dir) = data_dir() else {
+    let Ok(dir) = flicks_client::data_dir() else {
         return app.update(|s, _| s.failed("no home folder to keep this device's key in".into()));
     };
     let client = match Client::open(&dir) {
@@ -97,21 +96,3 @@ async fn refresh(app: &AppHandle<Flicks>, library: &mut Library) {
     crate::admin::refreshed(app, library);
 }
 
-/// Where this device's key and server list live: the same directory the `flicks` CLI uses
-/// (flicks-server's `data_dir`), so servers paired from either show in both.
-fn data_dir() -> Option<PathBuf> {
-    if cfg!(windows) {
-        return std::env::var_os("LOCALAPPDATA").map(|base| PathBuf::from(base).join("Flicks"));
-    }
-    if !cfg!(target_os = "macos")
-        && let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty())
-    {
-        return Some(PathBuf::from(base).join("flicks"));
-    }
-    let home = PathBuf::from(std::env::var_os("HOME").filter(|v| !v.is_empty())?);
-    Some(if cfg!(target_os = "macos") {
-        home.join("Library/Application Support/Flicks")
-    } else {
-        home.join(".local/share/flicks")
-    })
-}

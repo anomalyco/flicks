@@ -16,9 +16,7 @@ pub mod service;
 pub mod tls;
 pub mod web;
 
-pub use flicks_client::keys;
-
-use std::path::PathBuf;
+pub use flicks_client::{data_dir, home_dir, keys};
 
 /// The one HTTPS port.
 pub const PORT: u16 = 7686;
@@ -57,33 +55,6 @@ pub enum Error {
     BadResponse,
     #[error("{0}")]
     Usage(&'static str),
-}
-
-/// Where the server keeps its key and database: `~/Library/Application Support/Flicks` on macOS,
-/// `%LOCALAPPDATA%\Flicks` on Windows, `$XDG_DATA_HOME/flicks` or `~/.local/share/flicks`
-/// elsewhere.
-pub fn data_dir() -> Result<PathBuf, Error> {
-    if cfg!(windows) {
-        let base = std::env::var_os("LOCALAPPDATA").ok_or(Error::NoHome)?;
-        return Ok(PathBuf::from(base).join("Flicks"));
-    }
-    if !cfg!(target_os = "macos")
-        && let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty())
-    {
-        return Ok(PathBuf::from(base).join("flicks"));
-    }
-    let home = home_dir().ok_or(Error::NoHome)?;
-    if cfg!(target_os = "macos") {
-        Ok(home.join("Library/Application Support/Flicks"))
-    } else {
-        Ok(home.join(".local/share/flicks"))
-    }
-}
-
-/// The user's home directory.
-pub fn home_dir() -> Option<PathBuf> {
-    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
 /// Seconds since the Unix epoch.

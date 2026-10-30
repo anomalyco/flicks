@@ -476,6 +476,28 @@ async fn downloads_resume_verify_and_keep_progress_offline() {
     until(|| (state(&downloads).state == DownloadState::Complete).then_some(())).await;
     assert_eq!(std::fs::read(downloads.local_path(&title).unwrap()).unwrap(), media);
 
+    // The finished file's extension never comes from the server's container string: "json" would
+    // collide with the record, so it lands as `.bin`, and the record stays readable.
+    downloads.remove(&server.key, source.item.id).await.unwrap();
+    let mut odd = source.clone();
+    odd.item.container = "json".into();
+    downloads.start(&connection, &odd).unwrap();
+    until(|| (state(&downloads).state == DownloadState::Complete).then_some(())).await;
+    let bin = downloads.local_path(&title).unwrap();
+    assert_eq!(bin.extension().unwrap(), "bin");
+    assert_eq!(std::fs::read(&bin).unwrap(), media);
+    assert_eq!(state(&downloads).item.container, "json");
+
+    // A source replaced on its server (another hash) no longer counts as the complete copy: the
+    // stale file goes and the download starts over, ending rejected by the new hash.
+    let mut replaced = source.clone();
+    replaced.item.oshash = "0000000000000001".into();
+    downloads.start(&connection, &replaced).unwrap();
+    assert!(!bin.exists() && downloads.local_file(&server.key, source.item.id).is_none());
+    let failed = until(|| matches!(state(&downloads).state, DownloadState::Failed(_)).then(|| state(&downloads))).await;
+    assert!(matches!(failed.state, DownloadState::Failed(why) if why.contains("hash")));
+    downloads.remove(&server.key, source.item.id).await.unwrap();
+
     // Progress made while no server answers (a library that hasn't refreshed) is kept, newest
     // first, and reaches the server on the next refresh.
     let mut offline = Library::open(Client::open(&home).unwrap());
@@ -484,7 +506,7 @@ async fn downloads_resume_verify_and_keep_progress_offline() {
     let older = Progress { position: 1, updated_at: watched.updated_at - 1, ..watched };
     downloads.set_progress(&server.key, source.item.id, older).unwrap();
     assert_eq!(downloads.progress(&offline.titles()[0]), Some(watched));
-    assert_eq!(downloads.sync(&offline).await.unwrap(), 0);
+    assert_eq!(downloads.sync(&mut offline).await.unwrap(), 0);
     let saved = |library: &Library| {
         let connection = library.connection(&server.key).unwrap().clone();
         async move {
@@ -494,9 +516,36 @@ async fn downloads_resume_verify_and_keep_progress_offline() {
     };
     offline.refresh().await.unwrap();
     assert_eq!(saved(&offline).await, None);
-    assert_eq!(downloads.sync(&offline).await.unwrap(), 1);
+    assert_eq!(downloads.sync(&mut offline).await.unwrap(), 1);
     assert_eq!(saved(&offline).await, Some(watched));
-    assert_eq!(downloads.sync(&offline).await.unwrap(), 0);
+    assert_eq!(downloads.sync(&mut offline).await.unwrap(), 0);
+
+    // A second server with the title: progress dated ahead of this clock is taken as now, which
+    // both servers accept, and the one sync gives it to both.
+    let mut client = Client::open(&home).unwrap();
+    let (_, _b_serving, b, _b_folder) =
+        stoppable("download-b", &[("Example (2020).mp4", 1280, 720)], &mut client).await;
+    let mut library = Library::open(client);
+    until_titles(&mut library).await;
+    let title = library.titles()[0].clone();
+    assert_eq!(title.sources.len(), 2);
+    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let ahead = Progress { position: 5_000, played: false, updated_at: now() + 600_000 };
+    downloads.set_progress(&server.key, source.item.id, ahead).unwrap();
+    assert!(downloads.progress(&title).unwrap().updated_at <= now());
+    assert_eq!(downloads.sync(&mut library).await.unwrap(), 1);
+    for source in &title.sources {
+        let path = format!("/progress/{}", source.item.id);
+        let saved: Option<Progress> =
+            library.connection(&source.server).unwrap().call(Method::GET, &path, None::<&()>).await.unwrap();
+        assert_eq!(saved.map(|p| p.position), Some(5_000), "{}", source.server_name);
+    }
+    assert!(title.sources.iter().any(|s| s.server == b.key));
+
+    // Progress for a file its answering server doesn't have is dropped, not retried forever.
+    downloads.set_progress(&server.key, 999_999, watched).unwrap();
+    assert_eq!(downloads.sync(&mut library).await.unwrap(), 0);
+    assert_eq!(std::fs::read_to_string(home.join(flicks_client::download::DIR).join("progress.json")).unwrap(), "[]");
 }
 
 /// Refreshes the library until its first scan has put a title in it.
