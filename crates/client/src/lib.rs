@@ -72,6 +72,35 @@ pub enum Error {
     NotPaired,
     #[error("{1} ({0})")]
     Status(u16, String),
+    #[error("can't find the home directory")]
+    NoHome,
+}
+
+/// Where this device keeps its key, server list and downloads (and the Flicks server its key and
+/// database): `~/Library/Application Support/Flicks` on macOS, `%LOCALAPPDATA%\Flicks` on Windows,
+/// `$XDG_DATA_HOME/flicks` or `~/.local/share/flicks` elsewhere.
+pub fn data_dir() -> Result<PathBuf, Error> {
+    if cfg!(windows) {
+        let base = std::env::var_os("LOCALAPPDATA").ok_or(Error::NoHome)?;
+        return Ok(PathBuf::from(base).join("Flicks"));
+    }
+    if !cfg!(target_os = "macos")
+        && let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty())
+    {
+        return Ok(PathBuf::from(base).join("flicks"));
+    }
+    let home = home_dir().ok_or(Error::NoHome)?;
+    if cfg!(target_os = "macos") {
+        Ok(home.join("Library/Application Support/Flicks"))
+    } else {
+        Ok(home.join(".local/share/flicks"))
+    }
+}
+
+/// The user's home directory.
+pub fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
 /// A server this device has paired with.
@@ -221,18 +250,7 @@ impl Client {
 
     /// Replaces `name` in the data directory with `bytes` (mode 0600), through a temporary file.
     fn write(&self, name: &str, bytes: &[u8]) -> Result<(), Error> {
-        let temp = self.dir.join(format!("{name}.tmp"));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&temp)?;
-        #[cfg(windows)]
-        flicks_platform::permissions::owner_only(&temp)?;
-        std::io::Write::write_all(&mut file, bytes)?;
-        drop(file);
-        std::fs::rename(&temp, self.dir.join(name))?;
-        Ok(())
+        write_private(&self.dir.join(name), bytes)
     }
 
     /// Races the saved addresses of the server with this key and keeps the first whose `/info`
@@ -272,6 +290,24 @@ impl Client {
             _ => Ok(()),
         }
     }
+}
+
+/// Replaces `path` with `bytes` (mode 0600; owner-only on Windows), through a temporary file.
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&temp)?;
+    #[cfg(windows)]
+    flicks_platform::permissions::owner_only(&temp)?;
+    std::io::Write::write_all(&mut file, bytes)?;
+    drop(file);
+    std::fs::rename(&temp, path)?;
+    Ok(())
 }
 
 /// The first address whose probe verifies, and the server's name.
