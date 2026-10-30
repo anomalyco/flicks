@@ -43,6 +43,16 @@ Agents work one card at a time from `ROADMAP.md`, each in its own worktree, trac
 7. **Ask Ryan only through the board** (`board ask ... --card FLK-n`), only for taste calls, approvals or visual checks. Make ordinary design decisions yourself and record them in the design doc.
 8. **After three failed attempts** at the same problem, stop, write the most likely wrong assumption on the card, and hand back.
 
+## Models
+
+Each card runs on one of three models, all at high reasoning, set on the board roster (`board agent ls`; agent names are `<model> · FLK-n`):
+
+| Model | Ref | Gets |
+|---|---|---|
+| GPT-6 Astra | `openai/gpt-6-astra#high` | Performance-critical and low-level work: containers, codecs, hardware decode, GPU, player core, transport, transcoding, benchmarks |
+| Opus 5.5 | `claude-agent/opus#high` | Design-heavy work: auth and storage, audio pipeline, Rune contributions, apps and UI |
+| Sonnet 5.5 | `claude-agent/sonnet#high` | Well-specified plumbing: CI, scanner, service install, parsers |
+
 ## Commands
 
 ```sh
