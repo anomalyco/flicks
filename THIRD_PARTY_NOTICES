@@ -12,6 +12,10 @@ Licence texts: licenses/filmcraft-LICENSE-MIT, licenses/LICENSE-APACHE-2.0.
 
 Copied into: crates/mpegts, crates/h264, crates/hevc, crates/av1, crates/vp9, crates/aac,
 crates/ac3, crates/opus, crates/testkit (from the FilmCraft crates of the same names).
+Also adapted into crates/gpu/src/video.wgsl and its colour-reference tests: YCbCr matrix,
+PQ/HLG, BT.2390 EETF and gamut-desaturation maths from crates/gpu/composite.wgsl and
+crates/color/transform.rs. Replaced the editor compositor with a single video draw,
+bi-planar sampling, BT.1886 SDR decoding and explicit target encoding; no FilmCraft dependency.
 Changes: renamed from filmcraft-* to flicks-*, dependency on filmcraft-bitstream replaced by
 flicks-container's bitstream module, environment variables renamed from FILMCRAFT_* to FLICKS_*,
 `let _ =` in tests written as `_ =`, and later changes recorded in this repository's history.
