@@ -256,3 +256,59 @@ optimized: nothing calls for it at this cost.
 ```sh
 cargo test -p flicks-audio --release --test resample -- --nocapture --test-threads=1
 ```
+
+## FLK-3 — VideoToolbox decode (2026-10-30)
+
+Apple M5 Max, macOS 27.2 (26B5112a), Rust 1.99.0, release profile with LTO.
+This is the available Mac, **not an M1 measurement**.
+
+| Measurement | Result |
+|---|---:|
+| 3840×2160 HEVC Main10, first run, 240 frames | **718.9 fps** (334 ms) |
+| Same clip, three subsequent fresh sessions | **718.4 / 720.4 / 720.0 fps** (333–334 ms each) |
+| Hardware versus Flicks software, six 32-frame clips | **192/192 frames**, maximum Y/Cb/Cr sample error **0** |
+| Hostile configuration/sample parser cases | **8,647**, no escaping panic/crash |
+| Damaged compressed access units / drop with work in flight | **8 rejected / 32 clean drops** |
+
+### Method and scope
+
+- `flicks-testkit` locates external ffmpeg; libx265 generates a 240-frame, 60 fps
+  `testsrc2` MP4 at 3840×2160, `yuv420p10le`, fast preset, three B-frames, fixed
+  24-frame keyframe interval, limited-range BT.709. The compressed access units
+  total 14,369,647 bytes. Fixture generation and demuxing are outside the timer;
+  media is temporary, never committed.
+- Each timed run creates a **new hardware-required** VideoToolbox session, submits
+  all access units with their MP4 presentation timestamps, drains asynchronous
+  output and flushes delayed frames. It checks exactly 240 monotone-PTS frames.
+  The timer includes configuration parsing, session creation, compressed input
+  copies, callbacks, presentation reordering and flush. Decoded NV12/P010 buffers
+  are retained, checked for IOSurface backing and released without CPU pixel
+  copies or rendering. At most eight submissions are in flight. This measures
+  decode throughput, not disk/network I/O, GPU presentation or A/V playback.
+- The correctness matrix uses H.264 8-bit, HEVC 8-bit and HEVC 10-bit, each in
+  limited and full range, with B-frames, 318×242 visible dimensions (coded padding),
+  a GOP boundary and timestamps offset by −1,000 ticks. Hardware frames remain
+  readable after their decoder is dropped. Test-only plane copies remove padding,
+  apply the visible crop, deinterleave CbCr and shift P010 down by six bits before
+  comparison with `flicks-h264` / `flicks-hevc`. **Tolerance is zero**: both paths
+  reconstruct integer samples, with no colour conversion or perceptual comparison.
+- Hostile cases include every configuration/sample prefix, 4,000 deterministic
+  configuration-byte mutations, empty/oversized AUs, bad NAL lengths and forbidden
+  header bits, truncated compressed pictures, terminal-error behaviour and dropping
+  sessions with pending callbacks. This is bounded regression coverage, not a
+  guarantee about defects inside Apple's decoder. Existing SPS-parser arithmetic
+  panics are contained with `catch_unwind`; the workspace uses unwind, not abort.
+
+### Reproduce
+
+```sh
+CARGO_PROFILE_RELEASE_STRIP=none FLICKS_REQUIRE_ORACLES=1 cargo test -p flicks-platform --release -- --include-ignored --nocapture
+cargo clippy -p flicks-platform --all-targets --target aarch64-unknown-linux-musl --locked -- -D warnings
+FLICKS_REQUIRE_ORACLES=1 scripts/check.sh
+```
+
+All three platform release tests passed. The full workspace gate passed formatting,
+Clippy with warnings denied, the dependency policy, **731 tests/doctests** (26
+existing or benchmark ignores). Linux all-target Clippy cross-check passed; Linux
+returns `Unsupported` rather than linking Apple frameworks. No Linux runtime or
+M1 hardware test was performed.

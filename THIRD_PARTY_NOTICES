@@ -16,6 +16,9 @@ Also adapted into crates/gpu/src/video.wgsl and its colour-reference tests: YCbC
 PQ/HLG, BT.2390 EETF and gamut-desaturation maths from crates/gpu/composite.wgsl and
 crates/color/transform.rs. Replaced the editor compositor with a single video draw,
 bi-planar sampling, BT.1886 SDR decoding and explicit target encoding; no FilmCraft dependency.
+Also adapted into crates/platform/src/ffi.rs and src/lib.rs (VideoToolbox session, callback, format/sample-buffer
+FFI and presentation reordering from crates/platform/src/videotoolbox.rs; retains IOSurface-backed
+frames instead of copying pixels, bounds input and reports flush errors).
 Changes: renamed from filmcraft-* to flicks-*, dependency on filmcraft-bitstream replaced by
 flicks-container's bitstream module, environment variables renamed from FILMCRAFT_* to FLICKS_*,
 `let _ =` in tests written as `_ =`, and later changes recorded in this repository's history.
