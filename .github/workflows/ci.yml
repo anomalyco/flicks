@@ -29,7 +29,7 @@ jobs:
       - name: Install ffmpeg (the distribution's stock build)
         run: |
           if [ "$RUNNER_OS" = macOS ]; then
-            brew install ffmpeg
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg
           else
             sudo apt-get update
             sudo apt-get install -y ffmpeg
@@ -52,6 +52,6 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/fixtures/av1/aom-test-data
-          key: av1-vectors-${{ hashFiles('crates/av1/tests/it/conformance.rs') }}
+          key: ${{ runner.os }}-av1-vectors-${{ hashFiles('crates/av1/tests/it/conformance.rs') }}
 
       - run: scripts/check.sh
