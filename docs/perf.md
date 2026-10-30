@@ -42,10 +42,39 @@ env -u FLICKS_TMDB_KEY \
 
 The same temporary-HOME server check with the securely injected TMDB key matched both
 episodes, preserved both TMDB **series** backdrops and generated zero local still files.
-Episode-specific TMDB still lookup is not present in the baseline metadata API; this check
+Episode-specific TMDB still lookup was not present in that baseline metadata API; this initial check
 does not claim episode-still precedence. Synthetic coverage exercises all four software
 codecs, 16 truncations, black video, audio-only media and a black-first/good-second retry.
 `scripts/check.sh` passed; a locked Linux server build in `rust:1-bookworm` passed.
+
+### Separate episode stills and cropped bars — `cb2e508`
+
+Same machine, release profile, read-only episodes and measurement command above. The
+worker now removes near-black border rows/columns in normalized luma before the 16:9
+crop and scale. `still-v2-<oshash>.jpg` regenerates the earlier letterboxed cache once.
+
+| Episode | Real server generation before → after (ms) | Five cropped worker runs (ms) | Median before → after (ms) | JPEG bytes before → after |
+|---|---:|---|---:|---:|
+| 2 | 119 → 123 | 313, 115, 118, 114, 114 | 128 → 115 | 60,443 → 63,508 |
+| 6 | 195 → 199 | 204, 198, 193, 194, 195 | 197 → 195 | 105,881 → 118,019 |
+
+Both remain 1280×720. These small timing differences are within shared-machine noise,
+not a speedup claim. Restart kept both cropped JPEG mtimes unchanged. A release desktop
+built from this lane showed both distinct, bar-free episode frames; the updated screenshot
+is `/Users/vogel/dev/flicks-brand/stills-check.png`.
+
+Restarting that same temporary-HOME server with the securely injected key replaced both
+local frames with **distinct TMDB episode stills**. Each `still` matched its live episode API
+response, while `poster` and `backdrop` still matched the series API response. Both obsolete
+local JPEGs were removed. The release desktop showed the series hero and separate episode
+images together: `/Users/vogel/dev/flicks-brand/stills-tmdb-check.png`. All screenshots omit
+links, keys and addresses and stay outside the repository.
+
+A simulated settled match with a missing episode image generated a local still while
+preserving the real TMDB series backdrop; removing its root removed that fallback JPEG.
+Existing tests cover null/404 stills, migration, best-source merge, API and UI requests,
+plus unpadded/top-bottom/side/combined-border frame comparisons. Final foreground
+`scripts/check.sh` and the locked Linux server build in `rust:1-bookworm` passed.
 
 ## FLK-11 — signed range first byte and playback metadata (2026-10-30)
 
