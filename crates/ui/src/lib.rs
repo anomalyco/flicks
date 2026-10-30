@@ -12,7 +12,7 @@ mod style;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rune::{AppSpec, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, TextEdit, Tx, col, row, spacer, text};
 
@@ -57,7 +57,8 @@ pub enum Request {
     Admin(String, server::Op),
 }
 
-/// The most posters and backdrops kept in memory (about 1 MB each, decoded).
+/// The most posters and backdrops kept in memory (about 1 MB each, decoded); past it the oldest
+/// goes.
 const MAX_ARTWORK: usize = 400;
 
 pub struct Flicks {
@@ -82,6 +83,8 @@ pub struct Flicks {
     /// Decoded artwork by `<server key>/<name>`.
     pub artwork: HashMap<String, Image>,
     requested: HashSet<String>,
+    /// `requested` oldest first, for evicting.
+    order: VecDeque<String>,
     images: Option<ImageCache>,
     /// Sends a request to the app's network, once it has started.
     pub network: Option<Box<dyn Fn(Request)>>,
@@ -105,6 +108,7 @@ impl Flicks {
             servers: server::Servers::default(),
             artwork: HashMap::new(),
             requested: HashSet::new(),
+            order: VecDeque::new(),
             images: None,
             network: None,
         }
@@ -183,6 +187,7 @@ impl Flicks {
         if refreshed {
             // Artwork that had no connection before is worth asking for again.
             self.requested.retain(|key| self.artwork.contains_key(key));
+            self.order.retain(|key| self.artwork.contains_key(key));
         }
         self.catalog = catalog;
         self.refreshed = refreshed;
@@ -213,14 +218,12 @@ impl Flicks {
 
     pub fn artwork(&mut self, server: &str, name: &str, bytes: Option<Vec<u8>>) {
         let key = artwork_key(server, name);
-        match (bytes, &self.images) {
-            (Some(bytes), Some(images)) => {
-                self.artwork.insert(key, images.load(bytes));
-            }
-            // Not reachable yet: the next refresh asks again.
-            _ => {
-                self.requested.remove(&key);
-            }
+        // A failed fetch stays requested, so typing in search doesn't ask again; the next refresh
+        // does. Artwork evicted while on its way is dropped.
+        if let (Some(bytes), Some(images)) = (bytes, &self.images)
+            && self.requested.contains(&key)
+        {
+            self.artwork.insert(key, images.load(bytes));
         }
     }
 
@@ -241,13 +244,23 @@ impl Flicks {
         }
     }
 
-    /// Asks for artwork once; past [`MAX_ARTWORK`] tiles keep their title card.
+    /// Asks for artwork once, evicting the oldest past [`MAX_ARTWORK`].
     fn want_artwork(&mut self, server: String, name: String) {
-        let Some(send) = &self.network else { return };
-        if self.requested.len() >= MAX_ARTWORK || !self.requested.insert(artwork_key(&server, &name)) {
+        let key = artwork_key(&server, &name);
+        if self.network.is_none() || self.requested.contains(&key) {
             return;
         }
-        send(Request::Artwork(server, name));
+        if self.order.len() >= MAX_ARTWORK
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.requested.remove(&oldest);
+            self.artwork.remove(&oldest);
+        }
+        self.requested.insert(key.clone());
+        self.order.push_back(key);
+        if let Some(send) = &self.network {
+            send(Request::Artwork(server, name));
+        }
     }
 }
 

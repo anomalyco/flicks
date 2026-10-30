@@ -8,7 +8,7 @@ use flicks_client::Item;
 use flicks_client::merge::{self, Key, Source, Title};
 
 /// What a library tile and a title's page stand for.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GroupKey {
     /// A show's episodes: by TMDB id when matched, else by name.
     Show(String),
@@ -51,14 +51,16 @@ pub struct Catalog {
 /// How many titles Recently Added shows.
 const RECENT: usize = 30;
 
+/// The most tiles in one Home row, until Rune virtualizes horizontal scrolling.
+const ROW: usize = 60;
+
 impl Catalog {
     pub fn build(titles: Vec<Title>) -> Catalog {
         let mut catalog = Catalog { titles, ..Catalog::default() };
-        let mut group_at: HashMap<String, usize> = HashMap::new();
+        let mut group_at: HashMap<GroupKey, usize> = HashMap::new();
         for (at, title) in catalog.titles.iter().enumerate() {
             let key = group_key(title);
-            let id = format!("{key:?}");
-            let group = *group_at.entry(id).or_insert_with(|| {
+            let group = *group_at.entry(key.clone()).or_insert_with(|| {
                 catalog.groups.push(Group {
                     key,
                     name: title.item.title.clone(),
@@ -96,6 +98,9 @@ impl Catalog {
             rows.push(Row { name: name.into(), titles, groups: true });
         }
         rows.retain(|r| !r.titles.is_empty());
+        for row in &mut rows {
+            row.titles.truncate(ROW);
+        }
         catalog.rows = rows;
         catalog
     }

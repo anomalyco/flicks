@@ -113,3 +113,37 @@ fn typing_in_search_shows_the_matching_episodes() {
     rt.frame(1.0 / 60.0);
     assert!(shows(&rt, "Nothing matches \u{201c}visionx\u{201d}."));
 }
+
+#[test]
+fn artwork_is_asked_for_once_and_the_oldest_goes_past_the_limit() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut s = Flicks::new();
+    s.network = Some(Box::new(move |request| {
+        if let Request::Artwork(_, name) = request {
+            let _ = tx.send(name);
+        }
+    }));
+    s.want_artwork("server".into(), "w342-1.jpg".into());
+    // Not found: it stays asked for, so search keystrokes don't fetch it again.
+    s.artwork("server", "w342-1.jpg", None);
+    s.want_artwork("server".into(), "w342-1.jpg".into());
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["w342-1.jpg"]);
+
+    for i in 2..=MAX_ARTWORK + 1 {
+        s.want_artwork("server".into(), format!("w342-{i}.jpg"));
+    }
+    assert_eq!(rx.try_iter().count(), MAX_ARTWORK, "past the limit, new artwork is still asked for");
+    assert_eq!(s.requested.len(), MAX_ARTWORK);
+    assert!(!s.requested.contains(&artwork_key("server", "w342-1.jpg")), "the oldest went");
+}
+
+#[test]
+fn a_home_row_holds_at_most_60_tiles() {
+    let movies = (0..100).map(|i| {
+        let item = fixture::item(i, &format!("Movie {i}"), None, i, 90);
+        fixture::title(item, None, true)
+    });
+    let catalog = Catalog::build(movies.collect());
+    let movies = catalog.rows.iter().find(|r| r.name == "Movies").unwrap();
+    assert_eq!(movies.titles.len(), 60);
+}
