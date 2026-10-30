@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use flicks_client::{Connection, net};
 use flicks_server::db::{Device, Folder, User};
@@ -829,10 +830,13 @@ async fn catalog_play_ranges_and_private_progress() {
     }
     let result: Value = viewer.call(Method::GET, &p, None::<&()>).await.unwrap();
     assert_eq!(result, saved);
+    let now_ms = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
     for bad in [
         json!({"position": -1,"played":false,"updated_at":2000}),
         json!({"position": 0,"played":false,"updated_at":-1}),
         json!({"position": 0,"played":false,"updated_at":2000,"user":1}),
+        // More than the 60 s of allowed clock skew ahead.
+        json!({"position": 0,"played":false,"updated_at":now_ms + 3_600_000}),
     ] {
         assert!(matches!(
             viewer.call::<Value>(Method::PUT, &p, Some(&bad)).await,
@@ -926,6 +930,10 @@ async fn catalog_play_ranges_and_private_progress() {
         viewer.call(Method::PUT, &p, Some(&json!({"position":5000,"played":true,"updated_at":1001}))).await.unwrap();
     let home: Value = viewer.call(Method::GET, "/home", None::<&()>).await.unwrap();
     assert_eq!(home["continue_watching"], json!([]));
+    // A clock a little ahead is fine.
+    let skewed = json!({"position": 5000, "played": true, "updated_at": now_ms + 30_000});
+    let result: Value = viewer.call(Method::PUT, &p, Some(&skewed)).await.unwrap();
+    assert_eq!(result, skewed);
 
     // A watcher rescans after a new file appears, without another folder edit.
     std::fs::write(media.path().join("Second.mp4"), &bytes).unwrap();
