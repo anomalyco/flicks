@@ -59,7 +59,7 @@ Device keys and signed requests. No passwords, no bearer tokens.
 - **Matching:** names are parsed from paths (title, year, season, episode, edition), then matched on TMDB when a key is set (`FLICKS_TMDB_KEY`); artwork is cached once. Without a key everything still scans and plays under its parsed name. Tests use recorded TMDB responses, never the live API.
 - **Storage:** one SQLite database (WAL), owned by `server`, which runs the single writer task and the migrations. `library` defines its catalog tables and works on a connection it's handed, so it has no database of its own.
 - **API:** catalog (home rows, libraries, items, search), `/play/{file}` returning the file's facts and byte ranges for header and resume point in one response, byte-range serving, and progress (`PUT /progress/{item}`: position, played, updated-at; newest wins).
-- **CLI:** `flicks serve`, `flicks folder add|rm|ls`, `flicks user add|ls`, `flicks pair`, `flicks device ls|rm`, `flicks status`. On macOS, `flicks service install` writes a launchd agent.
+- **CLI:** `flicks serve`, `flicks folder add|rm|ls`, `flicks user add|ls`, `flicks pair`, `flicks device ls|rm`, `flicks status`. `flicks service install` writes a launchd agent on macOS and a systemd user service (with lingering, so it starts at boot) on Linux.
 
 ### Catalog API (FLK-11)
 
