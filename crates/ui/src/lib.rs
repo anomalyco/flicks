@@ -115,6 +115,7 @@ impl Flicks {
     }
 
     pub fn go(&mut self, screen: Screen) {
+        self.servers.link = None;
         if let Screen::Detail(key) = &screen {
             if !matches!(self.screen, Screen::Detail(_)) {
                 self.back = self.screen.clone();
