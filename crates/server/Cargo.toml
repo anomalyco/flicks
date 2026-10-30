@@ -14,14 +14,13 @@ name = "flicks"
 path = "src/main.rs"
 
 [dependencies]
+flicks-client = { path = "../client" }
 flicks-container = { path = "../container", features = ["matroska"] }
 flicks-library = { path = "../library" }
 flicks-metadata = { path = "../metadata" }
 clap = { version = "4.6.7", features = ["derive"] }
 data-encoding = "2.11.1"
 getrandom = "0.4"
-hkdf = "0.13"
-hmac = "0.13"
 http-body-util = { version = "0.1.5", default-features = false }
 hyper = { version = "1.12.0", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }

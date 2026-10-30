@@ -1055,6 +1055,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "flicks-client"
+version = "0.0.0"
+dependencies = [
+ "data-encoding",
+ "flicks-container",
+ "flicks-server",
+ "getrandom 0.4.3",
+ "hkdf",
+ "hmac",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "p256",
+ "rcgen",
+ "rustls",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots",
+]
+
+[[package]]
 name = "flicks-container"
 version = "0.0.0"
 dependencies = [
@@ -1159,12 +1186,11 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "data-encoding",
+ "flicks-client",
  "flicks-container",
  "flicks-library",
  "flicks-metadata",
  "getrandom 0.4.3",
- "hkdf",
- "hmac",
  "http-body-util",
  "hyper",
  "hyper-util",
