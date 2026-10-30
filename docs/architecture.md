@@ -1,14 +1,14 @@
 # Flicks architecture
 
-2026-10-30. Third draft. No product code yet; `crates/core`, `crates/net` and `crates/store` are copied from Deadbolt (commit 7595d31), and the containers and decoders from FilmCraft and craft-libs (see `THIRD_PARTY_NOTICES`). Research: `research/2026-10-30-fast-stack.md`.
+2026-10-30. Fourth draft, after the first plan review. No product code yet; `crates/core`, `crates/net` and `crates/store` are copied from Deadbolt (commit 7595d31), and the containers and decoders from FilmCraft and craft-libs (see `THIRD_PARTY_NOTICES`). Research: `research/2026-10-30-fast-stack.md` (its household mesh, jellyfin-ffmpeg and libmpv parts are superseded by this doc).
 
 ## Principles
 
-1. **Everything lives in this repo.** Flicks never depends on another project's repo: no git dependencies on FilmCraft, Isocast, Deadbolt or anything else. Code we want from them is copied in, renamed, owned and maintained here, as `core`, `net` and `store` were. Copied code keeps its original copyright and licence notice in `THIRD_PARTY_NOTICES` (FilmCraft is MIT or Apache-2.0, which requires that).
-2. **Rune is the one exception.** It's our UI framework, so Flicks depends on it, builds every UI in it, and contributes what's missing upstream instead of working around it.
-3. **Foundation crates from crates.io are fine** (decided 2026-10-30): tokio, iroh, rustls, wgpu, redb and OS bindings stay normal dependencies. Media, playback, library and protocol code is ours.
-4. **No FFmpeg, no libmpv.** Demuxing, decoding, encoding, remuxing, subtitles and playback are our own Rust code, with the operating system's hardware decoders and encoders called directly.
-5. **Insanely optimized.** Every hot path has a budget and a benchmark that fails CI when it regresses: idle memory, cold start, time to first frame, seek, scan of an unchanged library, and frames dropped. Zero-copy from hardware decoder to GPU texture to screen. No process spawned per stream. Nothing runs when nothing changes.
+1. **Everything lives in this repo.** Flicks never depends on another project's repo: no git dependencies on FilmCraft, Isocast, Deadbolt or anything else. Code we want from them is copied in, renamed, owned and maintained here. Copied code keeps its original copyright and licence notice in `THIRD_PARTY_NOTICES`.
+2. **Rune is the one exception.** It's our UI framework, so Flicks depends on it (pinned rev, `default-features = false` so none of its media crates come along), builds every desktop UI in it, and contributes what's missing upstream instead of working around it.
+3. **Foundation crates from crates.io are fine** (decided 2026-10-30): tokio, iroh, rustls, wgpu, redb, SQLite bindings, text shaping, compression and OS bindings. Media, playback, library and protocol code is ours.
+4. **No FFmpeg, no libmpv, no GPL.** Demuxing, decoding, encoding, remuxing, subtitles and playback are our own Rust code, with the operating system's hardware decoders and encoders called directly. ffmpeg is only a test oracle.
+5. **Insanely optimized.** Every hot path has a budget in `docs/perf.md` and a benchmark that fails CI when it regresses: idle memory, cold start, time to first frame, seek, unchanged rescan, decode fps, dropped frames. Zero-copy from hardware decoder to screen. No process per stream. Nothing runs when nothing changes.
 
 ## Shape
 
@@ -19,111 +19,121 @@ Flicks has two programs: a **server** that owns folders of video, and a **client
   ~/Movies, ~/TV            D:\Media                     /srv/media
   Rune admin window         Rune admin window            headless: `flicks serve` + CLI
         ▲                         ▲                              ▲
-        │ LAN 192.168.1.20        │ tailnet 100.71.3.9           │ OpenTunnel https://nas.example.com
+        │ LAN 192.168.1.20        │ tailnet 100.71.3.9           │ tunnel https://nas.example.com
         │                         │                              │ or iroh (no setup)
         └───────────────┬─────────┴──────────────────────────────┘
-                        │ each server: its own key, own library, own device list
+                        │ each server: its own key, own library, own users and devices
                  Flicks client (Rune)
                  one merged library, continue watching across all servers
 ```
 
-- **Servers are independent.** Each has its own library, database and list of allowed devices. Servers don't need to know about each other. Adding a second server never changes the first.
+- **Servers are independent.** Each has its own library, database, users and devices. Servers never talk to each other.
 - **The client consolidates.** It connects to every server you've added, merges their catalogs by TMDB id (the same film on two servers is one tile with two sources), picks the best source to play, and merges watch progress.
-- **Core and thin UIs.** The server is a background service (launchd, Windows service, systemd) that runs without any window. The Rune admin window is just a client of its local API and can be closed. The same API serves the CLI.
+- **Core and thin UIs.** The server is a background service (launchd, Windows service, systemd) with no window. The Rune admin window and the CLI are clients of its local API.
 
 ## Reaching a server
 
-A server is identified by its **key**, never by its address. Addresses are just ways to reach that key, and a server can have many:
+A server is identified by its **key** (Ed25519), never by its address. A server has two kinds of listener, and clients may know several addresses for each:
 
-| Address | Example | Transport |
-|---|---|---|
-| LAN | `https://192.168.1.20:7686` | HTTPS, self-signed certificate pinned to the server key |
-| Tailnet | `https://100.71.3.9:7686`, `https://nas.tail1234.ts.net:7686` | Same; Tailscale also encrypts |
-| Tunnel or reverse proxy | `https://nas.example.com` (OpenTunnel, Cloudflare Tunnel, Caddy) | The proxy's public certificate, plus the server-key check below |
-| iroh | `iroh:<server key>` | QUIC, hole punching; no ports or setup |
+| Listener | Addresses | Transport | Treated as |
+|---|---|---|---|
+| **Direct** | LAN `https://192.168.1.20:7686`, tailnet `https://100.71.3.9:7686` | TLS 1.3 whose certificate key **is** the server key; clients accept exactly that key, so certificate renewal never breaks pinning | Local network or tailnet, by source address |
+| **Ingress** | Tunnel or reverse proxy, `https://nas.example.com` (OpenTunnel, Cloudflare Tunnel, Caddy) | Plain HTTP on a separate loopback port or Unix socket that only the proxy talks to; the proxy terminates public TLS | Always remote, never local, whatever the TCP peer address |
+| **iroh** | `iroh:<server key>` | QUIC authenticated to both keys end to end, hole punching | Remote |
 
-The client tries every known address at once, keeps the first that proves it holds the server key, and prefers LAN, then tailnet, then tunnel, then iroh. iroh is optional: with it off, the server never contacts anyone. With it on, discovery and relays default to n0's public ones (or a self-hosted relay), never ours. Nothing in the protocol names flicks.dev, which is only the website.
+- The ingress listener is the only place `X-Forwarded-For` or `CF-Connecting-IP` is read, and rate limits key on it there. Loopback traffic on the ingress port is never "local".
+- The client tries every known address at once, keeps the first that proves the server key, and prefers direct LAN, then tailnet, then iroh, then ingress.
+- iroh connects directly (hole punching) most of the time. When it can't, it falls back to a relay: a relay the user runs (embedded `iroh-relay` on a server with a reachable port, or a VPS), else n0's public relays, which are throttled; the admin window warns when streams are relayed through n0. Address publishing to n0's DNS is on only for servers with iroh enabled, never for clients.
+- Nothing in the protocol names flicks.dev, which is only the website.
 
 ## Authentication
 
-Modelled on OpenCode's `opencode pair` (one-time code, QR with every reachable address, try them all, keep the first that answers), but with a key per device instead of one shared password, so the server can be put on the internet.
+Modelled on OpenCode's `opencode pair` (one-time code, QR with every reachable address, try them all), but with a key per device and a pairing code that never travels over the wire, so the server can face the internet through a tunnel.
 
-### Pairing
+### Server identity and storage
 
-1. On the server (admin window, or `flicks pair` on a headless box) the admin opens a pairing window. It shows a QR code and a link:
-   - QR payload: `{"v":1,"server":"<server key>","code":"<128-bit one-time code>","urls":["https://192.168.1.20:7686","https://nas.example.com","iroh:<key>"],"cert":"<sha256 of the LAN certificate>"}`
-   - Link: `https://nas.example.com/pair#<code>.<server key>`. The code is in the fragment, so proxies and tunnels never log it.
-   - The code is single-use and expires after 5 minutes.
-2. The client scans or pastes it, generates its device key if it has none, and redeems the code at every address in parallel: it sends the code, its device public key and name, and checks that the server proves the key in the payload.
-3. The server records the device (Deadbolt's signed `Add`) with a role (admin or viewer, and which libraries) and returns its other addresses. The client stores the server key and pins the LAN certificate.
+- The **server key** is the genesis member of the server's device log (Deadbolt's membership, so it's the most senior device and wins every removal race).
+- Server secrets are stored without a passphrase so the service starts unattended: wrapped by the OS (Keychain, DPAPI with a DACL limited to Administrators and the service SID, a 0600 file or the Secret Service on Linux). `store` gets a server mode with no Argon2id and a small cache; Argon2id stays for clients that opt into a passphrase.
+- Device keys on clients live in the OS keychain where there is one.
 
-For a TV or anything without a camera, the direction flips: the TV shows a short code (8 characters, 10 minutes), and the admin types it in the server's admin window or on a phone that's already an admin. It's the same exchange with the roles swapped, like Netflix's TV sign-in.
+### Pairing from a QR or link
+
+1. The admin opens a pairing window (admin app or `flicks pair`). It shows a QR and a link:
+   - QR: `{"v":1,"server":"<server key>","code":"<128-bit one-time code>","urls":["https://192.168.1.20:7686","https://nas.example.com","iroh:<key>"],"user":"<user id or new>","role":"viewer"}`
+   - Link: `https://nas.example.com/pair#<code>.<server key>`. The fragment never reaches the proxy. The server serves a static, no-referrer `/pair` page that never sends the fragment anywhere; it offers **Open in Flicks** (`flicks://pair#…`) and **Copy code**.
+2. The client derives `k = HKDF(code, "flicks pair v1" ‖ server key)` and sends to every address in parallel: its device key, name and nonce, plus `HMAC(k, transcript)`. **The code itself is never sent**, so a tunnel or MITM that sees the request can't redeem it for another key.
+3. The server checks the HMAC against its open codes in constant time, records the device (signed `Add`, with the user and role from the window), and answers with its server-key signature over the transcript. The client checks that signature against the server key from the QR.
+4. Redeeming is idempotent for the same device key within the window, so parallel attempts at several addresses can't burn the code. Any other device key gets "used".
+
+### Pairing a TV or anything that can't scan
+
+One flow on and off the LAN: the TV finds the server through DNS-SD (`_flicks._tcp`) or the user types its address. The TV sends its device key and gets a pending slot (at most 5 open, 10 minutes each), and shows an 8-character code. The admin types the code in the admin app; both screens then show the same 6-digit confirmation derived from the TV key, server key and code, and the admin approves only if they match. That confirmation catches a MITM, since the TV didn't know the server key beforehand.
 
 ### Every request
 
-- **Over iroh:** the QUIC handshake already authenticates both keys. The server checks the device is on its list on accept, and drops open connections when a device is removed (Deadbolt's membership gate, unchanged).
-- **Over HTTPS:** the client asks for a challenge, signs `(nonce, server key, device key)` with its device key, and gets a **session token**. The token is short-lived (1 hour), names the device, and is MACed with a server secret. The server also signs the challenge with its own key, so a tunnel or DNS hijack can't pose as the server. Tokens are refreshed silently.
-- **Media URLs** for players that can't send headers carry a signed, expiring query token scoped to one item. In practice the client core serves players from loopback, so tokens never reach the player.
+- **Signed, not bearer.** Every request carries an Ed25519 signature by the device key over method, path, body hash, timestamp and a nonce, checked against a per-device nonce cache (±60 s). A tunnel can read and relay traffic, but can't forge, alter or replay requests, so there are no session tokens to steal. Signing and verifying cost microseconds.
+- **Live checks.** Every request is checked against the in-memory device list, so removing a device takes effect on its next request; iroh connections from it close at once (Deadbolt's membership gate).
+- **Admin routes** (folders, devices, settings) are refused on the ingress listener unless the admin turns that on, since the tunnel operator can read the responses. Adding a folder refuses system and secret locations (`/etc`, `~/.ssh`, the Flicks data dir, and their Windows equivalents) after canonicalizing the path.
+- **Players never see credentials.** The client core fetches from the server (signing each range request) and serves the platform player from loopback, on a random port, at paths with a per-session random capability, rejecting any request with a browser `Origin` or `Sec-Fetch-Site: cross-site`.
+- **Only three routes are unauthenticated:** `info` (server key and protocol version, no name or library), pairing redemption and the TV pending-slot request. All are rate-limited per client IP and globally.
+- **Local admin and recovery.** The admin app on the server machine authenticates with a local credential file readable only by that account (0600 or a DACL). `flicks admin reset` on the server machine signs a new admin's `Add` with the server key.
+- **Confidentiality through a tunnel:** the tunnel operator can read responses (catalogs, media). Use the direct listener or iroh when that matters.
 
-### Why it's safe on the open internet
+## Users and watch progress
 
-- **No password exists**, so there's nothing to guess or phish. A device is authorised only by holding its private key.
-- **Only two routes skip auth:** a minimal `info` (server key and protocol version, no name or library) and pairing redemption. Both are rate-limited per IP and globally, and redemption only works while a pairing window is open.
-- **Revocation is per device and immediate:** remove a device and its tokens stop working on the next request, and its iroh connections close.
-- **Each device holds its own key**, so a leaked session token expires within the hour and a stolen laptop is removed without re-pairing everyone else.
-- **The admin window on the server machine** authenticates with a local credential file readable only by that user (as OpenCode's service password works). That's also the recovery path: if every admin device is lost, `flicks admin reset` on the server machine pairs a new one.
-- **Through a tunnel**, the tunnel operator can see traffic, because it terminates TLS. Use iroh (end-to-end encrypted) when that matters.
-
-## Profiles
-
-A person has one **profile**: a Deadbolt-style signed membership log of their devices (phone, laptop, TV). Pairing a new device into your profile, from a device you already have, gives it every server the profile can reach, so a new TV doesn't need pairing with each server. A server grants access to profiles; it keeps a copy of each granted profile's device log and checks it like Deadbolt's membership. Version 1 can start with device-only pairing and add profiles without changing the wire format, since a profile with one device is the same thing.
-
-The profile log also carries the person's server list, watchlist and preferences, so a newly paired device sets itself up from its siblings.
-
-## Watch progress
-
-Progress is stored per (profile, item) on every server that holds that item, as a last-writer-wins value ordered by a hybrid logical clock. The client writes on start, pause, stop, a big seek, finishing, and every few minutes while playing. When two servers disagree, the client takes the newest and writes it back to the other. Servers never talk to each other; clients carry progress between them, and each device's own copy syncs across the profile.
+- **Server users.** A server has users (people), and each paired device belongs to one, chosen in the pairing window ("Who is this for?"). Your Mac and your Apple TV paired as you share Continue Watching on that server from day one.
+- **Progress** is stored per (user, item) on every server that holds the item, as a last-writer-wins value ordered by a hybrid logical clock. The client writes on start, pause, stop, a big seek, finishing, and every few minutes while playing. When two servers disagree, the client takes the newest and writes it back to the other.
+- **Profiles across servers (later).** A profile is a Deadbolt-style signed device log for one person, so a new TV paired into your profile reaches all your servers without pairing each one. Servers would grant profiles instead of single devices; a server user with one device is the degenerate case, so the wire format doesn't change.
 
 ## Server
 
-- **Folders:** the admin adds local folders (or mounted network shares). The scanner walks them with folder hashes (an unchanged folder costs one directory listing), watches local disks for changes, reads headers with our own container parsers (keyframe index, codec data, HDR and Dolby Vision, audio formats), identifies files by OSHash, parses names with our own parser, and matches on TMDB.
-- **Admin window (Rune):** folders and scan status, unmatched and wrong matches, editing metadata, devices and profiles (pair, rename, change role, remove), libraries and who can see them, transcoding (hardware detected, limits), addresses (LAN, tailnet, tunnel URL, iroh on or off), logs.
-- **Playback:** one request (`/play/{item}?t=resume` with the client's device profile) answers with one of three paths:
-  1. **Direct play:** byte ranges of the original file. No CPU. A seek is one range request. Every Flicks app takes this path for everything our player supports.
-  2. **Remux:** fMP4 HLS cut from the keyframe index in process, for players that can't open the container (AVPlayer, browsers, some TVs).
-  3. **Transcode:** our own pipeline in process, no child processes: hardware decode, scale before tone mapping on the GPU, hardware encode (VideoToolbox, Media Foundation with NVENC/QSV/AMF, VA-API), or our software H.264 encoder where there's no hardware. An audio-only transcode (DTS or TrueHD to AAC) leaves the video untouched.
-- **Background analysis:** one pass per file for trickplay thumbnails, intro and credits markers, and loudness; results are keyed by content hash.
-- **LAN discovery:** the server advertises `_flicks._tcp` through the OS's own DNS-SD responder (Bonjour, Avahi, Windows DNS-SD), so clients on the same network list it before pairing.
+- **Folders:** local folders or mounted shares. The scanner walks them with folder hashes (an unchanged folder costs one directory listing), watches local disks, reads headers with `container` (keyframe index from Cues without scanning clusters, codec data, HDR and Dolby Vision, audio formats), identifies files by OSHash, parses names with our own parser, and matches on TMDB.
+- **Admin window (Rune):** folders and scan status, matches, users and devices (pair, rename, role, remove), libraries per user, transcoding, addresses and listeners, relay status, logs.
+- **Playback:** one request (`/play/{item}?t=resume` with the client's capabilities) answers with:
+  1. **Direct play:** byte ranges of the original file. No CPU. Every Flicks app takes this path for everything our player supports.
+  2. **Remux:** fMP4/CMAF HLS segments cut from the keyframe index in process, for AVPlayer, browsers and TVs. Video in `hvc1` with parameter sets, monotonic DTS derived from PTS and the stream's reorder depth (MKV stores PTS only), audio as a separate rendition.
+  3. **Transcode:** our own pipeline in process: hardware decode, scale before tone mapping on the GPU, hardware encode (VideoToolbox, Media Foundation with NVENC/QSV/AMF, VA-API) or our software H.264 encoder. Audio-only transcodes serve third-party clients that lack a codec we can decode (AC-3, E-AC-3, Opus, FLAC to AAC for browsers).
+- **Background analysis:** one pass per file for trickplay, intro and credits markers, and loudness, keyed by content hash.
+- **LAN discovery:** `_flicks._tcp` through the OS's DNS-SD responder (Bonjour, Avahi, Windows DNS-SD).
+
+The `server` crate is plumbing: listeners, auth, routing, service install. Each feature crate (`library`, `metadata`, `playback`, `transcode`, `jellyfin`, `analysis`) exposes its routes and services behind a small interface that `server` mounts; mounting is a one-line change in `server`. Request and response types shared with clients live in `protocol`.
 
 ## Client
 
-- **Library:** a home screen merged across servers (Continue Watching, Next Up, Recently Added, by library and genre), detail pages, search, versions and sources. Servers that are offline grey out their titles instead of hiding them.
-- **Add server:** scan a QR, paste a link, or type an address and enter the server's short code.
-- **Client core:** one Rust crate (`client`) holds the server list, address racing, auth, catalog and progress merge, and media fetching. Every Flicks app uses it: the Rune desktop app directly, and the iOS, tvOS and Android TV apps through a C ABI we generate ourselves.
+- **Library:** home screen merged across servers (Continue Watching, Next Up, Recently Added, libraries, genres), detail pages, search, versions and sources. Offline servers grey their titles out.
+- **Add server:** scan a QR, open a `flicks://` link, paste a link, or find a server on the LAN or type an address and pair as a TV does.
+- **Client core:** `client` holds the server list, address racing, request signing, catalog and progress merge, and the network byte source for the player. The Rune desktop app uses it directly; the Apple and Android apps through `ffi`, our own C ABI.
 
 ## Media stack
 
-All ours, in this repo. The starting point is FilmCraft's pure-Rust media code (no FFmpeg, checked frame by frame against ffmpeg), copied in and cut down to what playback and serving need; Isocast's platform layers and muxer are the starting point for hardware encode and MP4 writing.
+All ours, in this repo. FilmCraft's pure-Rust media code (checked frame by frame against ffmpeg) is copied in; its hardware, GPU and encoder code (`storytold/filmcraft` at fed0f42: `crates/platform`, `crates/gpu`, `crates/h264enc`) is the starting point for those cards, copied in by the card that needs it.
 
-| Area | Crate | Starts from | Then add |
+| Area | Crates | Have | Need (card) |
 |---|---|---|---|
-| Containers | `container`, `mpegts` (copied in) | craft-libs' Matroska (with Cues) and MP4/MOV (fragmented) demuxers and muxers, FilmCraft's MPEG-TS demuxer | fMP4 HLS segmenting for the server's remux |
-| Video decode | `h264`, `hevc`, `av1`, `vp9` (copied in) | FilmCraft's H.264 (500–600 fps at 1080p in software), HEVC Main/Main 10 (~225 fps), AV1 (incl. film grain), VP9 | Dolby Vision (profiles 5, 7, 8) metadata and reshaping |
-| Audio decode | `aac`, `ac3`, `opus` (copied in) | FilmCraft's AAC, Opus, AC-3 and E-AC-3; their FLAC/MP3/Vorbis go through a third-party crate there, so we write those | Atmos metadata, DTS, TrueHD, passthrough to receivers |
-| Hardware | `platform` | FilmCraft's VideoToolbox, Media Foundation and VA-API decode; Isocast's macOS, Windows and Linux layers | VA-API AV1/VP9, hardware encode on all three for the server |
-| Encode | `encode` | FilmCraft's H.264 and AAC encoders | Only for the server's transcodes |
-| Subtitles | `subtitle` | — | SRT, WebVTT, PGS (bitmap, simple), ASS/SSA rendering on Rune's text engine |
-| GPU | `gpu` | FilmCraft's YUV and colour code | Zero-copy hardware frame → wgpu texture on every OS, scale, HDR tone mapping, HDR output where the display supports it |
+| Containers | `container`, `mpegts` | MKV/WebM with Cues, MP4/MOV (fragmented), MPEG-TS | Seek from Cues positions without cluster scans, lazy open, compact MP4 sample tables, MPEG-TS seek by PCR bisection, prefetching byte source; zlib content compression and PGS in MKV; `dvh1`/`dvhe` and `dvcC`/`dvvC` in MP4; stateless fMP4 segment writer (FLK-29, FLK-19) |
+| Video | `h264`, `hevc`, `av1`, `vp9` | H.264 8-bit (500–600 fps 1080p), HEVC Main/Main 10 (~225 fps 1080p), AV1, VP9 | H.264 High 10 (FLK-35); HDR SEI (mastering display, content light level) (FLK-29) |
+| Dolby Vision | `dovi` | — | RPU parsing, profile 7 enhancement-layer strip to 8.1, profile 5 reshaping on the GPU (FLK-32) |
+| Audio | `aac`, `ac3`, `opus`; `flac`, `mp3`, `vorbis`, `alac`, `pcm`; `dts`, `truehd` | AAC, AC-3, E-AC-3, Opus | FLAC, MP3, Vorbis, ALAC, LPCM (FLK-31); DTS core and TrueHD (FLK-21, FLK-36); passthrough to receivers (FLK-37) |
+| Hardware decode | `platform` | — | VideoToolbox on macOS, iOS and tvOS (FLK-3); Media Foundation and VA-API (FLK-20); MediaCodec on Android (FLK-34). `unsafe` lives here |
+| GPU | `gpu` | — | Zero-copy import of hardware frames into wgpu textures, YUV (NV12, P010) to display colour, scaling, BT.2390 tone mapping, Dolby Vision reshaping (FLK-4) |
+| Encode | `encode` | — | Hardware encoders and FilmCraft's software H.264 encoder, for server transcodes (FLK-26) |
+| Subtitles | `subtitle` | — | SRT, WebVTT, ASS/SSA with fonts from MKV attachments (FLK-22); PGS (FLK-33). Portable: shapes text with a crates.io shaper and produces RGBA quads for `gpu`, with no Rune dependency, so it builds for iOS, tvOS and Android |
 
 ### Player
 
-The `player` crate puts it together: demux, decode (hardware first, our software decoders when the hardware can't), audio output with A/V sync, subtitles, and frames as wgpu textures that Rune draws. It also builds for iOS, tvOS and Android, so every Flicks app plays the same files the same way, the way Infuse plays everything on Apple TV.
+`player` puts it together and builds for macOS, Windows, Linux, iOS, tvOS and Android:
 
-Until a gap closes (say DTS audio), the client asks the server for that one track transcoded (DTS to AAC) and plays the original video directly. Nothing ever falls back to a third-party player.
+- **Video:** hardware decode first, our software decoders when hardware can't (Hi10P, odd profiles); frames stay on the GPU.
+- **Audio** (`audio` crate, FLK-30): decode, map every decoder's channel order to one canonical layout, downmix (ITU-R BS.775) when the device has fewer channels, resample to the device rate, dynamic range compression off by default, device output.
+- **Clock:** audio is the master clock, including the output device's latency; video frames present against display timestamps; frame-rate matching where the OS allows.
+- **Tracks:** the player picks the best track it can decode; until DTS and TrueHD land, a file with only those tracks reports that clearly instead of playing silently.
 
-### Contributing it to Rune
+### Drawing frames in Rune
 
-Rune's `Player` is AVPlayer-only today, which means macOS, no MKV and no Windows or Linux. Once `player` is solid, it's a natural cross-platform backend for Rune's `Player`. We'd offer it upstream and keep Flicks on the same code.
+Decided 2026-10-30: the desktop app attaches a Rune `Compositor` (`App::compositor`, available on every platform Rune supports), so `gpu` draws video with **Rune's own wgpu device** into Rune's frame target, in the same pass, before Rune draws the UI over it. Hardware frames are imported straight into textures on that device; there is no intermediate RGBA copy. What Rune needs (FLK-9):
+
+1. An HDR-capable target (EDR / `Rgba16Float` swapchain and colour space) so HDR video can reach HDR displays; until then HDR is tone mapped to SDR.
+2. Optionally later, a first-class `video` element built on `player`, offered upstream as the cross-platform backend for Rune's AVPlayer-only `Player`.
 
 ## Apps and platforms
 
@@ -132,47 +142,45 @@ Rune's `Player` is AVPlayer-only today, which means macOS, no MKV and no Windows
 | macOS, Windows, Linux | Flicks (Rune) | Our player |
 | Server admin, all three | Flicks Server window (Rune) or CLI | — |
 | iOS, iPadOS, tvOS | Flicks (SwiftUI shell + client core) | Our player; the system player only where Apple requires it (AirPlay, Picture in Picture) |
-| Android, Android TV, Fire TV | Flicks (Compose shell + client core) | Our player |
+| Android, Android TV, Fire TV | Flicks (Compose shell + client core) | Our player, with MediaCodec hardware decode |
 | Anything else (Roku, LG, Samsung, Kodi, browsers) and until our apps ship | Infuse, Swiftfin, Streamyfin, Findroid, Jellyfin apps, jellyfin-web | Through the Jellyfin-compatible API |
 
 ### Jellyfin-compatible API
 
-The server serves a subset of the Jellyfin 12 API (about 30–50 operations: login, views, items, resume, Next Up, PlaybackInfo, streams and HLS, images, sessions and progress, media segments), written from Jellyfin's OpenAPI spec. It merges nothing: each Jellyfin client sees the one server it points at.
+A subset of the Jellyfin 12 API (about 30–50 operations: auth, views, items, resume, Next Up, PlaybackInfo, streams and HLS, images, sessions and progress, media segments), written from Jellyfin's OpenAPI spec, for the one server a Jellyfin client points at.
 
-Jellyfin clients sign in with a username and password or with **Quick Connect**, where the app shows a 6-character code and an already signed-in device approves it. Flicks uses Quick Connect only: the code is approved in the Flicks admin window or app, which matches our TV pairing, so there's still no password on the server. Jellyfin clients get a long-lived bearer token, which is weaker than a device key, so those tokens are:
-
-- **viewer only**, never admin;
-- **listed and revocable** per device, like any other device;
-- **LAN and tailnet only by default**, with a setting to allow them from a tunnel.
+Sign-in is **Quick Connect** only: the app shows a code, and a user approves it in the Flicks admin or desktop app, choosing which user it belongs to. Jellyfin clients use bearer tokens, which is weaker than our signed requests, so those tokens are viewer only, listed and revocable per device, and accepted only on the direct listener (LAN and tailnet) unless the admin enables them on ingress.
 
 ## Crates
 
 | Crate | Owns | Status |
 |---|---|---|
-| `core` | Device keys, signed entries, membership and roles, profile logs, progress registers | Copied from Deadbolt; strip password items, rename vault to profile |
-| `store` | Encrypted redb for keys and logs | Copied from Deadbolt |
-| `net` | iroh endpoint (tuned), membership gate, pairing, sync sessions | Copied from Deadbolt; add tuning and the new pairing payload |
-| `container`, `mpegts`, `h264`, `hevc`, `av1`, `vp9`, `aac`, `ac3`, `opus`, `testkit` | Containers, decoders, test oracles | Copied in from FilmCraft and craft-libs (see `THIRD_PARTY_NOTICES`) |
-| `platform`, `gpu`, `encode`, `subtitle` | The rest of the media stack above | New; FilmCraft's and Isocast's platform code is the starting point |
-| `player` | Demux, decode, audio, A/V sync, subtitles, wgpu frames | New |
-| `library` | Scanner, header parsing, OSHash, filename parsing, TMDB matching, catalog | New |
-| `media` | Play planner, fMP4 HLS remux, transcode sessions, analysis | New |
-| `server` | HTTPS API, auth and tokens, pairing windows, DNS-SD, service install, `flicks` CLI | New; daemon, local API and mutual-TLS patterns from Isocast |
-| `jellyfin` | Jellyfin 12 API subset and Quick Connect | New |
-| `client` | Server list, address racing, auth, catalog and progress merge, media fetching; C ABI for mobile | New |
-| `app` | Rune client UI (library, player) | New |
-| `admin` | Rune server admin window | New |
+| `core` | Device keys, signed entries, membership and roles, users | From Deadbolt; becomes server device logs and users (FLK-7) |
+| `store` | redb storage for keys and logs | From Deadbolt; gains server mode (FLK-7) |
+| `net` | iroh endpoint, membership gate, Deadbolt pairing and sync | From Deadbolt; tuned in FLK-17 |
+| `container`, `mpegts`, `h264`, `hevc`, `av1`, `vp9`, `aac`, `ac3`, `opus`, `testkit` | Containers, decoders, test oracles | From FilmCraft and craft-libs |
+| `flac`, `mp3`, `vorbis`, `alac`, `pcm`, `dts`, `truehd`, `dovi` | Remaining codecs and Dolby Vision | New |
+| `platform`, `gpu`, `encode`, `subtitle`, `audio` | Hardware, GPU, encoders, subtitles, audio output | New |
+| `player` | Playback engine | New |
+| `bench` | Benchmarks behind `docs/perf.md` | New |
+| `protocol` | Types shared by server and clients | New (FLK-10) |
+| `library`, `names`, `metadata`, `playback`, `transcode`, `analysis`, `jellyfin` | Server features (`names` is the filename parser) | New |
+| `server` | Listeners, auth, routing, service install, `flicks` CLI | New |
+| `client`, `ffi` | Client core and its C ABI | New |
+| `apps/desktop`, `apps/admin` | Rune apps | New |
+
+`unsafe` is denied workspace-wide; every crate without it also carries `#![forbid(unsafe_code)]`. Only `platform`, `gpu` and `ffi` allow it, on their FFI modules, with a `// SAFETY:` comment per block.
 
 ## Rune contributions
 
-What Flicks needs from Rune, to build upstream rather than work around:
+1. **HDR target** (EDR / `Rgba16Float`) for HDR video output (FLK-9).
+2. **`flicks://` URLs on Windows and Linux** (`on_open_url` is macOS-only).
+3. **Ten-foot UI:** focus navigation by arrow keys, remotes and game controllers, overscan-safe layout (FLK-28).
+4. **A cross-platform `Player` backend** from `player`, once it's solid.
 
-1. **Frames on Windows and Linux.** `NativeSurface` imports frames without copies only on macOS. The player needs zero-copy hand-off of a wgpu texture (from D3D11/D3D12 and VA-API/DMA-BUF) on every platform.
-2. **A cross-platform `Player`.** Offer `player` as Rune's backend (above).
-3. **Ten-foot UI.** Focus navigation by arrow keys, remotes and game controllers, and overscan-safe layouts, for the TV-style home screen on desktop.
-4. **TV platforms.** tvOS and Android TV aren't on Rune's platform list, so those apps start as native shells around the Rust client core and player.
+tvOS and Android TV aren't on Rune's platform list, so those apps are native shells around the client core and player.
 
 ## Open questions
 
-1. Ports: is 7686 free of common conflicts, and should the server try UPnP for a public port when iroh is off?
+1. Ports: is 7686 free of common conflicts, and should the server try UPnP for a public port?
 2. Live TV and DVR: later?
