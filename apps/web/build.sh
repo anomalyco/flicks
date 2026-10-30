@@ -12,5 +12,5 @@ fi
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_PROFILE_RELEASE_STRIP=debuginfo cargo build -p flicks-web --target wasm32-unknown-unknown --release --locked
 rm -rf "$out"
 wasm-bindgen --target web --no-typescript --remove-name-section --out-dir "$out" --out-name app target/wasm32-unknown-unknown/release/flicks_web.wasm
-cp apps/web/index.html "$out/"
+cp apps/web/index.html apps/web/start.js "$out/"
 echo "Built $out ($(wc -c < "$out/app_bg.wasm" | tr -d ' ') bytes of wasm)"
