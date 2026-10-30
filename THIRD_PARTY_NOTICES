@@ -12,6 +12,9 @@ Licence texts: licenses/filmcraft-LICENSE-MIT, licenses/LICENSE-APACHE-2.0.
 
 Copied into: crates/mpegts, crates/h264, crates/hevc, crates/av1, crates/vp9, crates/aac,
 crates/ac3, crates/opus, crates/testkit (from the FilmCraft crates of the same names).
+crates/platform/src/ffi.rs and src/lib.rs (VideoToolbox session, callback, format/sample-buffer
+FFI and presentation reordering from crates/platform/src/videotoolbox.rs; retains IOSurface-backed
+frames instead of copying pixels, bounds input and reports flush errors).
 Changes: renamed from filmcraft-* to flicks-*, dependency on filmcraft-bitstream replaced by
 flicks-container's bitstream module, environment variables renamed from FILMCRAFT_* to FLICKS_*,
 `let _ =` in tests written as `_ =`, and later changes recorded in this repository's history.
