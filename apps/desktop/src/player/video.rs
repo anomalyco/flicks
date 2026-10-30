@@ -10,10 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use flicks_player::VideoFrame;
 use rune::{Compositor, Frame};
 
-use crate::Flicks;
-
-/// The player's effect slot (`El::effect`).
-pub const MARK: u32 = 0x464c_4b56;
+use flicks_ui::Flicks;
+use flicks_ui::player::MARK;
 
 enum Next {
     Frame(VideoFrame),

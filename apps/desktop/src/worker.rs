@@ -2,17 +2,14 @@
 //! cached catalogs), and answers the window's requests by updating its state through the app
 //! handle. Nothing here polls; the thread sleeps on its channel.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
+use flicks_client::Client;
 use flicks_client::download::Downloads;
-use flicks_client::merge::{Key, Library, Title};
-use flicks_client::{Client, Progress};
+use flicks_client::merge::Library;
+use flicks_ui::{Catalog, Flicks, Request};
 use rune::AppHandle;
 use tokio::sync::{Semaphore, mpsc};
-
-use crate::Flicks;
-use crate::library::catalog::Catalog;
 
 /// What this device calls itself to a server it pairs with.
 const DEVICE_NAME: &str = "Flicks for Mac";
@@ -20,21 +17,8 @@ const DEVICE_NAME: &str = "Flicks for Mac";
 /// Artwork downloads at once.
 const ARTWORK_AT_ONCE: usize = 6;
 
-pub enum Request {
-    Refresh,
-    Pair(String),
-    /// A poster or backdrop: the server key and the artwork name.
-    Artwork(String, String),
-    /// A change on a server's admin routes: its key and the change.
-    Admin(String, crate::server::Op),
-    /// Play a title, taking the player's commands from the channel.
-    Play(Box<Title>, std::sync::mpsc::Receiver<crate::player::Command>),
-    /// Progress on a title: its key, the server and file played, and the progress.
-    Progress(Key, String, i64, Progress),
-}
-
 /// The window's end of the channel.
-pub struct Worker(pub mpsc::UnboundedSender<Request>);
+pub struct Worker(mpsc::UnboundedSender<Request>);
 
 impl Worker {
     pub fn send(&self, request: Request) {
@@ -62,7 +46,7 @@ pub fn start(app: AppHandle<Flicks>) -> Worker {
 }
 
 async fn serve(app: AppHandle<Flicks>, mut rx: mpsc::UnboundedReceiver<Request>) {
-    let Some(dir) = data_dir() else {
+    let Ok(dir) = flicks_client::data_dir() else {
         return app.update(|s, _| s.failed("no home folder to keep this device's key in".into()));
     };
     let client = match Client::open(&dir) {
@@ -88,8 +72,8 @@ async fn serve(app: AppHandle<Flicks>, mut rx: mpsc::UnboundedReceiver<Request>)
                     refresh(&app, &mut library).await;
                 }
             }
-            Request::Admin(server, op) => crate::server::run(&app, &mut library, server, op).await,
-            Request::Play(title, commands) => crate::player::open(&app, &library, copies.as_ref(), &title, commands),
+            Request::Admin(server, op) => crate::admin::run(&app, &mut library, server, op).await,
+            Request::Play(id, title) => crate::player::open(&app, &library, copies.as_ref(), id, &title),
             Request::Progress(key, server, file, progress) => {
                 crate::player::save(&app, &mut library, copies.as_ref(), (key, server, file), progress).await
             }
@@ -116,24 +100,5 @@ async fn refresh(app: &AppHandle<Flicks>, library: &mut Library) {
     let error = library.refresh().await.err().map(|e| e.to_string());
     let catalog = Catalog::build(library.titles().to_vec());
     app.update(move |s, tx| s.loaded(catalog, error, true, tx));
-    crate::server::refreshed(app, library);
-}
-
-/// Where this device's key and server list live: the same directory the `flicks` CLI uses
-/// (flicks-server's `data_dir`), so servers paired from either show in both.
-fn data_dir() -> Option<PathBuf> {
-    if cfg!(windows) {
-        return std::env::var_os("LOCALAPPDATA").map(|base| PathBuf::from(base).join("Flicks"));
-    }
-    if !cfg!(target_os = "macos")
-        && let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty())
-    {
-        return Some(PathBuf::from(base).join("flicks"));
-    }
-    let home = PathBuf::from(std::env::var_os("HOME").filter(|v| !v.is_empty())?);
-    Some(if cfg!(target_os = "macos") {
-        home.join("Library/Application Support/Flicks")
-    } else {
-        home.join(".local/share/flicks")
-    })
+    crate::admin::refreshed(app, library);
 }

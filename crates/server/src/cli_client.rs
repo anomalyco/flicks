@@ -231,13 +231,7 @@ async fn ls(client: &mut Client, server: &Server) {
             println!("{header} at {addr}: {} items", entries.len());
             for entry in entries {
                 let item = entry.item;
-                let mut title = item.title;
-                if let Some(year) = item.year {
-                    title.push_str(&format!(" ({year})"));
-                }
-                if let (Some(season), Some(episode)) = (item.season, item.episode) {
-                    title.push_str(&format!(" S{season:02}E{episode:02}"));
-                }
+                let title = describe(&item);
                 let minutes = item.duration_ms.map(|ms| format!("{}m", ms / 60_000)).unwrap_or_default();
                 println!("{:>6}  {title}  {}  {minutes}  {} bytes", item.id, item.container, item.size);
             }
@@ -248,7 +242,7 @@ async fn ls(client: &mut Client, server: &Server) {
 async fn ls_merged(mut library: Library) -> Result<(), Error> {
     library.refresh().await?;
     // Progress made offline on downloaded titles goes to the servers that answered.
-    Downloads::open(&crate::data_dir()?)?.sync(&library).await?;
+    Downloads::open(&crate::data_dir()?)?.sync(&mut library).await?;
     for server in &library.client.servers {
         let header = format!("{} ({}, {})", server.name, server.user, role(server));
         match library.connection(&server.key) {
@@ -259,13 +253,7 @@ async fn ls_merged(mut library: Library) -> Result<(), Error> {
     println!("{} titles", library.titles().len());
     for title in library.titles() {
         let item = &title.item;
-        let mut name = item.title.clone();
-        if let Some(year) = item.year {
-            name.push_str(&format!(" ({year})"));
-        }
-        if let (Some(season), Some(episode)) = (item.season, item.episode) {
-            name.push_str(&format!(" S{season:02}E{episode:02}"));
-        }
+        let mut name = describe(item);
         if let Some(minutes) = item.duration_ms.map(|ms| ms / 60_000) {
             name.push_str(&format!("  {minutes}m"));
         }

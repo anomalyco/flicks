@@ -1,31 +1,38 @@
 //! The client core (docs/architecture.md, "App"): this device's key, the servers it has paired
 //! with, pairing from a link, address racing with the signed `/info` probe, signed requests, the
-//! catalog and byte ranges, and the library merged across servers ([`merge`]).
+//! catalog and byte ranges, and the library merged across servers ([`merge`]). On wasm (the web
+//! app) only the keys, messages, items and merge build; the browser makes its own requests.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod auth;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod download;
 pub mod keys;
 pub mod merge;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod net;
 pub mod pair;
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 
-use http_body_util::Full;
-use hyper::body::Bytes;
-use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST, RANGE};
-use hyper::{Method, StatusCode};
-use p256::ecdsa::{SigningKey, VerifyingKey};
-use rustls::ClientConfig;
-use rustls::client::WebPkiServerVerifier;
-use rustls::pki_types::CertificateDer;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinSet;
+#[cfg(not(target_arch = "wasm32"))]
+use {
+    http_body_util::Full,
+    hyper::body::Bytes,
+    hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST, RANGE},
+    hyper::{Method, StatusCode},
+    p256::ecdsa::{SigningKey, VerifyingKey},
+    rustls::ClientConfig,
+    rustls::client::WebPkiServerVerifier,
+    rustls::pki_types::CertificateDer,
+    serde::de::DeserializeOwned,
+    std::path::Path,
+    std::sync::Arc,
+    tokio::task::JoinSet,
+};
 
 /// This device's key file in the data directory.
 pub const KEY_FILE: &str = "client.key";
@@ -37,9 +44,11 @@ pub const SERVERS_FILE: &str = "servers.json";
 pub const MAX_READ: u64 = 8 * 1024 * 1024;
 
 /// The most addresses raced for one server.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_ADDRS: usize = 64;
 
 /// How long the first address has to answer before the others are raced.
+#[cfg(not(target_arch = "wasm32"))]
 const HEAD_START: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[derive(Debug, thiserror::Error)]
@@ -54,8 +63,10 @@ pub enum Error {
     ServerList(PathBuf),
     #[error("couldn't encode a key")]
     KeyEncoding,
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("TLS: {0}")]
     Tls(#[from] rustls::Error),
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("HTTP: {0}")]
     Http(#[from] hyper::Error),
     #[error("not a Flicks pairing link")]
@@ -72,6 +83,35 @@ pub enum Error {
     NotPaired,
     #[error("{1} ({0})")]
     Status(u16, String),
+    #[error("can't find the home directory")]
+    NoHome,
+}
+
+/// Where this device keeps its key, server list and downloads (and the Flicks server its key and
+/// database): `~/Library/Application Support/Flicks` on macOS, `%LOCALAPPDATA%\Flicks` on Windows,
+/// `$XDG_DATA_HOME/flicks` or `~/.local/share/flicks` elsewhere.
+pub fn data_dir() -> Result<PathBuf, Error> {
+    if cfg!(windows) {
+        let base = std::env::var_os("LOCALAPPDATA").ok_or(Error::NoHome)?;
+        return Ok(PathBuf::from(base).join("Flicks"));
+    }
+    if !cfg!(target_os = "macos")
+        && let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty())
+    {
+        return Ok(PathBuf::from(base).join("flicks"));
+    }
+    let home = home_dir().ok_or(Error::NoHome)?;
+    if cfg!(target_os = "macos") {
+        Ok(home.join("Library/Application Support/Flicks"))
+    } else {
+        Ok(home.join(".local/share/flicks"))
+    }
+}
+
+/// The user's home directory.
+pub fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
 /// A server this device has paired with.
@@ -89,6 +129,7 @@ pub struct Server {
     pub admin: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Server {
     fn verifying_key(&self) -> Result<VerifyingKey, Error> {
         keys::decode(&self.key, keys::PUBLIC_KEY_LEN).and_then(|key| keys::parse_public(&key)).ok_or(Error::KeyEncoding)
@@ -136,6 +177,7 @@ pub struct Progress {
     pub updated_at: i64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Deserialize)]
 struct Info {
     key: String,
@@ -143,6 +185,7 @@ struct Info {
     signature: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// This device: its key, data directory and saved servers.
 pub struct Client {
     dir: PathBuf,
@@ -151,6 +194,7 @@ pub struct Client {
     web: Arc<WebPkiServerVerifier>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Client {
     /// Opens the data directory, creating it (mode 0700) and `client.key` (mode 0600) if needed.
     pub fn open(dir: &Path) -> Result<Client, Error> {
@@ -221,18 +265,7 @@ impl Client {
 
     /// Replaces `name` in the data directory with `bytes` (mode 0600), through a temporary file.
     fn write(&self, name: &str, bytes: &[u8]) -> Result<(), Error> {
-        let temp = self.dir.join(format!("{name}.tmp"));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&temp)?;
-        #[cfg(windows)]
-        flicks_platform::permissions::owner_only(&temp)?;
-        std::io::Write::write_all(&mut file, bytes)?;
-        drop(file);
-        std::fs::rename(&temp, self.dir.join(name))?;
-        Ok(())
+        write_private(&self.dir.join(name), bytes)
     }
 
     /// Races the saved addresses of the server with this key and keeps the first whose `/info`
@@ -274,6 +307,26 @@ impl Client {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+/// Replaces `path` with `bytes` (mode 0600; owner-only on Windows), through a temporary file.
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&temp)?;
+    #[cfg(windows)]
+    flicks_platform::permissions::owner_only(&temp)?;
+    std::io::Write::write_all(&mut file, bytes)?;
+    drop(file);
+    std::fs::rename(&temp, path)?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// The first address whose probe verifies, and the server's name.
 async fn race(
     key: SigningKey,
@@ -316,6 +369,7 @@ async fn race(
     Err(Error::Unreachable { tried, last: Box::new(last) })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// How much an error says about a server: an answer beats a refused handshake, which beats no
 /// connection at all, so a failed race reports the answer.
 fn telling(error: &Error) -> u8 {
@@ -326,6 +380,7 @@ fn telling(error: &Error) -> u8 {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// `GET /info?probe=<nonce>` at `addr`: returns `addr` and the server's name if the answer is
 /// signed by `server_key`. A name that isn't fit to show becomes the address's host.
 async fn probe(addr: String, tls: Arc<ClientConfig>, server_key: VerifyingKey) -> Result<(String, String), Error> {
@@ -345,6 +400,7 @@ async fn probe(addr: String, tls: Arc<ClientConfig>, server_key: VerifyingKey) -
     Ok((addr, name))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Decodes a JSON answer; an error status becomes [`Error::Status`] with the server's message.
 fn json<T: DeserializeOwned>(response: net::Response) -> Result<T, Error> {
     check(&response)?;
@@ -352,6 +408,7 @@ fn json<T: DeserializeOwned>(response: net::Response) -> Result<T, Error> {
     serde_json::from_slice(body).map_err(|_| Error::BadResponse)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn check(response: &net::Response) -> Result<(), Error> {
     if response.status.is_success() {
         return Ok(());
@@ -363,6 +420,7 @@ fn check(response: &net::Response) -> Result<(), Error> {
     Err(Error::Status(response.status.as_u16(), message))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// A server reached at one address that proved it holds the server key.
 #[derive(Clone)]
 pub struct Connection {
@@ -375,6 +433,7 @@ pub struct Connection {
     pub server_key: Vec<u8>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Connection {
     /// A server at a known address that is trusted only with the certificate for `server_key`,
     /// with no probe: the local CLI reaching `127.0.0.1:7686` with the server's own key.

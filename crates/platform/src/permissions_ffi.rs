@@ -3,6 +3,7 @@
 
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::ptr::{null, null_mut};
@@ -17,15 +18,16 @@ use windows_sys::Win32::Security::{
     PROTECTED_DACL_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER, TokenUser,
     WinLocalSystemSid,
 };
-use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+use windows_sys::Win32::Storage::FileSystem::{FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 /// Restrict an existing file/directory before writing secrets into it. Directory grants inherit
 /// onto new children (including SQLite WAL/SHM). Existing sensitive files must also call this.
 pub fn owner_only(path: &Path) -> io::Result<()> {
     let metadata = std::fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "private paths cannot be symlinks"));
+    // Symlinks and NTFS junctions are both reparse points (`is_symlink` misses junctions).
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "private paths cannot be symlinks or junctions"));
     }
     let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
     if name.contains(&0) {

@@ -389,4 +389,64 @@ cargo test -p flicks-player --release software_4k_throughput -- --ignored --noca
 FLICKS_PLAYER_MEDIA=/absolute/path/to/video.mp4 cargo test -p flicks-player --release scheduling_diagnostic -- --ignored --nocapture
 # Generates ~10 GiB, then runs for two wall-clock hours:
 cargo test -p flicks-player --release two_hour_playback -- --ignored --nocapture
+
+
+## FLK-19 — On-demand MKV to HLS remux (2026-10-30)
+
+Apple M5 Max, macOS 27.2 (26B5112a), Rust 1.99.0. **Unoptimized test profile**,
+debug info and incremental compilation disabled; not a release or M1 claim.
+
+| Input | First video segment bytes | First response ms | Repeat p50 / p95 / max ms |
+|---|---:|---:|---:|
+| Generated H.264 / AAC | 120,935 | 6.265 | 6.316 / 6.906 / 6.970 |
+| Generated HEVC / AAC | 92,279 | 6.551 | 6.265 / 6.891 / 7.155 |
+| Generated H.264 / AC-3 | 120,935 | 6.397 | 5.631 / 5.842 / 5.931 |
+| Generated HEVC / E-AC-3 | 92,279 | 5.819 | 5.939 / 6.332 / 6.333 |
+| Real episode A, H.264 / AAC | 2,201,948 | 13.157 | 12.305 / 12.998 / 14.275 |
+| Real episode B, H.264 / AAC | 2,476,539 | 16.021 | 16.459 / 30.365 / 158.639 |
+
+### Method and correctness
+
+- First request plus 20 repeats of video segment zero over pinned loopback HTTPS.
+  Timing includes request signing, fresh TCP/TLS connection, metadata parsing,
+  cue seek, packet reads, muxing and complete response consumption. The catalog
+  scan and master-playlist request happen first, so filesystem data is warm;
+  “first” does **not** mean cold disk. There is no segment cache. All first
+  responses measured below 50 ms; the 158.639 ms repeat outlier remains reported,
+  not discarded. These shared-host samples are not a latency guarantee.
+- Four generated 12-second 320×180/24 fps B-frame fixtures: H.264/AAC,
+  HEVC/AAC, H.264/AC-3 and HEVC/E-AC-3. Two read-only local MP4 episodes supply
+  temporary 16-second stream-copy MKVs; originals are unchanged. Production
+  never invokes FFmpeg or writes media files. Source MP4 demux is not an HLS input.
+- FFmpeg decodes HLS at start and after a relative eight-second seek. All video
+  frame hashes match the MKV source exactly, including 288 full-playback frames
+  per generated fixture. Audio frame timestamps, after removing the shared
+  reorder delay, differ by 0.334 ms for generated AAC and at most 26.666 ms for
+  Dolby (32 ms frames); real AAC seek errors are 0.720 and 0.185 ms (limit 23 ms).
+  This checks audio timing and successful decoding, not bit-identical PCM:
+  pre-zero priming frames are deliberately dropped, without edit lists.
+- Every advertised video/audio segment is fetched twice in reverse order,
+  parsed and required nonempty; 20 repeated first-segment bodies also match
+  byte-for-byte. Episode B exposed a 209 ms video-only final cut: keeping a
+  sub-second tail in the preceding segment fixes the empty audio response.
+- Oracle playback uses a test-only loopback HTTP adapter to the same authenticated
+  handler because FFmpeg does not propagate its TLS option to child playlists.
+  Performance, signature checks and grant-revocation checks use real HTTPS.
+  No AVPlayer or Apple `mediastreamvalidator` result is claimed (validator absent).
+- Writer/SPS/sample fuzz coverage: 10,000 randomized cases plus 2,502 truncations
+  and bit flips. Container `wasm32-unknown-unknown` check passes. Final workspace
+  gate passes formatting, Clippy, dependency policy and **776 tests/doctests**
+  (29 existing/benchmark ignores), including the four-codec HLS oracle matrix.
+
+### Reproduce
+
+```sh
+export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
+export FLICKS_REQUIRE_ORACLES=1 CRAFT_MEDIA_REQUIRE_ORACLES=1
+cargo test -p flicks-server --test server hls_oracle -- --nocapture
+# Optional read-only source; the test remuxes a short copy into its temporary dir:
+FLICKS_HLS_MEDIA=/path/to/local-episode.mp4 cargo test -p flicks-server --test server hls_oracle -- --nocapture
+cargo test -p flicks-container --test fuzz cmaf_ -- --nocapture
+cargo check -p flicks-container --target wasm32-unknown-unknown
+scripts/check.sh
 ```

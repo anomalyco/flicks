@@ -55,10 +55,11 @@ pub fn sign(
 ) -> Result<String, Error> {
     let nonce = keys::random::<NONCE_LEN>()?;
     let message = message(server_key, method, path_and_query, range, body, timestamp, &nonce);
-    Ok(format!(
-        "Flicks {} {timestamp} {} {}",
-        keys::encode(&keys::public_bytes(device.verifying_key())),
-        keys::encode(&nonce),
-        keys::encode(&keys::sign(device, &message)),
-    ))
+    Ok(header(&keys::public_bytes(device.verifying_key()), timestamp, &nonce, &keys::sign(device, &message)))
+}
+
+/// The `Authorization` header value from its parts: the device's compressed public key, and the
+/// signature over [`message`] (made elsewhere by the web app, whose key lives in WebCrypto).
+pub fn header(device_key: &[u8], timestamp: u64, nonce: &[u8; NONCE_LEN], signature: &[u8]) -> String {
+    format!("Flicks {} {timestamp} {} {}", keys::encode(device_key), keys::encode(nonce), keys::encode(signature))
 }

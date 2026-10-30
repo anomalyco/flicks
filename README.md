@@ -11,11 +11,11 @@ Built one platform at a time. Live card status is on the agent board; this table
 | Milestone | Status |
 |---|---|
 | 1. macOS server | **Code complete** (8/8 cards). Waiting on the hands-on check: two Macs over LAN and a real tunnel, launchd at real login |
-| 2. macOS app | **In progress**: the app's library screens, hardware decode, video renderer, audio and subtitles are done; the player and the player screen are next |
+| 2. macOS app | **In progress**: library and server screens, hardware decode, video renderer, audio, subtitles, the player engine and downloads (engine) are done; the player screen and the new look are next |
 | 3. Linux server | **Code complete**: runs as a systemd service on Ubuntu (survives reboot), and clients merge several servers into one library. The app view of it comes with milestone 2 |
 | 4. Linux app | Not started |
-| 5. Windows | **Started**: getting the server building and tested on Windows |
-| 6. Web | Not started |
+| 5. Windows | **Started**: the server and CLI client build, pass every test and run on Windows; the app is next |
+| 6. Web | **Started**: the same Rune app runs in the browser (wasm, served by `flicks serve --web`): Home, title page, search, pairing; no playback yet |
 
 ### Milestone 1: macOS server
 
@@ -57,6 +57,12 @@ Server screens, shown on servers where this device is an admin (folders, users, 
 Two servers holding overlapping episodes, merged into one library on a client; `*` marks the copy that would play, and a stopped server's titles stay listed from its last catalog:
 
 ![flicks ls merging two servers](docs/images/m3-merged-ls.png)
+
+### Milestone 6: the web app (so far)
+
+The same Rune screens compiled to wasm and served by the Flicks server, signing requests with a WebCrypto key kept in the browser:
+
+![Flicks in the browser](docs/images/m6-web-home.png)
 
 ### Try it
 

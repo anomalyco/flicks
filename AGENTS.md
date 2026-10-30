@@ -28,6 +28,8 @@ A lightweight Plex alternative: Flicks servers (macOS, Windows, Linux) own folde
 7. **Rune gaps get fixed in Rune.** If Flicks needs something Rune doesn't have, build it in Rune (a PR there, per Rune's own AGENTS.md) rather than working around it here. Note the Rune PR on the card.
 8. **Tests.** Prove decoder, parser and protocol changes with the existing conformance, oracle and fuzz suites, adding cases to existing test files. Parsers of untrusted input get fuzz cases (truncation, bit flips, bad sizes). Test behaviour, never source text.
 
+9. **Motion at the display's rate.** Everything in the apps that moves (hover and focus, scrolling, screen transitions, overlays, menus, video) animates with Rune springs on its display link at the screen's refresh rate (120 Hz on ProMotion), respects reduced motion, and stops the link when nothing moves (0% CPU idle). Cards that add motion check it with Rune's pacing trace and record present-interval p50/p95/max and missed refreshes in `docs/perf.md`.
+
 ## Working in parallel
 
 The coordinator session launches each card's agent as a subagent of itself (never from the board's Launch button, so Ryan's session list stays clean) and hears back when it finishes. Agents work one card at a time from `ROADMAP.md`, each in its own worktree, tracked on the board: the `flicks` project (cards `FLK-n`), http://127.0.0.1:8789/p/flicks. Ryan reads the board, not chat.

@@ -3,7 +3,6 @@
 //! While paused it sleeps on its channel; while playing it wakes every few milliseconds, the
 //! cadence the player releases frames at.
 
-use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -11,23 +10,14 @@ use flicks_container::matroska::Codec;
 use flicks_player::{Cue, Player, Source, State, TrackKind};
 use rune::AppHandle;
 
-use super::video::SLOT;
-use super::{Shown, Track};
-use crate::Flicks;
+use flicks_client::merge::Key;
+use flicks_ui::Flicks;
+use flicks_ui::player::{Command, Shown, Track};
 
-pub enum Command {
-    Toggle,
-    /// Seek to seconds.
-    Seek(f64),
-    /// Seek by seconds from where it is.
-    SeekBy(f64),
-    Audio(usize),
-    /// A track, or `None` for off.
-    Subtitle(Option<usize>),
-    /// An SRT or WebVTT file to show instead of the file's own subtitles.
-    Sidecar(PathBuf),
-    Stop,
-}
+use super::video::SLOT;
+
+/// The title's key, and the server and file its progress is saved for.
+pub type Saving = (Key, String, i64);
 
 /// How often the player is asked for a frame while it plays.
 const TICK: Duration = Duration::from_millis(4);
@@ -36,11 +26,11 @@ const SAVE_EVERY: Duration = Duration::from_secs(180);
 /// A seek at least this long saves progress.
 const BIG_SEEK: f64 = 30.0;
 
-pub fn start(app: AppHandle<Flicks>, source: Source, resume: f64, rx: Receiver<Command>) {
+pub fn start(app: AppHandle<Flicks>, id: u64, source: Source, resume: f64, saving: Saving, rx: Receiver<Command>) {
     let spawned = std::thread::Builder::new().name("flicks-playback".into()).spawn(move || {
         let reporter = app.clone();
-        if let Err(error) = run(app, source, resume, rx) {
-            reporter.update(move |s, _| s.player_failed(error));
+        if let Err(error) = run(&Play { app, id, saving }, source, resume, rx) {
+            reporter.update(move |s, _| s.player_failed(id, error));
         }
         SLOT.clear();
     });
@@ -49,7 +39,15 @@ pub fn start(app: AppHandle<Flicks>, source: Source, resume: f64, rx: Receiver<C
     }
 }
 
-fn run(app: AppHandle<Flicks>, source: Source, resume: f64, rx: Receiver<Command>) -> Result<(), String> {
+/// Where a play reports to.
+struct Play {
+    app: AppHandle<Flicks>,
+    id: u64,
+    saving: Saving,
+}
+
+fn run(play: &Play, source: Source, resume: f64, rx: Receiver<Command>) -> Result<(), String> {
+    let (app, id) = (&play.app, play.id);
     let mut player = Player::open(source).map_err(|e| format!("Couldn't open this file: {e}"))?;
     if resume > 0.0 && resume < player.duration() {
         player.seek(resume).map_err(|e| e.to_string())?;
@@ -57,7 +55,7 @@ fn run(app: AppHandle<Flicks>, source: Source, resume: f64, rx: Receiver<Command
     player.play();
     let tracks = tracks(&player);
     let duration = player.duration();
-    app.update(move |s, _| s.player_opened(tracks, duration));
+    app.update(move |s, _| s.player_opened(id, tracks, duration));
 
     let mut last = Shown::default();
     let mut sidecar = None;
@@ -77,7 +75,7 @@ fn run(app: AppHandle<Flicks>, source: Source, resume: f64, rx: Receiver<Command
         match command {
             None => {}
             Some(Command::Stop) => {
-                send_progress(&app, &player, false);
+                send_progress(play, &player, false);
                 return Ok(());
             }
             Some(Command::Toggle) if playing => {
@@ -101,7 +99,7 @@ fn run(app: AppHandle<Flicks>, source: Source, resume: f64, rx: Receiver<Command
                     player.set_subtitles(Some(track));
                     sidecar = path.file_name().map(|n| n.to_string_lossy().into_owned());
                 }
-                Err(error) => app.update(move |s, _| s.player_notice(error)),
+                Err(error) => app.update(move |s, _| s.player_notice(id, error)),
             },
         }
         let frame = player.next_frame_for_display(Instant::now()).map_err(|e| format!("Playback stopped: {e}"))?;
@@ -111,14 +109,14 @@ fn run(app: AppHandle<Flicks>, source: Source, resume: f64, rx: Receiver<Command
         }
         if player.state() == State::Ended {
             SLOT.set_playing(false);
-            send_progress(&app, &player, true);
-            app.update(|s, _| s.close_player());
+            send_progress(play, &player, true);
+            app.update(move |s, _| s.player_ended(id));
             // Wait for the screen's Stop, so this thread ends where it always does.
             while !matches!(rx.recv(), Ok(Command::Stop) | Err(_)) {}
             return Ok(());
         }
         if save || (playing && saved.elapsed() >= SAVE_EVERY) {
-            send_progress(&app, &player, false);
+            send_progress(play, &player, false);
             saved = Instant::now();
         }
         let shown = Shown {
@@ -135,7 +133,7 @@ fn run(app: AppHandle<Flicks>, source: Source, resume: f64, rx: Receiver<Command
         if shown != last || (new_frame && !shown.playing) {
             let position = player.position();
             last = shown.clone();
-            app.update(move |s, _| s.player_shown(shown, position));
+            app.update(move |s, _| s.player_shown(id, shown, position));
         }
     }
 }
@@ -148,7 +146,7 @@ fn seek(player: &mut Player, to: f64) -> Result<bool, String> {
     Ok((to - from).abs() >= BIG_SEEK)
 }
 
-fn send_progress(app: &AppHandle<Flicks>, player: &Player, ended: bool) {
+fn send_progress(play: &Play, player: &Player, ended: bool) {
     let (position, duration) = (player.position(), player.duration());
     let played = ended || (duration > 0.0 && position >= duration * 0.95);
     let progress = flicks_client::Progress {
@@ -158,7 +156,8 @@ fn send_progress(app: &AppHandle<Flicks>, player: &Player, ended: bool) {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as i64),
     };
-    app.update(move |s, _| s.save_progress(progress));
+    let (key, server, file) = play.saving.clone();
+    play.app.update(move |s, _| s.player_progress(key, server, file, progress));
 }
 
 fn tracks(player: &Player) -> Vec<Track> {
