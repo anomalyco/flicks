@@ -450,3 +450,50 @@ cargo test -p flicks-container --test fuzz cmaf_ -- --nocapture
 cargo check -p flicks-container --target wasm32-unknown-unknown
 scripts/check.sh
 ```
+
+## FLK-48 — app motion pacing (2026-10-30)
+
+Apple M5 Max, macOS 27.2, release profile, code `60fcaac`, Rune `e450c92`. The app window on
+an LG 5K external display, which runs at **60 Hz** (the trace header's `hz`; this desk has no
+ProMotion screen). The 120 Hz run on the MacBook (exonbook) is still to do: it was offline (not on
+the tailnet, no mDNS answer) during this card.
+
+Each phase is the real `flicks-ui` app in a native window with `--native --trace`, its motion
+driven 4 times there and back (8 bursts) through `AppHandle::update`: a Continue Watching card's
+lift (scale spring 0.32 s plus shadow), the row gliding 1,200 pt (`tx.scroll_to`), Home to a
+title's page and back (the screen crossfade with scale, the title page's blurred backdrop), and
+the page scrolling 560 pt under the hero (the top bar's frost turning solid). The library is
+the fixture's show plus 12 movies in progress, so the Continue Watching row overflows. Two runs:
+
+| Phase | Frames | Present interval p50 / p95 / max (ms) | Missed refreshes (> 25 ms) | Encode CPU p50 / p95 / max (ms) |
+|---|---:|---:|---:|---:|
+| Tile lift | 313, 315 | 16.67 / 16.67 / 33.34 | 3, 3 | 1.12 / 2.02 / 3.07; 1.01 / 1.24 / 3.15 |
+| Row glide | 288, 288 | 16.67 / 16.67 / 33.34 | 3, 3 | 1.39 / 2.14 / 9.42; 1.09 / 1.45 / 4.12 |
+| Home ↔ title page | 464, 462 | 16.67 / 16.67 / 33.34 | 3, 6 | 1.78 / 2.77 / 7.24; 1.40 / 2.02 / 5.83 |
+| Page under the hero | 278, 279 | 16.67 / 16.67 / 33.34 | 5, 3 | 1.15 / 2.14 / 9.83; 0.99 / 1.55 / 2.12 |
+
+- Every motion runs on the display link at the display's rate and stops when it settles: each
+  burst ends 0.6 s (lift, row, scroll) to 1.0 s (screen change) after it starts, and the window
+  draws nothing between them (`pacing: idle`). No frame bunched (< 2 ms) in either run.
+- Encode CPU p95 is 1.2 to 2.8 ms, a third of the 8.3 ms a 120 Hz frame has. The maxima of 6 to
+  10 ms are single frames in the middle of a motion, not at a commit, and differ run to run;
+  other agents' `cargo build`s shared the CPU during both runs.
+- Most misses are the first frame after the immediate one that starts a motion from rest: it
+  presents one refresh after its display-link target (encoded 23 ms ahead, under 2 ms of CPU).
+  That repeats at the start of a third to half of the bursts, so it's on Rune's display link
+  restart, not the app; noted for a Rune PR. A real click into a title's page (input, not
+  `AppHandle::update`) ran 62 frames with no miss and a 16.7 ms max interval.
+
+### Reproduce
+
+The harness is a throwaway binary outside the repo depending on `flicks-ui` by path: it builds
+the catalog above with `library::fixture::{item, title}`, opens `flicks_ui::spec()` with
+`App::init`, and from a thread calls `handle.update` to set `lifted`, `tx.scroll_to("row-0-scroll",
+1200.0, 0.0)`, `s.go(Screen::Detail(..))` / `s.go(Screen::Home)` and `tx.scroll_to("hero", 0.0,
+560.0)`, waiting 1 to 1.6 s after each so every motion is its own burst.
+
+```sh
+flk48-bench --native --trace pacing.jsonl   # prints Rune's present summary on exit
+# Per phase: split frames into bursts at gaps > 150 ms, 8 bursts per phase in order; intervals
+# from present_dt_ms, CPU from quality.cpu_ms, missed = intervals > 1.5 refresh periods.
+```
