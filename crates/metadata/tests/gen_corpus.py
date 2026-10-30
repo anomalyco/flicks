@@ -1,4 +1,7 @@
-"""Writes tests/corpus.tsv: 2,000 library paths in the naming styles Plex, Jellyfin, scene releases,
+"""SYNTHETIC TEST DATA: tmdb.json is generated here in TMDB's v3 shape with made-up ids. It is not
+recorded from the live API (no key was available) until someone with a key re-records it.
+
+Writes tests/corpus.tsv: 2,000 library paths in the naming styles Plex, Jellyfin, scene releases,
 YTS-style, fansubs and old rips use, each with the answer known by construction.
 
     python3 -I crates/metadata/tests/gen_corpus.py crates/metadata/tests

@@ -1,5 +1,11 @@
 //! TMDB matching against canned responses (`tmdb.json`, see `gen_corpus.py`; the live API is
 //! never called) and the artwork cache.
+//!
+//! NOTE: the responses in `tmdb.json` are SYNTHETIC. They follow TMDB's documented v3 search
+//! shape but were generated, with made-up ids, not recorded from the live API (no key was
+//! available). Someone with a key should re-record them: fetch each
+//! `/3/search/{movie,tv}?query=...[&year=...]` the test makes and store the body under the same
+//! "movie|<normalized title>|<year or empty>" key.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -101,18 +107,18 @@ fn unusable_responses_are_errors_not_panics() {
     assert!(down.find(&parse("")).expect("nothing to look up").is_none());
 }
 
-fn jpeg(w: u32, h: u32) -> Vec<u8> {
-    let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 90]));
-    let mut out = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut out, image::ImageFormat::Jpeg).expect("encode");
-    out.into_inner()
+/// Not a decodable picture: the cache never decodes, it only keeps the bytes.
+fn jpeg() -> Vec<u8> {
+    let mut b = vec![0xFF, 0xD8, 0xFF, 0xE0];
+    b.extend((0..5000u32).map(|i| (i * 7 % 251) as u8));
+    b
 }
 
 #[test]
-fn artwork_is_downloaded_once_and_stored_as_webp() {
+fn artwork_is_downloaded_once_and_stored_as_sent() {
     let fetches = Arc::new(AtomicUsize::new(0));
     let count = fetches.clone();
-    let poster = jpeg(342, 513);
+    let poster = jpeg();
     let tmdb = Tmdb::new("k", move |url| {
         assert_eq!(url, "https://image.tmdb.org/t/p/w342/poster100001.jpg");
         count.fetch_add(1, Ordering::SeqCst);
@@ -123,11 +129,8 @@ fn artwork_is_downloaded_once_and_stored_as_webp() {
     let again = cache_artwork(&tmdb, dir.path(), ArtworkKind::Poster, "/poster100001.jpg").expect("cached");
     assert_eq!(file, again);
     assert_eq!(fetches.load(Ordering::SeqCst), 1);
-    let bytes = std::fs::read(&file).expect("read");
-    assert!(bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()));
-    let decoded = webp::Decoder::new(&bytes).decode().expect("webp decodes");
-    assert_eq!((decoded.width(), decoded.height()), (342, 513));
-    assert!(bytes.len() < jpeg(342, 513).len() * 2, "{} bytes", bytes.len());
+    assert_eq!(file.file_name().and_then(|n| n.to_str()), Some("w342-poster100001.jpg"));
+    assert_eq!(std::fs::read(&file).expect("read"), jpeg());
 }
 
 #[test]
@@ -138,5 +141,7 @@ fn artwork_refuses_bad_paths_and_images() {
         assert!(cache_artwork(&tmdb, dir.path(), ArtworkKind::Poster, bad).is_err(), "{bad}");
     }
     assert!(cache_artwork(&tmdb, dir.path(), ArtworkKind::Poster, "/ok.jpg").is_err());
+    let huge = Tmdb::new("k", |_| Ok(vec![0xFF; 5 << 20]));
+    assert!(cache_artwork(&huge, dir.path(), ArtworkKind::Poster, "/ok.jpg").is_err());
     assert!(std::fs::read_dir(dir.path()).expect("dir").next().is_none(), "nothing written");
 }

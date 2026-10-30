@@ -1,6 +1,6 @@
 [package]
 name = "flicks-metadata"
-description = "Names from paths (title, year, season, episode, edition), TMDB matching and WebP artwork cache."
+description = "Names from paths (title, year, season, episode, edition), TMDB matching and artwork cache."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -11,11 +11,9 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
 serde_json = "1"
 thiserror = "2"
 ureq = "3"
-webp = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

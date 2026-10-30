@@ -1,14 +1,12 @@
-//! Artwork cache: each TMDB image is downloaded once and kept as a lossy WebP.
+//! Artwork cache: each TMDB image is downloaded once and kept exactly as TMDB sent it (JPEG).
 
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use crate::{Error, Tmdb};
 
 const IMAGES: &str = "https://image.tmdb.org/t/p";
-const WEBP_QUALITY: f32 = 80.0;
-/// Posters and backdrops are at most 780 x 1200 at these sizes; refuse anything much bigger.
-const MAX_PIXELS: u32 = 4096 * 4096;
+/// Posters and backdrops at these sizes are well under 1 MiB; refuse anything much bigger.
+const MAX_BYTES: usize = 4 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtworkKind {
@@ -28,18 +26,20 @@ impl ArtworkKind {
 }
 
 /// Makes sure `tmdb_path` (a `Match::poster` or `Match::backdrop`, like `/abc123.jpg`) is cached
-/// in `dir` and returns the WebP file. A cached file is returned without touching the network.
+/// in `dir` and returns the JPEG file. A cached file is returned without touching the network.
 pub fn cache_artwork(tmdb: &Tmdb, dir: &Path, kind: ArtworkKind, tmdb_path: &str) -> Result<PathBuf, Error> {
     let id = image_id(tmdb_path).ok_or_else(|| Error::Image(format!("bad image path {tmdb_path:?}")))?;
-    let target = dir.join(format!("{}-{id}.webp", kind.size()));
+    let target = dir.join(format!("{}-{id}.jpg", kind.size()));
     if target.is_file() {
         return Ok(target);
     }
     let jpeg = (tmdb.fetch)(&format!("{IMAGES}/{}{tmdb_path}", kind.size()))?;
-    let webp = to_webp(&jpeg)?;
+    if jpeg.len() > MAX_BYTES || !jpeg.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Err(Error::Image("not a JPEG of a sane size".into()));
+    }
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".{}-{id}.tmp", kind.size()));
-    std::fs::write(&tmp, &webp)?;
+    std::fs::write(&tmp, &jpeg)?;
     std::fs::rename(&tmp, &target)?;
     Ok(target)
 }
@@ -49,17 +49,4 @@ pub fn cache_artwork(tmdb: &Tmdb, dir: &Path, kind: ArtworkKind, tmdb_path: &str
 fn image_id(path: &str) -> Option<&str> {
     let id = path.strip_prefix('/')?.strip_suffix(".jpg")?;
     (!id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())).then_some(id)
-}
-
-fn to_webp(jpeg: &[u8]) -> Result<Vec<u8>, Error> {
-    let mut reader = image::ImageReader::new(Cursor::new(jpeg));
-    reader.set_format(image::ImageFormat::Jpeg);
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_PIXELS / 1024);
-    limits.max_image_height = Some(MAX_PIXELS / 1024);
-    limits.max_alloc = Some(u64::from(MAX_PIXELS) * 4);
-    reader.limits(limits);
-    let rgb = reader.decode().map_err(|e| Error::Image(e.to_string()))?.to_rgb8();
-    let encoded = webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height()).encode(WEBP_QUALITY);
-    Ok(encoded.to_vec())
 }

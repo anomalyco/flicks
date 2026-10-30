@@ -5,7 +5,7 @@
 //!   no key and no network.
 //! - [`Tmdb`]: matches a [`Parsed`] name on TMDB. Only exists when `FLICKS_TMDB_KEY` is set
 //!   ([`Tmdb::from_env`]); without it everything still scans and plays under its parsed name.
-//! - [`cache_artwork`]: downloads a TMDB image once and stores it as a lossy WebP.
+//! - [`cache_artwork`]: downloads a TMDB image once and stores the JPEG as sent.
 #![cfg_attr(
     not(test),
     deny(
