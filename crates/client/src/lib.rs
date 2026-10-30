@@ -1,12 +1,13 @@
 //! The client core (docs/architecture.md, "App"): this device's key, the servers it has paired
 //! with, pairing from a link, address racing with the signed `/info` probe, signed requests, the
-//! catalog and byte ranges.
+//! catalog and byte ranges, and the library merged across servers ([`merge`]).
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod auth;
 pub mod keys;
+pub mod merge;
 pub mod net;
 pub mod pair;
 
@@ -94,14 +95,14 @@ impl Server {
 }
 
 /// One catalog entry from `GET /items`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub item: Item,
     pub progress: Option<Progress>,
 }
 
 /// An item: one file (docs/architecture.md, "Catalog API").
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
     pub id: i64,
     pub title: String,
@@ -127,7 +128,7 @@ pub struct Item {
     pub hdr: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Progress {
     pub position: i64,
     pub played: bool,
@@ -208,13 +209,18 @@ impl Client {
 
     fn save(&self) -> Result<(), Error> {
         let bytes = serde_json::to_vec_pretty(&self.servers).map_err(|_| Error::BadResponse)?;
-        let temp = self.dir.join(format!("{SERVERS_FILE}.tmp"));
+        self.write(SERVERS_FILE, &bytes)
+    }
+
+    /// Replaces `name` in the data directory with `bytes` (mode 0600), through a temporary file.
+    fn write(&self, name: &str, bytes: &[u8]) -> Result<(), Error> {
+        let temp = self.dir.join(format!("{name}.tmp"));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        std::io::Write::write_all(&mut options.open(&temp)?, &bytes)?;
-        std::fs::rename(&temp, self.dir.join(SERVERS_FILE))?;
+        std::io::Write::write_all(&mut options.open(&temp)?, bytes)?;
+        std::fs::rename(&temp, self.dir.join(name))?;
         Ok(())
     }
 

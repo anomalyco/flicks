@@ -59,7 +59,7 @@ Device keys and signed requests. No passwords, no bearer tokens.
 - **Matching:** names are parsed from paths (title, year, season, episode, edition), then matched on TMDB when a key is set (`FLICKS_TMDB_KEY`); artwork is cached once. Without a key everything still scans and plays under its parsed name. Tests use recorded TMDB responses, never the live API.
 - **Storage:** one SQLite database (WAL), owned by `server`, which runs the single writer task and the migrations. `library` defines its catalog tables and works on a connection it's handed, so it has no database of its own.
 - **API:** catalog (home rows, libraries, items, search), `/play/{file}` returning the file's facts and byte ranges for header and resume point in one response, byte-range serving, and progress (`PUT /progress/{item}`: position, played, updated-at; newest wins).
-- **CLI:** `flicks serve`, `flicks folder add|rm|ls`, `flicks user add|ls`, `flicks pair`, `flicks device ls|rm`, `flicks status`. On macOS, `flicks service install` writes a launchd agent.
+- **CLI:** `flicks serve`, `flicks folder add|rm|ls`, `flicks user add|ls`, `flicks pair`, `flicks device ls|rm`, `flicks status`. `flicks service install` writes a launchd agent on macOS and a systemd user service (with lingering, so it starts at boot) on Linux.
 
 ### Catalog API (FLK-11)
 
@@ -118,6 +118,7 @@ file up through its library root (not ancestors above that root). Scans skip all
 
 - **Screens:** Home (Continue Watching, Next Up, Recently Added, libraries), detail, search, player, Add Server (scan QR or paste link), and Server screens for admins (folders, users, devices, pairing).
 - **Client core** (`client`): server list, keys and request signing (shared with the server and its local CLI), address racing (see "Reaching a server"), catalog merge across servers, progress merge (newest wins, written back to servers that are behind).
+- **Merged library** (`client::merge`, FLK-40): files are one title when TMDB matches (a movie's id; a series id with season and episode), otherwise by parsed title, year, season and episode; an unmatched copy joins a matched title of the same name. The source to play is on a server that answered, then has the most pixels, then the largest file, then the lowest probe latency. Each server's last catalog is cached in `catalog.json` in the data directory, so a server that doesn't answer keeps its titles, unavailable. Servers are refreshed one at a time.
 - **Player** (`player`): reads byte ranges from a server (with prefetch) or a local file; demuxes with `container`; decodes video with hardware first (VideoToolbox on macOS) and our software decoders as fallback; decodes audio with ours; audio is the master clock; frames are drawn by `gpu`.
 - **Drawing video:** `gpu` is a plain wgpu renderer (no Rune dependency; wgpu pinned to Rune's version, `~30.0.1`): YUV (NV12, P010) to display colour, scaling, HDR tone-mapped to SDR, respecting Rune's `srgb_blend`. The app hosts it through Rune's `Compositor` hook with `El::effect` and `Renderer::draw_with`, so video is drawn in Rune's own pass on Rune's device, with the UI over it.
 - **Audio** (`audio`): one canonical channel order across decoders, stereo downmix (ITU-R BS.775), resampling to the device rate, dynamic range compression off, device output.
