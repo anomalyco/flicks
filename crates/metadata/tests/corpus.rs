@@ -116,3 +116,25 @@ fn parse_survives_truncated_and_mangled_paths() {
         parse(odd);
     }
 }
+
+/// Accents fold, newer codec tags end the title, and edition words before a bracketed year stay
+/// in the title.
+#[test]
+fn accents_codecs_and_title_editions() {
+    assert_eq!(normalize("Shōgun"), normalize("Shogun"));
+    assert_eq!(normalize("Amélie"), normalize("Amelie"));
+    assert_eq!(normalize("Léon: The Professional"), normalize("Leon The Professional"));
+    for (path, title, year, edition) in [
+        ("Shogun.2024.1080p.WEB-DL.AV1-GRP.mkv", "Shogun", Some(2024), None),
+        ("Amelie.2001.VP9.mkv", "Amelie", Some(2001), None),
+        ("Some.Movie.H.264-GRP.mkv", "Some Movie", None, None),
+        ("Some.Movie.H.265.mkv", "Some Movie", None, None),
+        ("The Final Cut (2004).mkv", "The Final Cut", Some(2004), None),
+        ("Movies/The Final Cut (2004)/The Final Cut (2004).mkv", "The Final Cut", Some(2004), None),
+        ("Heat (1995) - Director's Cut.mkv", "Heat", Some(1995), Some("Director's Cut")),
+    ] {
+        let p = parse(path);
+        assert_eq!(normalize(&p.title), normalize(title), "{path}");
+        assert_eq!((p.year, p.edition.as_deref()), (year, edition), "{path}");
+    }
+}
