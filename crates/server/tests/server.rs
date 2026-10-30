@@ -751,6 +751,49 @@ async fn catalog_play_ranges_and_private_progress() {
     let detail: Value = viewer.call(Method::GET, &format!("/items/{id}"), None::<&()>).await.unwrap();
     assert_eq!(detail["streams"][0]["codec"], "aac");
     assert_eq!(detail["item"]["video_codec"], "h264");
+    // Clients see local cache names and fetch signed artwork without knowing about TMDB.
+    let art = server.state.data_dir.join("artwork");
+    std::fs::create_dir_all(&art).unwrap();
+    let jpeg = [0xff, 0xd8, 0xff, 0xe0, 1, 2, 3];
+    std::fs::write(art.join("w342-p1.jpg"), jpeg).unwrap();
+    server
+        .state
+        .db
+        .call(move |conn| {
+            conn.execute("UPDATE library_files SET poster='/p1.jpg', backdrop='/b1.jpg' WHERE id=?1", [id])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let detail: Value = viewer.call(Method::GET, &format!("/items/{id}"), None::<&()>).await.unwrap();
+    assert_eq!(detail["item"]["poster"], "w342-p1.jpg");
+    assert_eq!(detail["item"]["backdrop"], "w780-b1.jpg");
+    let list: Value = viewer.call(Method::GET, "/items", None::<&()>).await.unwrap();
+    assert_eq!(list[0]["item"], detail["item"]);
+    let art_path = "/artwork/w342-p1.jpg";
+    let reply = api_request(&server, &viewer, art_path, None).await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert_eq!(reply.headers()["content-type"], "image/jpeg");
+    assert_eq!(reply.into_body().collect().await.unwrap().to_bytes().as_ref(), jpeg);
+    assert_eq!(server::handle(&server.state, get(art_path)).await.status(), StatusCode::UNAUTHORIZED);
+    for path in [
+        "/artwork/../server.key",
+        "/artwork/%2e%2e%2fserver.key",
+        "/artwork/w342-..jpg",
+        "/artwork/w342-x/y.jpg",
+        "/artwork/w342-.jpg",
+        "/artwork/w100-p1.jpg",
+    ] {
+        assert_eq!(api_request(&server, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(server.state.data_dir.join("server.key"), art.join("w342-secret.jpg")).unwrap();
+        assert_eq!(
+            api_request(&server, &viewer, "/artwork/w342-secret.jpg", None).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
     let p = format!("/progress/{id}");
     let saved = json!({"position": 2500, "played": false, "updated_at": 1000});
     let result: Value = viewer.call(Method::PUT, &p, Some(&saved)).await.unwrap();
@@ -869,6 +912,30 @@ async fn catalog_play_ranges_and_private_progress() {
     assert_eq!(api_request(&server, &viewer, &path, None).await.status(), StatusCode::NOT_FOUND);
     assert_eq!(api_request(&server, &viewer, &format!("/play/{id}"), None).await.status(), StatusCode::NOT_FOUND);
     catalog_ready(&viewer, 0).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let rows = server
+                .state
+                .db
+                .call(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT (SELECT COUNT(*) FROM library_files) +
+                    (SELECT COUNT(*) FROM library_streams) + (SELECT COUNT(*) FROM library_dirs) +
+                    (SELECT COUNT(*) FROM progress)",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            if rows == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     let version = server
         .state
         .db
@@ -976,7 +1043,48 @@ async fn startup_scans_existing_folders_and_matroska_play_headers() {
     for i in 0..5 {
         writer.write_frame(0, i * 1_000_000_000, true, &[1; 100], Some(1_000_000_000)).unwrap();
     }
-    let bytes = writer.finish().unwrap().into_inner();
+    let mut bytes = writer.finish().unwrap().into_inner();
+    // Add a second SeekHead and Chapters after the media, plus stale entries in the first
+    // SeekHead. The container opens this file, so /play must accept it too.
+    use flicks_container::matroska::{self, ebml, element_ids::*};
+    fn element(id: u32, data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        ebml::write_id(&mut out, id);
+        ebml::write_size(&mut out, data.len() as u64, 1);
+        out.extend_from_slice(data);
+        out
+    }
+    fn seek(id: u32, position: u64) -> Vec<u8> {
+        let mut id_bytes = Vec::new();
+        ebml::write_id(&mut id_bytes, id);
+        let mut data = element(SEEK_ID, &id_bytes);
+        let position = position.to_be_bytes();
+        let start = position.iter().position(|b| *b != 0).unwrap_or(7);
+        data.extend(element(SEEK_POSITION, &position[start..]));
+        element(SEEK, &data)
+    }
+    let doc = matroska::open(&bytes).unwrap();
+    let base = doc.segment_data_start;
+    let chapters = bytes.len() as u64;
+    bytes.extend(element(CHAPTERS, &[]));
+    let chained = bytes.len() as u64;
+    bytes.extend(element(SEEK_HEAD, &seek(CHAPTERS, chapters - base)));
+    let mut entries = Vec::new();
+    for entry in &doc.seek_head {
+        entries.extend(seek(entry.id, entry.position));
+    }
+    entries.extend(seek(INFO, doc.first_cluster.unwrap() - base));
+    entries.extend(seek(CUES, u64::MAX));
+    entries.extend(seek(SEEK_HEAD, chained - base));
+    let mut head = element(SEEK_HEAD, &entries);
+    assert!(head.len() <= 126);
+    head.extend(element(VOID, &vec![0; 128 - head.len() - 2]));
+    bytes[base as usize..base as usize + 128].copy_from_slice(&head);
+    // The muxer reserves eight bytes for the Segment size; use an unknown-size Segment so
+    // appended metadata is part of it without changing any file offsets.
+    let mut unknown = Vec::new();
+    ebml::write_unknown_size(&mut unknown, 8);
+    bytes[base as usize - 8..base as usize].copy_from_slice(&unknown);
     std::fs::write(media.path().join("Movie.mkv"), &bytes).unwrap();
     let before = State::open(dir.path(), 0).unwrap();
     let root = std::fs::canonicalize(media.path()).unwrap();
@@ -1000,6 +1108,53 @@ async fn startup_scans_existing_folders_and_matroska_play_headers() {
     let header = play["ranges"]["header"].as_array().unwrap();
     assert_eq!(header[0]["start"], 0);
     assert!(header.iter().all(|r| r["end"].as_u64().unwrap() < bytes.len() as u64));
+    for offset in [chapters, chained] {
+        assert!(
+            header.iter().any(|r| r["start"].as_u64().unwrap() <= offset && r["end"].as_u64().unwrap() >= offset + 4)
+        );
+    }
+}
+
+#[tokio::test]
+async fn cataloged_mp4_padding_and_oversized_boxes_play() {
+    let server = start("mp4-padding").await;
+    let media = tempfile::tempdir().unwrap();
+    let base = catalog_mp4();
+    let mut padded = base.clone();
+    padded.extend([1, 2, 3, 4, 5]);
+    std::fs::write(media.path().join("Padded.mp4"), padded).unwrap();
+    let mut clamped = base.clone();
+    clamped.extend(100u32.to_be_bytes());
+    clamped.extend(b"free");
+    std::fs::write(media.path().join("Clamped.mp4"), clamped).unwrap();
+    let mut many = base.clone();
+    for _ in 0..100_001 {
+        many.extend(b"\0\0\0\x08free");
+    }
+    std::fs::write(media.path().join("Many.mp4"), many).unwrap();
+    let mut no_ftyp = base;
+    no_ftyp[4..8].copy_from_slice(b"free");
+    std::fs::write(media.path().join("No brand.mp4"), no_ftyp).unwrap();
+    server
+        .root
+        .call::<Folder>(
+            Method::POST,
+            "/admin/folders",
+            Some(&AddFolder { path: media.path().to_string_lossy().into_owned() }),
+        )
+        .await
+        .unwrap();
+    let items = catalog_ready(&server.root, 4).await;
+    for entry in items {
+        let id = entry["item"]["id"].as_i64().unwrap();
+        let play: serde_json::Value = server.root.call(Method::GET, &format!("/play/{id}"), None::<&()>).await.unwrap();
+        assert_eq!(play["item"]["id"], id);
+        let size = play["item"]["size"].as_u64().unwrap();
+        for r in play["ranges"]["header"].as_array().unwrap() {
+            assert!(r["start"].as_u64().unwrap() <= r["end"].as_u64().unwrap());
+            assert!(r["end"].as_u64().unwrap() < size);
+        }
+    }
 }
 
 /// Opt-in measurement against the actual release `flicks serve`, with an isolated HOME.

@@ -40,7 +40,8 @@ pub async fn start(state: &Arc<State>) -> Result<(), Error> {
                 played INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL CHECK(updated_at >= 0),
                 PRIMARY KEY (user_id, item_id)
-             );",
+             );
+             CREATE INDEX IF NOT EXISTS progress_item ON progress(item_id);",
             )?;
             Ok(())
         })
@@ -67,6 +68,9 @@ async fn dispatch(state: &State, caller: &Caller, parts: &Parts, body: &[u8]) ->
     let path = parts.uri.path();
     let user = caller.user;
     if parts.method == Method::GET {
+        if let Some(name) = path.strip_prefix("/artwork/") {
+            return Ok(Some(files::artwork(state, name).await?));
+        }
         if let Some(id) = path.strip_prefix("/files/").and_then(id) {
             return Ok(Some(files::serve(state, id, parts).await?));
         }
@@ -179,10 +183,20 @@ fn visible_item(conn: &Connection, id: i64) -> Result<Option<library::Item>, Err
 fn item_json(it: &library::Item) -> Value {
     json!({"id": it.id, "title": it.title, "year": it.year, "season": it.season,
         "episode": it.episode, "episode_end": it.episode_end, "edition": it.edition,
-        "tmdb_id": it.tmdb_id, "tmdb_media": it.tmdb_media, "poster": it.poster, "backdrop": it.backdrop,
+        "tmdb_id": it.tmdb_id, "tmdb_media": it.tmdb_media,
+        "poster": artwork_name(it.poster.as_deref(), "w342"), "backdrop": artwork_name(it.backdrop.as_deref(), "w780"),
         "added_at": it.added_at, "size": it.size, "oshash": it.oshash, "container": it.container,
         "duration_ms": it.duration_ms, "video_codec": it.video_codec, "width": it.width,
         "height": it.height, "hdr": it.hdr})
+}
+
+fn image_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+fn artwork_name(path: Option<&str>, size: &str) -> Option<String> {
+    let id = path?.strip_prefix('/')?.strip_suffix(".jpg")?;
+    image_id(id).then(|| format!("{size}-{id}.jpg"))
 }
 
 fn streams(conn: &Connection, id: i64) -> Result<Vec<Value>, Error> {
@@ -266,23 +280,31 @@ fn list(conn: &Connection, user: Option<i64>, q: &Query, mode: &str) -> Result<V
         _ => ("1", "COALESCE(f.tmdb_title,f.title), f.season, f.episode, f.id"),
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT f.id FROM library_files f JOIN folders ON folders.path=f.root
+        "SELECT f.*, COALESCE(f.tmdb_title,f.title) AS display_title, COALESCE(f.tmdb_year,f.year) AS display_year,
+         p.position, p.played, p.updated_at FROM library_files f JOIN folders ON folders.path=f.root
          LEFT JOIN progress p ON p.item_id=f.id AND p.user_id=?1
          WHERE ({filter}) AND (?3 IS NULL OR folders.id=?3) ORDER BY {order} LIMIT ?4 OFFSET ?5"
     ))?;
-    let ids = stmt
-        .query_map(params![user, q.q, q.library, q.limit, q.offset], |r| r.get::<_, i64>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(it) = visible_item(conn, id)? {
-            let p = progress(conn, user, id)?;
-            out.push(if mode == "progress" {
-                json!({"item": id, "progress": p})
-            } else {
-                json!({"item": item_json(&it), "progress": p})
-            });
+    let rows = stmt.query_map(params![user, q.q, q.library, q.limit, q.offset], |r| {
+        let n = |name| r.get::<_, Option<i64>>(name);
+        let s = |name| r.get::<_, Option<String>>(name);
+        let p = match n("position")? {
+            Some(position) => Some(Progress { position, played: r.get("played")?, updated_at: r.get("updated_at")? }),
+            None => None,
+        };
+        let id: i64 = r.get("id")?;
+        if mode == "progress" {
+            return Ok(json!({"item": id, "progress": p}));
         }
-    }
-    Ok(out)
+        let item = json!({"id": id, "title": s("display_title")?, "year": n("display_year")?,
+            "season": n("season")?, "episode": n("episode")?, "episode_end": n("episode_end")?,
+            "edition": s("edition")?, "tmdb_id": n("tmdb_id")?, "tmdb_media": s("tmdb_media")?,
+            "poster": artwork_name(s("poster")?.as_deref(), "w342"),
+            "backdrop": artwork_name(s("backdrop")?.as_deref(), "w780"),
+            "added_at": n("added_at")?, "size": n("size")?, "oshash": s("oshash")?,
+            "container": s("container")?, "duration_ms": n("duration_ms")?, "video_codec": s("video_codec")?,
+            "width": n("width")?, "height": n("height")?, "hdr": s("hdr")?});
+        Ok(json!({"item": item, "progress": p}))
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
 }

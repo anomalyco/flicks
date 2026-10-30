@@ -11,14 +11,27 @@ use crate::{Error, db, server::State};
 /// Per-server ownership; its worker owns the watcher, scanner and optional TMDB client.
 #[derive(Default)]
 pub struct Api {
-    wake: Mutex<Option<mpsc::SyncSender<()>>>,
+    wake: Mutex<Option<mpsc::Sender<Event>>>,
+}
+
+enum Event {
+    Folders,
+    Changed(Vec<PathBuf>),
+    Stop,
 }
 
 impl Api {
     pub(super) fn wake(&self) {
         if let Some(tx) = self.wake.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            // A queued wake already requests a full rescan; coalesce bursts rather than grow a queue.
-            let _ = tx.try_send(());
+            let _ = tx.send(Event::Folders);
+        }
+    }
+}
+
+impl Drop for Api {
+    fn drop(&mut self) {
+        if let Some(tx) = self.wake.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = tx.send(Event::Stop);
         }
     }
 }
@@ -28,8 +41,7 @@ pub(super) fn start(state: &Arc<State>) -> Result<(), Error> {
     if slot.is_some() {
         return Ok(());
     }
-    let (tx, rx) = mpsc::sync_channel(1);
-    let weak = Arc::downgrade(state);
+    let (tx, rx) = mpsc::channel();
     let path = state.data_dir.join(crate::DB_FILE);
     let artwork = state.data_dir.join("artwork");
     let events = tx.clone();
@@ -41,16 +53,18 @@ pub(super) fn start(state: &Arc<State>) -> Result<(), Error> {
             let scanner = Scanner::new(Tmdb::from_env(), artwork);
             let mut roots = Vec::<PathBuf>::new();
             let mut watcher = None;
+            let mut event = Event::Folders;
             loop {
-                // Never retain State while scanning or waiting: dropping it stops this worker.
-                if weak.strong_count() == 0 {
+                if matches!(event, Event::Stop) {
                     break;
                 }
                 let next: Vec<_> = db::folders(&conn)?.into_iter().map(|f| PathBuf::from(f.path)).collect();
-                if next != roots || watcher.is_none() {
+                let full = next != roots || matches!(event, Event::Folders);
+                if full || watcher.is_none() {
+                    flicks_library::retain_roots(&mut conn, &next).map_err(super::library_error)?;
                     let events = events.clone();
-                    watcher = match Watcher::start(&next, move |_| {
-                        let _ = events.try_send(());
+                    watcher = match Watcher::start(&next, move |dirs| {
+                        let _ = events.send(Event::Changed(dirs));
                     }) {
                         Ok(watcher) => Some(watcher),
                         Err(error) => {
@@ -61,19 +75,22 @@ pub(super) fn start(state: &Arc<State>) -> Result<(), Error> {
                     roots = next;
                 }
                 // Watching starts before the scan, so changes during a scan trigger another pass.
-                for root in &roots {
-                    if let Err(error) = scanner.scan(&mut conn, root) {
-                        eprintln!("catalog scan: {error}");
+                if full {
+                    for root in &roots {
+                        if let Err(error) = scanner.scan(&mut conn, root) {
+                            eprintln!("catalog scan: {error}");
+                        }
                     }
+                } else if let Event::Changed(dirs) = event
+                    && let Err(error) = scanner.scan_changed(&mut conn, &roots, &dirs)
+                {
+                    eprintln!("catalog scan: {error}");
                 }
-                loop {
-                    match rx.recv_timeout(Duration::from_secs(1)) {
-                        Ok(()) => break,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-                        Err(mpsc::RecvTimeoutError::Timeout) if weak.strong_count() == 0 => return Ok(()),
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    }
-                }
+                // No State reference is held: Api::drop wakes this blocking receive to stop it.
+                event = match rx.recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                };
             }
             Ok(())
         };
