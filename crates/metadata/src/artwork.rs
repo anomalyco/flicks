@@ -1,12 +1,15 @@
 //! Artwork cache: each TMDB image is downloaded once and kept exactly as TMDB sent it (JPEG).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{Error, Tmdb};
 
 const IMAGES: &str = "https://image.tmdb.org/t/p";
 /// Posters and backdrops at these sizes are well under 1 MiB; refuse anything much bigger.
 const MAX_BYTES: usize = 4 << 20;
+/// Makes each temp file name unique, so threads caching the same image don't share one.
+static TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtworkKind {
@@ -38,7 +41,8 @@ pub fn cache_artwork(tmdb: &Tmdb, dir: &Path, kind: ArtworkKind, tmdb_path: &str
         return Err(Error::Image("not a JPEG of a sane size".into()));
     }
     std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{}-{id}.tmp", kind.size()));
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{}-{id}-{}-{n}.tmp", kind.size(), std::process::id()));
     std::fs::write(&tmp, &jpeg)?;
     std::fs::rename(&tmp, &target)?;
     Ok(target)
