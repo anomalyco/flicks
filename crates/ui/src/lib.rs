@@ -382,9 +382,8 @@ fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>, solid: bool) -> El {
         .child(nav("Add Server", "nav-add-server", Screen::AddServer))
 }
 
-/// The lockup, drawn from its SVG at three device pixels a point so it stays sharp on every
-/// screen.
-const LOCKUP: &[u8] = include_bytes!("../../../assets/brand/lockup.svg");
+/// The fixed lockup, rendered at three device pixels a point.
+const LOCKUP: &[u8] = include_bytes!("../../../assets/brand/lockup.png");
 
 fn logo(s: &Flicks) -> El {
     let mut logo = el().key("logo").size(style::LOGO_W, style::LOGO_H).label("Flicks");
@@ -430,7 +429,7 @@ pub fn spec() -> AppSpec<Flicks> {
         scenes: library::fixture::SCENES,
         setup: Some(|s, waker| {
             let images = ImageCache::new(waker);
-            s.logo = Some(images.svg(LOCKUP, style::LOGO_W, 3.0));
+            s.logo = Some(images.load(LOCKUP.to_vec()));
             s.images = Some(images);
         }),
         on_key: Some(on_key),
