@@ -6,6 +6,51 @@ use common::*;
 use flicks_container::isobmff::{CodecConfig, Mp4File, TrackKind, open};
 use serde_json::Value;
 
+/// Uses the system heap inspector rather than an unsafe counting allocator. Run alone.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "two-hour fixture and macOS heap measurement; run with --ignored --nocapture --test-threads=1"]
+fn two_hour_mp4_open_memory() {
+    use std::process::Command;
+    fn heap_bytes() -> usize {
+        let out = Command::new("/usr/bin/heap").arg(std::process::id().to_string()).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8(out.stdout).unwrap();
+        let line = text.lines().find(|s| s.starts_with("All zones:") && s.contains(" bytes)")).unwrap();
+        line.split_once("nodes (").unwrap().1.split_whitespace().next().unwrap().parse().unwrap()
+    }
+    let input = fixture("h264_bframes.mp4").unwrap();
+    let path = out_dir().join("two-hour.mp4");
+    if !path.exists() {
+        let tmp = temp_path(&path);
+        let mut cmd = Command::new(flicks_testkit::ffmpeg().unwrap());
+        cmd.args(["-v", "error", "-nostdin", "-y", "-stream_loop", "-1", "-i"])
+            .arg(input)
+            .args(["-c", "copy", "-t", "7200"])
+            .arg(&tmp);
+        run_generator(&mut cmd, &tmp, &path, true).unwrap();
+    }
+    let src = std::fs::File::open(&path).unwrap();
+    let before = heap_bytes();
+    let start = std::time::Instant::now();
+    let file = open(&src).unwrap();
+    let elapsed = start.elapsed();
+    let after = heap_bytes();
+    let bytes = after.saturating_sub(before);
+    let counts: Vec<_> = file.tracks.iter().map(|t| t.samples.len()).collect();
+    eprintln!(
+        "2 h H.264 B-frame + AAC MP4: samples={counts:?}, open={elapsed:?}, live_heap_delta={bytes} bytes (before={before}, after={after})"
+    );
+    assert!(file.duration as f64 / file.timescale as f64 >= 7199.0);
+    assert!(bytes < 5_000_000, "open retained {bytes} bytes");
+    for (ti, track) in file.tracks.iter().enumerate() {
+        let seek_start = std::time::Instant::now();
+        let at = track.sample_at_pts((track.timescale as i64) * 3600).unwrap();
+        eprintln!("track {ti}: PTS lookup at 1 h = {:?}", seek_start.elapsed());
+        assert!(!file.read_sample(&src, ti, at).unwrap().is_empty());
+    }
+}
+
 fn pcm_name_matches(ff: &str, c: &CodecConfig) -> bool {
     let CodecConfig::Pcm(p) = c else { return false };
     let Some(rest) = ff.strip_prefix("pcm_") else { return false };
@@ -144,7 +189,7 @@ fn check_packets(file: &Mp4File, idx: usize, pk: &[&Value], strict: bool) -> Res
     let e = if strict || pk.is_empty() {
         t.edit_offset
     } else {
-        let e = int(&pk[0]["pts"]).unwrap_or(0) - t.samples[0].pts;
+        let e = int(&pk[0]["pts"]).unwrap_or(0) - t.samples.get(0).unwrap().pts;
         let max_dur = t.samples.iter().map(|s| s.duration as i64).max().unwrap_or(0);
         if (e - t.edit_offset).abs() >= max_dur {
             return Err(format!("shift {e} vs edit offset {}", t.edit_offset));
@@ -199,7 +244,7 @@ fn check_file(name: &str, path: &std::path::Path) {
         for si in [0, t.samples.len() / 2, t.samples.len().saturating_sub(1)] {
             if si < t.samples.len() {
                 let d = file.read_sample(&f, ti, si).unwrap();
-                assert_eq!(d.len(), t.samples[si].size as usize);
+                assert_eq!(d.len(), t.samples.get(si).unwrap().size as usize);
             }
         }
     }
@@ -251,7 +296,7 @@ fn specific_properties() {
     // B-frames → non-trivial composition offsets.
     assert!(v.samples.iter().any(|s| s.pts != s.dts));
     assert!(v.samples.iter().filter(|s| s.is_sync).count() >= 4);
-    let i = v.sample_at_pts(v.samples[7].pts).unwrap();
+    let i = v.sample_at_pts(v.samples.get(7).unwrap().pts).unwrap();
     assert_eq!(i, 7);
     assert_eq!(v.sync_sample_before(13), 12);
     let a = &f.tracks[f.track_of_kind(TrackKind::Audio).unwrap()];
