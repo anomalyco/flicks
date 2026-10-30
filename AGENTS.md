@@ -30,14 +30,14 @@ A lightweight Plex alternative: Flicks servers (macOS, Windows, Linux) own folde
 
 ## Working in parallel
 
-Agents work one card at a time from `ROADMAP.md`, each in its own worktree, tracked on the board: the `flicks` project (cards `FLK-n`), http://127.0.0.1:8789/p/flicks. Ryan reads the board, not chat.
+The coordinator session launches each card's agent as a subagent of itself (never from the board's Launch button, so Ryan's session list stays clean) and hears back when it finishes. Agents work one card at a time from `ROADMAP.md`, each in its own worktree, tracked on the board: the `flicks` project (cards `FLK-n`), http://127.0.0.1:8789/p/flicks. Ryan reads the board, not chat.
 
 1. **Pick a card** that is in `todo` on the board (`board ls --status todo`), isn't assigned, and whose **needs** are done. Ask the coordinator if unsure.
 2. **Name yourself and claim it:** `export BOARD_PROJECT=flicks BOARD_BY="<model> · FLK-n"` (worktrees sit outside the linked repo, so `BOARD_PROJECT` is required), then `board set FLK-n --assignee "$BOARD_BY"` and `board mv FLK-n progress`.
 3. **Make a worktree:** `git worktree add ../flicks-FLK-n -b flk-n main`, and work only there.
 4. **Stay inside the card's owned paths.** Shared files (root `Cargo.toml`, `Cargo.lock`, `AGENTS.md`, `ROADMAP.md`, `docs/architecture.md`, `THIRD_PARTY_NOTICES`) change only when the card needs it, in a separate small commit, and the final note says so. Only the coordinator edits `ROADMAP.md`.
 5. **Note milestones** in one line with numbers: `board note FLK-n "4K HEVC 10-bit: 142 fps, matches software on 41/41 clips"`. Blocked: `board set FLK-n --blocked "reason"`, then do something else. Run `board check` between steps and obey it.
-   - **Never end your turn while builds or checks run.** A run launched from the board exits when its turn ends, and a background job can't wake it. Run long builds and `scripts/check.sh` in the foreground with no timeout.
+   - **Never end your turn while builds or checks run.** Your run ends with your turn, and a background job can't wake it. Run long builds and `scripts/check.sh` in the foreground with no timeout.
 6. **Hand back:** `scripts/check.sh` passes, commits are made, then `board mv FLK-n review` with a final note: what changed, how it was verified, and any shared files touched. The coordinator reviews and merges into `main`.
    - **`Cargo.lock`:** commit your lock changes. Never hand-merge a lock conflict: the coordinator takes `main`'s lock and lets `cargo build` regenerate it.
 7. **Reviews.** After every two cards merge, the coordinator has Gemini 4 CARBON (`console-google/gemini-4-carbon-eap#high`) review what landed for bugs and for anything more complicated than it needs to be. Its fixes and cuts happen before the next cards start.
