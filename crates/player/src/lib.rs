@@ -1,4 +1,5 @@
-//! Blocking playback engine. Drive from a playback thread; hand owned frames to the UI.
+//! Playback engine with bounded background decode and nonblocking frame polling.
+//! Opening, seeking and track changes block; keep those off the display thread.
 //! Timestamps and positions are seconds; the caller's monotonic `Instant` drives silent
 //! video and the headless sink. Device playback uses the already latency-adjusted audio clock.
 #![forbid(unsafe_code)]
@@ -8,6 +9,7 @@ mod audio;
 mod demux;
 mod source;
 mod video;
+mod worker;
 
 use flicks_container::matroska::Codec;
 pub use flicks_subtitle::Cue;
@@ -87,13 +89,11 @@ pub enum AudioSink {
 }
 
 pub struct Player {
-    demux: demux::Demux,
+    worker: worker::Worker,
     tracks: Vec<Track>,
-    video_track: usize,
     audio_track: Option<usize>,
     subtitle_track: Option<usize>,
-    video: video::Decoder,
-    audio: Option<audio::Decoder>,
+    hardware: bool,
     sink: AudioSink,
     frames: VecDeque<VideoFrame>,
     audio_pending: VecDeque<audio::Chunk>,
@@ -103,66 +103,70 @@ pub struct Player {
     position: f64,
     audio_end: f64,
     video_end: f64,
-    trim_start: f64,
+    video_ready: f64,
+    audio_finished: bool,
     anchor: Option<(Instant, f64)>,
+    tail_anchor: Option<(Instant, f64)>,
     state: State,
     running: bool,
     eof: bool,
-    software: bool,
     stats: Stats,
 }
 
 impl Player {
     /// Opens paused. Does not scan the media or decode the whole file.
     pub fn open(source: Source) -> Result<Self> {
-        Self::with_audio(source, AudioSink::Device(Box::new(flicks_audio::Output::open()?)))
+        Self::with_output(source, flicks_audio::Output::open())
+    }
+
+    fn with_output(
+        source: Source,
+        output: std::result::Result<flicks_audio::Output, flicks_audio::Error>,
+    ) -> Result<Self> {
+        let sink = match output {
+            Ok(output) => AudioSink::Device(Box::new(output)),
+            Err(flicks_audio::Error::NoDevice) => AudioSink::Null,
+            Err(e) => return Err(e.into()),
+        };
+        Self::with_audio(source, sink)
     }
 
     pub fn with_audio(source: Source, sink: AudioSink) -> Result<Self> {
         if let AudioSink::Device(output) = &sink {
             output.pause()?;
         }
-        let (demux, tracks, duration) = demux::Demux::open(source)?;
-        let choose = |kind| {
-            tracks
-                .iter()
-                .filter(|t| t.enabled && t.kind == kind)
-                .max_by_key(|t| (t.default, std::cmp::Reverse(t.id)))
-                .map(|t| t.id)
-        };
-        let video_track = choose(TrackKind::Video).ok_or(Error::Media("no video track"))?;
-        let audio_track = choose(TrackKind::Audio);
-        let subtitle_track = choose(TrackKind::Subtitle).filter(|&id| {
-            tracks.get(id).is_some_and(|t| t.default && matches!(t.codec, Codec::SubRip | Codec::WebVtt))
-        });
-        let video = video::Decoder::new(&tracks.get(video_track).ok_or(Error::Track)?.codec, false)?;
-        let audio =
-            audio_track.map(|id| audio::Decoder::new(&tracks.get(id).ok_or(Error::Track)?.codec)).transpose()?;
-        Ok(Self {
-            demux,
-            tracks,
-            video_track,
-            audio_track,
-            subtitle_track,
-            video,
-            audio,
+        Self::from_decoder(worker::Decoder::open(source)?, sink)
+    }
+
+    fn from_decoder(decoder: worker::Decoder, sink: AudioSink) -> Result<Self> {
+        let mut player = Self {
+            tracks: decoder.tracks.clone(),
+            audio_track: decoder.audio_track,
+            subtitle_track: decoder.subtitle_track,
+            duration: decoder.duration,
+            hardware: decoder.video.hardware(),
+            worker: worker::Worker::new(decoder)?,
             sink,
             frames: VecDeque::new(),
             audio_pending: VecDeque::new(),
             subtitles: Default::default(),
             sidecar: None,
-            duration,
             position: 0.0,
             audio_end: 0.0,
             video_end: 0.0,
-            trim_start: 0.0,
+            video_ready: 0.0,
+            audio_finished: false,
             anchor: None,
+            tail_anchor: None,
             state: State::Paused,
             running: false,
             eof: false,
-            software: false,
             stats: Stats::default(),
-        })
+        };
+        player.worker.request(worker::Command::Fill(0.0))?;
+        let batch = player.worker.wait()?;
+        player.accept(batch)?;
+        Ok(player)
     }
 
     pub fn tracks(&self) -> &[Track] {
@@ -187,12 +191,13 @@ impl Player {
         self.stats
     }
     pub fn is_hardware(&self) -> bool {
-        self.video.hardware()
+        self.hardware
     }
 
     pub fn play(&mut self) {
         if !self.running && !matches!(self.state, State::Failed | State::Ended) {
             self.anchor = None;
+            self.tail_anchor = None;
             self.running = true;
             self.state = State::Buffering;
         }
@@ -226,33 +231,30 @@ impl Player {
             output.pause()?;
         }
         self.clear_audio();
-        let subtitle =
-            self.subtitle_track.map(|id| self.demux.subtitle_at(id, (target * 1e9) as i64)).transpose()?.flatten();
-        self.demux.seek(self.video_track, (target * 1e9) as i64)?;
-        self.video = video::Decoder::new(&self.tracks.get(self.video_track).ok_or(Error::Track)?.codec, self.software)?;
-        self.audio = self
-            .audio_track
-            .map(|id| audio::Decoder::new(&self.tracks.get(id).ok_or(Error::Track)?.codec))
-            .transpose()?;
+        if self.worker.pending {
+            // A seek abandons the old region, including its decode/read failure.
+            // A stopped worker is reported by the new request below.
+            let _ = self.worker.wait();
+        }
+        self.worker.request(worker::Command::Seek {
+            target,
+            audio: self.audio_track,
+            subtitle: self.subtitle_track,
+        })?;
         self.frames.clear();
         self.audio_pending.clear();
         self.subtitles = Default::default();
-        if let Some(p) = subtitle
-            && let Some(cue) = Cue::from_payload(
-                p.pts.max(0) as u64 / 1_000_000,
-                (p.pts.max(0) as u64).saturating_add(p.duration) / 1_000_000,
-                &p.data,
-            )
-        {
-            self.subtitles = flicks_subtitle::Track::new(vec![cue]);
-        }
         self.position = target;
-        self.trim_start = target;
         self.video_end = target;
+        self.video_ready = target;
+        self.audio_finished = false;
         self.audio_end = target;
         self.anchor = None;
+        self.tail_anchor = None;
         self.eof = false;
         self.state = if self.running { State::Buffering } else { State::Paused };
+        let batch = self.worker.wait()?;
+        self.accept(batch)?;
         Ok(())
     }
 
@@ -287,7 +289,7 @@ impl Player {
         self.sidecar.as_ref().unwrap_or(&self.subtitles).active_at((self.position.max(0.0) * 1000.0) as u64)
     }
 
-    /// Decode a bounded look-ahead and release at most one due frame. Call at display cadence.
+    /// Poll the decode worker and release at most one due frame, without waiting for I/O or decode.
     /// Returns the first frame while paused (for opening/seeking previews), then holds it.
     pub fn next_frame_for_display(&mut self, now: Instant) -> Result<Option<VideoFrame>> {
         if matches!(self.state, State::Failed | State::Ended) {
@@ -302,8 +304,25 @@ impl Player {
 
     fn advance(&mut self, now: Instant) -> Result<Option<VideoFrame>> {
         self.update_clock(now);
-        self.fill()?;
+        if let Some(batch) = self.worker.poll()? {
+            self.accept(batch)?;
+        }
+        if !self.worker.pending
+            && !self.eof
+            && (self.frames.back().is_none_or(|f| f.pts() < self.position + 0.2)
+                || (!self.audio_finished && self.audio_end < self.position + 0.2))
+        {
+            self.worker.request(worker::Command::Fill(self.position))?;
+        }
         if self.running {
+            let stalled = !self.eof
+                && (self.frames.is_empty() || (!self.audio_finished && self.position + 0.000_001 >= self.audio_end));
+            if stalled {
+                self.state = State::Buffering;
+                self.anchor = None;
+                self.tail_anchor = None;
+                return Ok(None);
+            }
             match &mut self.sink {
                 AudioSink::Device(output) => {
                     while output.queued().as_secs_f64() < 0.3 {
@@ -343,6 +362,157 @@ impl Player {
         Ok(result)
     }
 
+    fn accept(&mut self, batch: worker::Batch) -> Result<()> {
+        if batch.hardware_fallbacks != self.stats.hardware_fallbacks {
+            self.frames.clear();
+            self.audio_pending.clear();
+            self.clear_audio();
+            self.anchor = None;
+            self.tail_anchor = None;
+        }
+        if self.frames.len() + batch.frames.len() > 64
+            || self.audio_pending.iter().chain(&batch.audio).map(|c| c.samples.len()).sum::<usize>() > 2_000_000
+        {
+            return Err(Error::Media("interleaving exceeds playback buffer"));
+        }
+        if let Some(frame) = batch.frames.back() {
+            self.video_ready = frame.pts();
+        }
+        self.frames.extend(batch.frames);
+        self.audio_pending.extend(batch.audio);
+        self.subtitles = batch.subtitles;
+        self.audio_end = batch.audio_end;
+        self.video_end = batch.video_end;
+        self.eof = batch.eof;
+        self.audio_finished = batch.audio_finished;
+        self.hardware = batch.hardware;
+        self.stats.decoded = batch.decoded;
+        self.stats.hardware_fallbacks = batch.hardware_fallbacks;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn fill(&mut self) -> Result<()> {
+        if self.worker.pending {
+            let batch = self.worker.wait()?;
+            self.accept(batch)?;
+        }
+        Ok(())
+    }
+
+    fn update_clock(&mut self, now: Instant) {
+        if !self.running {
+            return;
+        }
+        let Some((at, start)) = self.anchor else { return };
+        let wall = start + now.saturating_duration_since(at).as_secs_f64();
+        let video_limit = if self.eof { self.video_end.max(self.audio_end) } else { self.video_ready };
+        let position = if self.audio_track.is_some() {
+            match &self.sink {
+                // Output::position already subtracts device latency.
+                AudioSink::Device(output) => output.position().unwrap_or(self.position),
+                AudioSink::Null => wall.min(self.audio_end).min(video_limit),
+            }
+        } else {
+            wall.min(video_limit)
+        };
+        self.position = self.position.max(position);
+        // In particular, re-anchor before accepting a refill in this same display
+        // tick. Otherwise a long source stall becomes a burst of dropped frames.
+        if wall > self.position && (self.audio_track.is_none() || matches!(self.sink, AudioSink::Null)) {
+            self.anchor = Some((now, self.position));
+        }
+        if self.audio_finished && self.audio_pending.is_empty() && self.position + 0.000_001 >= self.audio_end {
+            let (at, start) = *self.tail_anchor.get_or_insert((now, self.position));
+            self.position =
+                self.position.max((start + now.saturating_duration_since(at).as_secs_f64()).min(video_limit));
+            if self.position >= video_limit {
+                self.tail_anchor = Some((now, self.position));
+            }
+        }
+    }
+
+    fn clear_audio(&mut self) {
+        if let AudioSink::Device(output) = &mut self.sink {
+            output.clear();
+        }
+    }
+    fn fail(&mut self) {
+        self.clear_audio();
+        self.running = false;
+        self.state = State::Failed;
+    }
+}
+
+impl worker::Decoder {
+    fn open(source: Source) -> Result<Self> {
+        let (demux, tracks, duration) = demux::Demux::open(source)?;
+        let choose = |kind| {
+            tracks
+                .iter()
+                .filter(|t| t.enabled && t.kind == kind)
+                .max_by_key(|t| (t.default, std::cmp::Reverse(t.id)))
+                .map(|t| t.id)
+        };
+        let video_track = choose(TrackKind::Video).ok_or(Error::Media("no video track"))?;
+        let audio_track = choose(TrackKind::Audio);
+        let subtitle_track = choose(TrackKind::Subtitle).filter(|&id| {
+            tracks.get(id).is_some_and(|t| t.default && matches!(t.codec, Codec::SubRip | Codec::WebVtt))
+        });
+        let video = video::Decoder::new(&tracks.get(video_track).ok_or(Error::Track)?.codec, false)?;
+        let audio =
+            audio_track.map(|id| audio::Decoder::new(&tracks.get(id).ok_or(Error::Track)?.codec)).transpose()?;
+        Ok(Self {
+            demux,
+            tracks,
+            video_track,
+            audio_track,
+            subtitle_track,
+            video,
+            audio,
+            frames: VecDeque::new(),
+            audio_pending: VecDeque::new(),
+            subtitles: Default::default(),
+            duration,
+            position: 0.0,
+            audio_end: 0.0,
+            video_end: 0.0,
+            trim_start: 0.0,
+            eof: false,
+            software: false,
+            decoded: 0,
+            hardware_fallbacks: 0,
+        })
+    }
+    fn restart(&mut self, target: f64) -> Result<()> {
+        let subtitle =
+            self.subtitle_track.map(|id| self.demux.subtitle_at(id, (target * 1e9) as i64)).transpose()?.flatten();
+        self.demux.seek(self.video_track, (target * 1e9) as i64)?;
+        self.video = video::Decoder::new(&self.tracks.get(self.video_track).ok_or(Error::Track)?.codec, self.software)?;
+        self.audio = self
+            .audio_track
+            .map(|id| audio::Decoder::new(&self.tracks.get(id).ok_or(Error::Track)?.codec))
+            .transpose()?;
+        self.frames.clear();
+        self.audio_pending.clear();
+        self.subtitles = Default::default();
+        if let Some(p) = subtitle
+            && let Some(cue) = Cue::from_payload(
+                p.pts.max(0) as u64 / 1_000_000,
+                (p.pts.max(0) as u64).saturating_add(p.duration) / 1_000_000,
+                &p.data,
+            )
+        {
+            self.subtitles = flicks_subtitle::Track::new(vec![cue]);
+        }
+        self.position = target;
+        self.trim_start = target;
+        self.video_end = target;
+        self.audio_end = target;
+        self.eof = false;
+        Ok(())
+    }
+
     fn fill(&mut self) -> Result<()> {
         let horizon = self.position + 0.35;
         let selected: Vec<_> =
@@ -350,7 +520,7 @@ impl Player {
         for _ in 0..100_000 {
             if self.eof
                 || (self.frames.back().is_some_and(|f| f.pts() >= horizon)
-                    && (self.audio_track.is_none() || self.audio_end >= horizon))
+                    && (self.audio_track.is_none_or(|id| self.demux.exhausted(id)) || self.audio_end >= horizon))
             {
                 return Ok(());
             }
@@ -426,7 +596,7 @@ impl Player {
                         Vec::new()
                     }
                 };
-            self.stats.decoded += frames.len() as u64;
+            self.decoded += frames.len() as u64;
             // Decode preroll, but do not count it as dropped display frames.
             self.frames.extend(frames.into_iter().filter(|f| f.pts() + 0.001 >= self.trim_start));
         }
@@ -435,38 +605,8 @@ impl Player {
 
     fn fallback(&mut self) -> Result<()> {
         self.software = true;
-        self.stats.hardware_fallbacks += 1;
+        self.hardware_fallbacks += 1;
         self.restart(self.position)
-    }
-
-    fn update_clock(&mut self, now: Instant) {
-        if !self.running {
-            return;
-        }
-        let Some((at, start)) = self.anchor else { return };
-        let wall = start + now.saturating_duration_since(at).as_secs_f64();
-        let position = if self.audio_track.is_some() {
-            match &self.sink {
-                // Output::position already subtracts CoreAudio's playback latency. Subtracting
-                // Output::latency again would put video behind the sound by two device buffers.
-                AudioSink::Device(output) => output.position().unwrap_or(self.position),
-                AudioSink::Null => wall.min(self.audio_end),
-            }
-        } else {
-            wall.min(self.video_end)
-        };
-        self.position = self.position.max(position);
-    }
-
-    fn clear_audio(&mut self) {
-        if let AudioSink::Device(output) = &mut self.sink {
-            output.clear();
-        }
-    }
-    fn fail(&mut self) {
-        self.clear_audio();
-        self.running = false;
-        self.state = State::Failed;
     }
 }
 
