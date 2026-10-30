@@ -1167,6 +1167,38 @@ async fn cataloged_mp4_padding_and_oversized_boxes_play() {
     }
 }
 
+#[tokio::test]
+async fn cli_get_stops_at_the_end_of_the_file() {
+    use flicks_client::MAX_READ;
+    use flicks_server::cli_client::get;
+    let server = start("cli-get").await;
+    let media = tempfile::tempdir().unwrap();
+    // Exactly one read long, padded with a `free` box: a range past the end used to ask for the
+    // next chunk and fail with 416 after writing every byte.
+    let mut bytes = catalog_mp4();
+    let pad = MAX_READ as usize - bytes.len();
+    bytes.extend((pad as u32).to_be_bytes());
+    bytes.extend(b"free");
+    bytes.resize(MAX_READ as usize, 0);
+    std::fs::write(media.path().join("Exact.mp4"), &bytes).unwrap();
+    let path = media.path().to_string_lossy().into_owned();
+    server.root.call::<Folder>(Method::POST, "/admin/folders", Some(&AddFolder { path })).await.unwrap();
+    let id = catalog_ready(&server.root, 1).await[0]["item"]["id"].as_i64().unwrap();
+    let size = MAX_READ;
+    for (start, end) in [(0, size - 1), (0, size), (0, 3 * size), (10, size + 5), (size - 1, u64::MAX)] {
+        let mut out = Vec::new();
+        get(&server.root, id, start, end, &mut out).await.unwrap();
+        assert_eq!(out, bytes[start as usize..], "{start}-{end}");
+    }
+    let mut out = Vec::new();
+    get(&server.root, id, 100, 199, &mut out).await.unwrap();
+    assert_eq!(out, bytes[100..200]);
+    for start in [size, size + 1, u64::MAX] {
+        let err = get(&server.root, id, start, u64::MAX, &mut Vec::new()).await.unwrap_err();
+        assert!(matches!(err, flicks_server::Error::Usage(_)), "{start}: {err}");
+    }
+}
+
 /// Opt-in measurement against the actual release `flicks serve`, with an isolated HOME.
 /// Set FLICKS_API_MEDIA to an existing read-only media folder to measure real files instead.
 #[cfg(target_os = "macos")]

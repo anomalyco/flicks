@@ -4,7 +4,8 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use flicks_client::{Client, MAX_READ, Server};
+use flicks_client::{Client, Connection, Item, MAX_READ, Server};
+use hyper::Method;
 
 use crate::Error;
 
@@ -59,20 +60,37 @@ pub async fn run(command: Command) -> Result<(), Error> {
                 Some(path) => Box::new(std::fs::File::create(path)?),
                 None => Box::new(std::io::stdout().lock()),
             };
-            let mut at = start;
-            // One request per MAX_READ bytes; stops early at the end of the file.
-            while at <= end {
-                let last = end.min(at.saturating_add(MAX_READ - 1));
-                let bytes = connection.read(id, at, last).await?;
-                out.write_all(&bytes)?;
-                if bytes.is_empty() || last == u64::MAX || (bytes.len() as u64) < last - at + 1 {
-                    break;
-                }
-                at = last + 1;
-            }
-            out.flush()?;
+            get(&connection, id, start, end, &mut out).await?;
         }
     }
+    Ok(())
+}
+
+/// Writes bytes `start..=end` of file `id` to `out`, one request per [`MAX_READ`] bytes. The range
+/// is clamped to the file's size, which `/items/{id}` gives first, so a range running past the end
+/// stops there without asking for bytes that aren't there.
+pub async fn get(connection: &Connection, id: i64, start: u64, end: u64, out: &mut dyn Write) -> Result<(), Error> {
+    #[derive(serde::Deserialize)]
+    struct Detail {
+        item: Item,
+    }
+    let detail: Detail = connection.call(Method::GET, &format!("/items/{id}"), None::<&()>).await?;
+    let Some(end) = detail.item.size.checked_sub(1).map(|last| end.min(last)).filter(|end| start <= *end) else {
+        return Err(Error::Usage("--range starts past the end of the file"));
+    };
+    let mut at = start;
+    while at <= end {
+        let last = end.min(at.saturating_add(MAX_READ - 1));
+        let bytes = connection.read(id, at, last).await?;
+        out.write_all(&bytes)?;
+        // Short: the file shrank since it was scanned.
+        if (bytes.len() as u64) < last - at + 1 {
+            break;
+        }
+        // `end` is below the file size, so this can't overflow.
+        at = last + 1;
+    }
+    out.flush()?;
     Ok(())
 }
 
