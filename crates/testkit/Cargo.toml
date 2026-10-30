@@ -1,0 +1,19 @@
+[package]
+name = "flicks-testkit"
+description = "Test-only helpers: ffmpeg/ffprobe oracle discovery, fixture directories, golden-image comparison. Copied from FilmCraft."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT OR Apache-2.0"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+# Used only as a dev-dependency.
+[dependencies]
+png = "0.18"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3"

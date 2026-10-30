@@ -1,0 +1,48 @@
+[package]
+name = "flicks-container"
+description = "Matroska/WebM and MP4/MOV demuxers and muxers, and bit-level I/O. Copied from craft-libs crates/media."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT OR Apache-2.0"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["isobmff", "matroska"]
+bitstream = []
+isobmff = ["bitstream", "dep:thiserror"]
+matroska = []
+
+[dependencies]
+thiserror = { version = "2", optional = true }
+
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
+
+[[test]]
+name = "fuzz"
+required-features = ["isobmff"]
+
+[[test]]
+name = "fuzz_matroska"
+required-features = ["matroska"]
+
+[[test]]
+name = "oracle_demux"
+required-features = ["isobmff"]
+
+[[test]]
+name = "oracle_matroska"
+required-features = ["matroska"]
+
+[[test]]
+name = "oracle_mux"
+required-features = ["isobmff"]
+
+[[test]]
+name = "roundtrip"
+required-features = ["isobmff"]

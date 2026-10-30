@@ -1,0 +1,23 @@
+[package]
+name = "flicks-aac"
+description = "AAC-LC encoder and decoder (ISO/IEC 14496-3). Copied from FilmCraft."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT OR Apache-2.0"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+rayon = ["dep:rayon"]
+
+[dependencies]
+flicks-container = { path = "../container", default-features = false, features = ["bitstream"] }
+thiserror = "2"
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+flicks-testkit = { path = "../testkit" }

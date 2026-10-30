@@ -510,10 +510,6 @@ fn history(devices: usize, steps: &[(u8, u8, u8, u16)]) -> Vec<Entry> {
     entries
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "test configuration boundary for membership exploration"
-)]
 fn cases() -> u32 {
     std::env::var("FLICKS_MEMBERSHIP_CASES")
         .ok()
@@ -826,10 +822,6 @@ fn exhaustive_small_histories() {
         models: RefCell::default(),
         start: 0,
     };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test configuration boundary for exhaustive membership depth"
-    )]
     let depth = std::env::var("FLICKS_MEMBERSHIP_DEPTH")
         .ok()
         .map(|n| n.parse().expect("depth"))

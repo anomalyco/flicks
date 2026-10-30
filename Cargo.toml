@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# Rust crates live in crates/. Rust apps (the Rune desktop and admin apps) are added under apps/
+# by path as they land; apps/apple and apps/android are Xcode and Gradle projects, not members.
 members = ["crates/*"]
 
 [workspace.package]
@@ -7,7 +9,7 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 license = "UNLICENSED"
-rust-version = "1.91"
+rust-version = "1.95"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -18,13 +20,13 @@ unused_must_use = "deny"
 await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
 dbg_macro = "deny"
-disallowed_methods = "deny"
-disallowed_types = "deny"
-expect_used = "warn"
-let_underscore_must_use = "deny"
 todo = "warn"
 undocumented_unsafe_blocks = "deny"
-unwrap_used = "warn"
+# Production code denies unwrap/expect/panic per crate with
+# `#![cfg_attr(not(test), deny(clippy::unwrap_used, ...))]` in lib.rs; tests may use them.
+# Codec code indexes parallel arrays by loop counter as the specifications are written.
+needless_range_loop = "allow"
+type_complexity = "allow"
 
 [profile.release]
 lto = true
@@ -39,4 +41,27 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.sha2]
+opt-level = 3
+
+# Codec hot loops: debug-build tests (conformance and oracle vectors) are minutes slower below
+# opt-level 3.
+[profile.dev.package.flicks-h264]
+opt-level = 3
+
+[profile.dev.package.flicks-hevc]
+opt-level = 3
+
+[profile.dev.package.flicks-av1]
+opt-level = 3
+
+[profile.dev.package.flicks-vp9]
+opt-level = 3
+
+[profile.dev.package.flicks-aac]
+opt-level = 3
+
+[profile.dev.package.flicks-ac3]
+opt-level = 3
+
+[profile.dev.package.flicks-opus]
 opt-level = 3

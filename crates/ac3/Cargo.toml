@@ -1,0 +1,17 @@
+[package]
+name = "flicks-ac3"
+description = "AC-3 and E-AC-3 decoder (ATSC A/52). Copied from FilmCraft."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT OR Apache-2.0"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+flicks-testkit = { path = "../testkit" }

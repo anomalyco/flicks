@@ -74,6 +74,8 @@
 //! signature over `"flicks join consent v2\0" || vault_id || inviter || device`,
 //! where the inviter is the `Add`'s author.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod data;
 mod encoding;
 mod entry;

@@ -18,6 +18,8 @@
 //! membership with reachable peers on startup before serving data, and ordering
 //! membership entries before the data that depends on them.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod error;
 mod frame;
 mod node;

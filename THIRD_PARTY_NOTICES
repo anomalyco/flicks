@@ -1,0 +1,27 @@
+Flicks third-party notices
+
+Flicks copies some code from other projects into this repository and maintains it here. The
+original copyright and licence notices for that code are below. Each copied crate's Cargo.toml
+states its licence.
+
+------------------------------------------------------------------------------------------------
+FilmCraft (https://github.com/storytold/filmcraft), commit fed0f42fd52012a337d744743a93409c0b1e8f9d
+Copyright (c) 2026 ArtCraft Team and the FilmCraft contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option.
+Licence texts: licenses/filmcraft-LICENSE-MIT, licenses/LICENSE-APACHE-2.0.
+
+Copied into: crates/mpegts, crates/h264, crates/hevc, crates/av1, crates/vp9, crates/aac,
+crates/ac3, crates/opus, crates/testkit (from the FilmCraft crates of the same names).
+Changes: renamed from filmcraft-* to flicks-*, dependency on filmcraft-bitstream replaced by
+flicks-container's bitstream module, environment variables renamed from FILMCRAFT_* to FLICKS_*,
+`let _ =` in tests written as `_ =`, and later changes recorded in this repository's history.
+
+------------------------------------------------------------------------------------------------
+craft-libs (https://github.com/storytold/craft-libs), commit 92d392cff132eaf53e13afff77f38b5c11b73aa0
+Copyright (c) 2026 ArtCraft Team and the craft-libs contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option.
+Licence texts: licenses/craft-libs-LICENSE-MIT, licenses/LICENSE-APACHE-2.0.
+
+Copied into: crates/container (from craft-libs crates/media: bitstream, isobmff, matroska).
+Changes: renamed from craft-media to flicks-container, matroska enabled by default, and later
+changes recorded in this repository's history.

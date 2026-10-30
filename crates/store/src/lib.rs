@@ -109,6 +109,8 @@
 //! [`unlock_biometric`] opens the store with that key; changing the passphrase
 //! or calling [`clear_biometric`] removes the slot.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 mod crypto;
 mod error;
 mod kdf;
