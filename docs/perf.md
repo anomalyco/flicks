@@ -73,3 +73,39 @@ fixture-generation ignores and the known Vorbis laced-remux ignore are unchanged
   bounds replace expanded samples and the full PTS/sync permutations. PCM,
   fragmented files, arbitrary sample-description changes and wide fragment
   composition offsets continue to use the same sample-reading API.
+
+## FLK-8 — library scan (2026-10-30)
+
+Apple M5 Max, macOS 27.2, rustc 1.99.0, release profile, warm page cache, APFS temp
+directory. Catalog in an in-memory SQLite database, no TMDB key, one thread.
+
+| Measurement | Result |
+|---|---:|
+| First scan, 10,000 files (241 folders), every file opened, probed and hashed | **0.77 / 0.85 / 0.84 s** (3 runs) |
+| Unchanged rescan of the same library: folders listed, media files opened | **24 / 25 / 29 ms**, 241 listings, **0 opens** |
+| New file visible through the watcher (FSEvents, write to catalog row) | **111–122 ms** (5 runs) |
+
+### Method and scope
+
+- Synthetic library: 40 shows × 5 seasons × 50 episodes. Each file is a copy of one real
+  11,547-byte, 60-second Matroska file (H.264 track, 6-channel AAC, SRT; 60 Cues) made by
+  `container`'s own muxer, then extended with `set_len` to 4 GB plus a per-file offset, so
+  every file has a different size and OSHash. The extension is a sparse hole: the OSHash
+  reads the last 64 KiB of every file, which costs nothing on a hole. **The scan therefore
+  measures the open, header parse, hash reads, name parsing and SQLite writes, not reads of
+  large files from a cold disk.** A library on a spinning or network disk will be slower,
+  and the page cache was warm.
+- Each directory is one transaction. Probes are sequential; nothing is tuned.
+- "Opens" is `ScanReport::opened`, counted at the one `File::open` that probes a file; the
+  test `unchanged_rescan_opens_no_media_files` asserts it is 0 on an unchanged tree and 1
+  after one file is rewritten.
+- Watcher figure: the time from writing a new MKV into a watched folder to the scan of
+  the reported folder finding it in the catalog, including the watcher's 100 ms quiet period.
+  Events that FSEvents replays from before it started are dropped first.
+
+### Reproduce
+
+```sh
+cargo test -p flicks-library --release -- --ignored --nocapture first_scan_of_10k_files
+cargo test -p flicks-library -- --nocapture a_new_file_appears_within_two_seconds
+```
