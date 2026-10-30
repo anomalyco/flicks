@@ -42,13 +42,13 @@ Device keys and signed requests. No passwords, no bearer tokens.
 
 ### Every request
 
-`Authorization: Flicks <device key id> <timestamp> <nonce> <signature>`, signing `flicks-req-v1\0`, then length-prefixed server key, method, path and query, and Range, then SHA-256(body), timestamp and nonce. The server checks, in order: the device exists and isn't removed, the timestamp is within 60 s, the nonce is new, then reads at most 64 KiB of body and verifies. Byte-range requests for media are signed the same way.
+`Authorization: Flicks <device key id> <timestamp> <nonce> <signature>`, signing `flicks-req-v1\0`, then length-prefixed server key, method, path and query, and Range, then SHA-256(body), timestamp and nonce. The server checks, in order: the device exists and isn't removed, the timestamp is within 60 s, the nonce is new, then reads at most 64 KiB of body and verifies. Byte-range requests for media are signed the same way. The device key id is the device's public key itself (base64url), the timestamp is Unix seconds, the nonce 16 random bytes; the exact byte layouts of this and the pairing messages are in `crates/server/src/auth.rs` and `pair.rs`.
 
 - **Removing a device** (`flicks device rm`) takes effect on its next request.
 - **Roles:** admin or viewer, per user; viewers see only the libraries their user is given.
 - **Folders:** adding one refuses system and secret locations (`/etc`, `~/.ssh`, the Flicks data dir) after resolving the path.
-- **Local CLI:** admin commands on the server machine (`flicks folder`, `user`, `pair`, `device`) talk to the running server at `https://127.0.0.1:7686`, signing with `server.key` itself as the root admin. So there's one process writing the database, and recovery is just running `flicks pair --admin` on that machine.
-- **Unauthenticated routes:** `/info` and pairing redemption (only while a window is open), both rate-limited globally.
+- **Local CLI:** admin commands on the server machine (`flicks folder`, `user`, `pair`, `device`) talk to the running server at `https://127.0.0.1:7686`, signing with `server.key` itself as the root admin. So there's one process writing the database, and recovery is just running `flicks pair --admin` on that machine. The admin routes live under `/admin/` (the app's Server screens use the same ones); `pair --admin` with no `--user` pairs to a user named `admin`.
+- **Unauthenticated routes:** `/info` and pairing redemption (only while a window is open; otherwise it answers 401 like any unsigned request), both behind one global rate limit (bursts of 20, 10 a second).
 
 ## Server
 
