@@ -38,7 +38,7 @@ fn scrolling(content: El) -> El {
 }
 
 /// What Home features: the newest title in progress, else the newest added.
-fn featured(catalog: &Catalog) -> Option<usize> {
+pub(crate) fn featured(catalog: &Catalog) -> Option<usize> {
     let row = |name: &str| catalog.rows.iter().find(|r| r.name == name).and_then(|r| r.titles.first().copied());
     row("Continue Watching").or_else(|| row("Recently Added"))
 }
@@ -201,6 +201,13 @@ fn artwork<'a>(s: &'a Flicks, title: &Title, backdrop: bool) -> Option<&'a rune:
     s.artwork.get(&artwork_key(&source.server, name?))
 }
 
+/// Per-item artwork stays distinct from the series hero.
+fn still<'a>(s: &'a Flicks, title: &Title) -> Option<&'a rune::Image> {
+    let source = source(title)?;
+    let name = source.item.still.as_ref().or(source.item.backdrop.as_ref()).or(source.item.poster.as_ref())?;
+    s.artwork.get(&artwork_key(&source.server, name))
+}
+
 /// A poster (or, in Continue Watching, a 16:9 card) and one line under it, keyed
 /// `title-<title>-<place>`. The artwork carries
 /// the name, so the line is what the tile adds: the episode, the episode count or the year. A
@@ -222,7 +229,7 @@ fn tile(s: &Flicks, t: usize, place: &str, whole_group: bool, card: bool) -> El 
         _ => group.year.map(|y| y.to_string()).unwrap_or_default(),
     };
     let (w, h) = if card { (style::CARD_W, style::CARD_H) } else { (style::POSTER_W, style::POSTER_H) };
-    let image = if card { artwork(s, title, true) } else { artwork(s, title, false) };
+    let image = if card { still(s, title) } else { artwork(s, title, false) };
     let mut art = match image {
         Some(image) if card => el()
             .size(w, h)
@@ -483,7 +490,7 @@ fn episode_row(s: &Flicks, title: &Title, show: &str, t: usize, offline: bool) -
     facts.extend(item.duration_ms.map(duration));
     facts.extend(quality(item));
     let (w, h) = (176.0, 99.0);
-    let mut thumb = match artwork(s, title, true) {
+    let mut thumb = match still(s, title) {
         Some(image) => el().size(w, h).pixels_fit(image.pixels(), SurfaceFit::Fill),
         None => wash(show).size(w, h).child(
             text(item.episode.map(|e| e.to_string()).unwrap_or_default())

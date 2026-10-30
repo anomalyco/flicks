@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod add_server;
+pub mod intro;
 pub mod library;
 pub mod player;
 pub mod server;
@@ -16,10 +17,11 @@ mod tests;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use rune::{
-    AppSpec, Color, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, SpringPair, SurfaceFit, TextEdit, Transition, Tx,
-    col, el, row, spacer, text,
+    Anim, AppSpec, Color, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, SpringPair, SurfaceFit, TextEdit,
+    Transition, Tx, col, el, row, spacer, text,
 };
 
+pub use intro::{Intro, Sound};
 pub use library::catalog::{self, Catalog, GroupKey};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +105,8 @@ pub struct Flicks {
     logo: Option<Image>,
     /// Sends a request to the app's network, once it has started.
     pub network: Option<Box<dyn Fn(Request)>>,
+    /// The launch intro, over Home until it ends; the app shell sets it on a cold launch.
+    pub intro: Option<Intro>,
 }
 
 impl Flicks {
@@ -132,6 +136,7 @@ impl Flicks {
             images: None,
             logo: None,
             network: None,
+            intro: None,
         }
     }
 
@@ -141,7 +146,7 @@ impl Flicks {
             if !matches!(self.screen, Screen::Detail(_)) {
                 self.back = self.screen.clone();
             }
-            self.want_backdrop(key);
+            self.want_detail_artwork(key);
             if self.screen != screen {
                 self.season = None;
             }
@@ -217,9 +222,22 @@ impl Flicks {
         for t in shown {
             self.want_poster(t);
         }
+        let continuing = self
+            .catalog
+            .rows
+            .iter()
+            .find(|r| r.name == "Continue Watching")
+            .map(|r| r.titles.clone())
+            .unwrap_or_default();
+        for t in continuing {
+            self.want_still(t);
+        }
+        if let Some(t) = library::featured(&self.catalog) {
+            self.want_backdrop(t);
+        }
         if let Screen::Detail(key) = &self.screen {
             let key = key.clone();
-            self.want_backdrop(&key);
+            self.want_detail_artwork(&key);
         }
     }
 
@@ -254,9 +272,28 @@ impl Flicks {
         }
     }
 
-    fn want_backdrop(&mut self, group: &GroupKey) {
-        let first = self.catalog.group(group).and_then(|g| g.titles.first().copied());
-        let Some(source) = first.and_then(|t| self.catalog.titles.get(t)).and_then(catalog::source) else { return };
+    fn want_detail_artwork(&mut self, group: &GroupKey) {
+        let titles = self.catalog.group(group).map(|g| g.titles.clone()).unwrap_or_default();
+        if let Some(&first) = titles.first() {
+            self.want_backdrop(first);
+        }
+        for t in titles {
+            self.want_still(t);
+        }
+    }
+
+    fn want_still(&mut self, title: usize) {
+        let Some(source) = self.catalog.titles.get(title).and_then(catalog::source) else { return };
+        if let Some(name) =
+            source.item.still.clone().or_else(|| source.item.backdrop.clone()).or_else(|| source.item.poster.clone())
+        {
+            let server = source.server.clone();
+            self.want_artwork(server, name);
+        }
+    }
+
+    fn want_backdrop(&mut self, title: usize) {
+        let Some(source) = self.catalog.titles.get(title).and_then(catalog::source) else { return };
         if let Some(name) = source.item.backdrop.clone().or_else(|| source.item.poster.clone()) {
             let server = source.server.clone();
             self.want_artwork(server, name);
@@ -324,7 +361,12 @@ fn view(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
                 .truncate(),
         );
     }
-    page
+    match &s.intro {
+        Some(intro) => {
+            page.child(intro::view(intro, cx)).on_window_focus(|s: &mut Flicks, focused, _| intro::focus(s, focused))
+        }
+        None => page,
+    }
 }
 
 /// A screen replacing another: the new one fades up from slightly small, the old one fades out
@@ -373,7 +415,7 @@ fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>, solid: bool) -> El {
         .window_drag()
         .child(frost)
         .child(fill)
-        .child(logo(s).mr(22.0))
+        .child(logo(s).opacity(if intro::hides_logo(s, cx) { 0.0 } else { 1.0 }).opacity_motion(Anim::INSTANT).mr(22.0))
         .child(nav("Home", "nav-home", Screen::Home))
         .child(nav("Search", "nav-search", Screen::Search))
         .child(spacer())
@@ -393,6 +435,10 @@ fn logo(s: &Flicks) -> El {
 }
 
 fn on_key(s: &mut Flicks, event: &KeyEvent, _: &mut Tx) -> bool {
+    if s.intro.is_some() {
+        intro::skip(s);
+        return true;
+    }
     if s.player.is_some() {
         return player::on_key(s, event);
     }
@@ -429,8 +475,12 @@ pub fn spec() -> AppSpec<Flicks> {
         setup: Some(|s, waker| {
             let images = ImageCache::new(waker);
             s.logo = Some(images.load(LOCKUP.to_vec()));
+            if let Some(intro) = &mut s.intro {
+                intro.load(&images);
+            }
             s.images = Some(images);
         }),
+        poll: Some(intro::poll),
         on_key: Some(on_key),
         ..AppSpec::new("Flicks", (1180.0, 760.0), Flicks::new, view)
     }

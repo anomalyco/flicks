@@ -44,6 +44,7 @@ pub(super) fn start(state: &Arc<State>) -> Result<(), Error> {
     let (tx, rx) = mpsc::channel();
     let path = state.data_dir.join(crate::DB_FILE);
     let artwork = state.data_dir.join("artwork");
+    let stills = crate::stills::start(&state.data_dir)?;
     let events = tx.clone();
     std::thread::Builder::new().name("flicks-catalog".into()).spawn(move || {
         let run = || -> Result<(), Error> {
@@ -87,6 +88,8 @@ pub(super) fn start(state: &Arc<State>) -> Result<(), Error> {
                     eprintln!("catalog scan: {error}");
                 }
                 // No State reference is held: Api::drop wakes this blocking receive to stop it.
+                // Only enqueue after publication. Still decoding never occupies this scan thread.
+                let _ = stills.try_send(());
                 event = match rx.recv() {
                     Ok(event) => event,
                     Err(_) => break,

@@ -1,5 +1,81 @@
 # Performance measurements
 
+## FLK-51 — fallback artwork (2026-10-30)
+
+Code `a25a30e`. Apple M5 Max, macOS 27.2, rustc 1.99.0. Release `flicks` worker, one software-decoder
+thread, Unix nice 19. Before: without a TMDB key, both episodes had no artwork and no
+frame-generation work. Now: JPEGs are generated after catalog publication by a separate
+serial worker; no decoding runs on the scanner or request path.
+
+| Read-only 1080p H.264/AAC MP4 | First real server scan, still work (ms) | Five worker runs (ms) | Median (ms) | JPEG bytes |
+|---|---:|---|---:|---:|
+| Episode 2, 1,203,733,864 bytes | 119 | 256, 122, 119, 128, 145 | 128 | 60,443 |
+| Episode 6, 1,455,959,793 bytes | 195 | 208, 197, 196, 197, 193 | 197 | 105,881 |
+
+Both outputs are **1280×720**, quality 85 using `image` 0.25.10's pure-Rust JPEG encoder
+(MIT OR Apache-2.0, already locked through Rune). Times include spawning/reaping the
+worker, container parsing, seeking an indexed keyframe near 20% (alternatives 25/15/30%),
+software decoding, luma/variance rejection, conversion/scaling, encoding and atomic rename.
+The 10 ms child-exit check is included. File/OS caches were warm; not a cold-disk claim.
+Per-file limits: 5 seconds wall time (supervisor kills/reaps), 96 MiB total reads, 16 MiB
+single read/sample, 128 GiB source size, four candidates, output at most 1280×720.
+Existing container/decoder allocation limits also apply; decoding is process-isolated.
+
+Verified with actual `flicks serve` under a temporary HOME, no TMDB key, over
+`/Users/vogel/dev/flicks-test-media/TV` read-only. Restart reused both JPEGs without changing
+their mtimes (zero decode logs); removing the configured root deleted both files. A paired
+release desktop app from the FLK-48b lane showed the real frame in Home's hero and distinct
+frames in both episode rows. Screenshots outside the repository:
+`/Users/vogel/dev/flicks-brand/stills-home-check.png` and
+`/Users/vogel/dev/flicks-brand/stills-check.png` (no links, keys or addresses).
+
+The opt-in existing server integration test repeats the frame work five times, uses a
+temporary catalog/artwork directory, and checks authenticated artwork response bytes:
+
+```sh
+cargo build --release -p flicks-server
+env -u FLICKS_TMDB_KEY \
+  FLICKS_STILL_EXE="$PWD/target/release/flicks" \
+  FLICKS_STILLS_MEDIA=/Users/vogel/dev/flicks-test-media/TV \
+  cargo test -p flicks-server --test server stills_real_media -- --ignored --nocapture
+```
+
+The same temporary-HOME server check with the securely injected TMDB key matched both
+episodes, preserved both TMDB **series** backdrops and generated zero local still files.
+Episode-specific TMDB still lookup was not present in that baseline metadata API; this initial check
+does not claim episode-still precedence. Synthetic coverage exercises all four software
+codecs, 16 truncations, black video, audio-only media and a black-first/good-second retry.
+`scripts/check.sh` passed; a locked Linux server build in `rust:1-bookworm` passed.
+
+### Separate episode stills and cropped bars — `cb2e508`
+
+Same machine, release profile, read-only episodes and measurement command above. The
+worker now removes near-black border rows/columns in normalized luma before the 16:9
+crop and scale. `still-v2-<oshash>.jpg` regenerates the earlier letterboxed cache once.
+
+| Episode | Real server generation before → after (ms) | Five cropped worker runs (ms) | Median before → after (ms) | JPEG bytes before → after |
+|---|---:|---|---:|---:|
+| 2 | 119 → 123 | 313, 115, 118, 114, 114 | 128 → 115 | 60,443 → 63,508 |
+| 6 | 195 → 199 | 204, 198, 193, 194, 195 | 197 → 195 | 105,881 → 118,019 |
+
+Both remain 1280×720. These small timing differences are within shared-machine noise,
+not a speedup claim. Restart kept both cropped JPEG mtimes unchanged. A release desktop
+built from this lane showed both distinct, bar-free episode frames; the updated screenshot
+is `/Users/vogel/dev/flicks-brand/stills-check.png`.
+
+Restarting that same temporary-HOME server with the securely injected key replaced both
+local frames with **distinct TMDB episode stills**. Each `still` matched its live episode API
+response, while `poster` and `backdrop` still matched the series API response. Both obsolete
+local JPEGs were removed. The release desktop showed the series hero and separate episode
+images together: `/Users/vogel/dev/flicks-brand/stills-tmdb-check.png`. All screenshots omit
+links, keys and addresses and stay outside the repository.
+
+A simulated settled match with a missing episode image generated a local still while
+preserving the real TMDB series backdrop; removing its root removed that fallback JPEG.
+Existing tests cover null/404 stills, migration, best-source merge, API and UI requests,
+plus unpadded/top-bottom/side/combined-border frame comparisons. Final foreground
+`scripts/check.sh` and the locked Linux server build in `rust:1-bookworm` passed.
+
 ## FLK-11 — signed range first byte and playback metadata (2026-10-30)
 
 Apple M5 Max, macOS 27.2, rustc 1.99.0, release profile, code `dc65301`.
@@ -689,4 +765,40 @@ stats when it stops (`flicks: stopped at …: N decoded, N displayed, N dropped,
 HOME=$TMP/server flicks serve &                     # then folder add, user add, pair
 HOME=$TMP/app flicks connect '<link>'
 HOME=$TMP/app target/release/flicks-desktop --native --trace pacing.jsonl
+## FLK-50 — launch intro pacing (2026-10-30)
+
+Apple M5 Max, macOS 27.2, release profile, code `ea0df52`, Rune `e450c92`. The real app
+(`flicks-desktop --native --trace`, temp HOME paired with a local server) on an LG 5K external
+display at **60 Hz** (the trace header's `hz`). The 120 Hz run on the MacBook (exonbook) is still to
+do: it was unreachable again (no mDNS answer). Intervals are counted from the frame the intro's
+beats start (the first animating `tracks` frame) to the end of the trace.
+
+| Run | Beats start | Intervals | Present interval p50 / p95 / max (ms) | Missed (> 25 ms) | Encode CPU p50 / p95 / max (ms) |
+|---|---:|---:|---:|---:|---:|
+| 1 (`--frames 150`) | frame 5, 269 ms | 144 | 16.67 / 16.67 / 16.67 | 0 | 0.79 / 1.12 / 2.06 |
+| 2 (`--frames 150`) | frame 6, 237 ms | 143 | 16.67 / 16.67 / 16.67 | 0 | 0.79 / 1.18 / 2.34 |
+| 3 (whole intro) | frame 7, 259 ms | 156 | 16.67 / 16.67 / 16.68 | 0 | 0.81 / 1.17 / 2.55 |
+
+- The intro runs on the display link and stops with it: in run 3 the last frame is drawn at
+  2.86 s, the last animating one, and the process sits at 0.0% CPU after (`top`). (`--frames N`
+  keeps a trace redrawing while idle, Rune `window/draw.rs`, so runs 1 and 2 don't show this.)
+- A launch's first frames stall on its own work: 83 to 133 ms and 33 ms gaps in the first 0.3 s
+  (window activation, the first catalog). The intro waits for three on-time frames in a row (at
+  most 0.6 s) before starting its beats; without that wait the first frame's flight lost a 100 ms
+  frame in every run.
+- Two earlier runs of the same logic (with debug logging) each had one 33 ms miss mid-intro
+  (at 116 and 600 ms into the beats, 1.1 to 1.5 ms of CPU, load average 12 to 14 from other
+  agents' builds), so it's not the intro's own work.
+- Sound sync (`flicks-brand/intro/intro.mp4`, rendered with Rune's `--video` and muxed with
+  intro.wav at the beats' start): the middle and front frames reach full size at 0.465 s and
+  0.578 s after the start, the sound's two hits at 0.46 s and 0.58 s (onset analysis of the
+  muxed file).
+
+### Reproduce
+
+```sh
+cargo build --release -p flicks-desktop
+HOME=$tmp target/release/flicks-desktop --native --trace pacing.jsonl   # close the window after the intro
+# Intervals from present_dt_ms after the first frame whose quality.why has "tracks"; CPU from
+# quality.cpu_ms; missed = intervals > 1.5 refresh periods.
 ```

@@ -304,6 +304,7 @@ mod tests {
             tmdb_media: tmdb.map(|_| if episode.is_some() { "tv" } else { "movie" }.into()),
             poster: None,
             backdrop: None,
+            still: None,
             added_at: 0,
             size: 1,
             oshash: String::new(),
@@ -324,7 +325,7 @@ mod tests {
     #[test]
     fn matches_by_tmdb_then_by_name() {
         let servers = [server("a"), server("b")];
-        let catalogs = BTreeMap::from([
+        let mut catalogs = BTreeMap::from([
             // A has a TMDB key: titles as TMDB names them.
             ("a".to_string(), vec![entry(1, "Vision Quest", Some(7), Some(2)), entry(2, "Arrival", Some(9), None)]),
             // B has none: an episode under its parsed name joins A's by name; a differently named
@@ -338,11 +339,17 @@ mod tests {
                 ],
             ),
         ]);
+        for (server, entries) in &mut catalogs {
+            for entry in entries {
+                entry.item.still = Some(format!("{server}-still.jpg"));
+            }
+        }
         let titles = merge(&servers, &catalogs, &HashMap::from([("b".to_string(), Duration::ZERO)]));
         let ids: Vec<Vec<i64>> = titles.iter().map(|t| t.sources.iter().map(|s| s.item.id).collect()).collect();
         assert_eq!(ids, [vec![2, 4], vec![1, 3], vec![5]]);
         // Only B answered, so B's copy is the one to play and shown.
         assert_eq!(titles[1].item.id, 3);
+        assert_eq!(titles[1].item.still.as_deref(), Some("b-still.jpg"));
         assert_eq!(best_source(&titles[1]).map(|s| s.server.as_str()), Some("b"));
     }
 

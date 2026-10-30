@@ -1500,6 +1500,7 @@ dependencies = [
 name = "flicks-desktop"
 version = "0.0.0"
 dependencies = [
+ "flicks-audio",
  "flicks-client",
  "flicks-container",
  "flicks-gpu",
@@ -1649,6 +1650,7 @@ name = "flicks-server"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "flicks-av1",
  "flicks-client",
  "flicks-container",
  "flicks-h264",
@@ -1657,12 +1659,14 @@ dependencies = [
  "flicks-metadata",
  "flicks-platform",
  "flicks-testkit",
+ "flicks-vp9",
  "hkdf",
  "hmac",
  "http-body-util",
  "hyper",
  "hyper-util",
  "if-addrs",
+ "image",
  "p256",
  "qrcode",
  "rcgen",

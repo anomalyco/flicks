@@ -157,6 +157,8 @@ pub struct Item {
     pub tmdb_media: Option<String>,
     pub poster: Option<String>,
     pub backdrop: Option<String>,
+    #[serde(default)]
+    pub still: Option<String>,
     /// Unix seconds.
     pub added_at: i64,
     pub size: u64,
