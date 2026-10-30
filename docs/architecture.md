@@ -26,7 +26,8 @@
 
 A server has one HTTPS listener. The user reaches it however they like: LAN address, tailnet address or name, or a tunnel or reverse proxy (OpenTunnel, Cloudflare Tunnel, Caddy) pointed at it. The server doesn't care which; every request is authenticated the same way, so a tunnel needs no special handling.
 
-- **Server key:** an ECDSA P-256 key, created on first run, stored in `server.key` (mode 0600; owner-only ACL on Windows). It is also the key of the server's self-signed TLS certificate (long-lived, never renewed), so the app pins it directly. P-256 because every TLS stack accepts it, including Apple's and Windows'.
+- **Server key:** an ECDSA P-256 key, created on first run, stored in `server.key` (mode 0600; owner-only ACL on Windows). On every start the server mints a 365-day self-signed TLS certificate for that key in memory (nothing else on disk), and the app pins the key, not the certificate. P-256 because every TLS stack accepts it, including Apple's and Windows'.
+- **Encodings:** public keys are SEC1 compressed (33 bytes), signatures are P-256 ECDSA `r ‖ s` (64 bytes). Every signed message starts with its own label (`flicks-…-v1\0`), so a signature for one purpose, including TLS, can never be replayed as another, and every variable-length field in it is length-prefixed (u32, big-endian).
 - **Through a tunnel** the proxy terminates TLS, so the app checks the server instead with a signed probe: `GET /info?probe=<nonce>` returns the server key and `Sign(server key, "flicks-info-v1" ‖ nonce)`. A tunnel can read traffic, but it can't impersonate the server or forge requests.
 
 ## Authentication
@@ -36,24 +37,24 @@ Device keys and signed requests. No passwords, no bearer tokens.
 ### Pairing
 
 1. The admin runs `flicks pair --user <name> [--admin]` (or Add Device in the app). It opens a 5-minute pairing window and prints a QR code and a link containing the server key, a 128-bit one-time code and the server's addresses. While no window is open, the pairing route answers nothing.
-2. The app creates its device key (P-256, in the OS keychain where there is one) and sends, to every address at once: its public key and name, and `HMAC(HKDF(salt = "flicks pair v1" ‖ server key, ikm = code), transcript)`, signed with its device key. The code itself never travels, so whoever relays the request can't reuse it.
-3. The server checks the HMAC and signature, adds the device to its `devices` table under that user, and answers with its own signature over the transcript. Redeeming twice with the same device key is a no-op; any other key gets "used".
+2. The app creates its device key (P-256, in a `client.key` file, mode 0600) and sends, to every address at once: its public key and name, and `HMAC(HKDF(salt = "flicks pair v1" ‖ server key, ikm = code), transcript)`, signed with its device key. The code itself never travels, so whoever relays the request can't reuse it.
+3. The server checks the HMAC and signature, adds the device to its `devices` table under that user, and answers with its own signature over `flicks-pair-ok-v1\0` and the transcript. Redeeming twice with the same device key is a no-op; any other key gets "used".
 
 ### Every request
 
-`Authorization: Flicks <device key id> <timestamp> <nonce> <signature>`, signing `"flicks-req-v1" ‖ server key ‖ method ‖ path and query ‖ Range ‖ SHA-256(body) ‖ timestamp ‖ nonce`. The server checks, in order: the device exists and isn't removed, the timestamp is within 60 s, the nonce is new, then reads at most 64 KiB of body and verifies. Byte-range requests for media are signed the same way.
+`Authorization: Flicks <device key id> <timestamp> <nonce> <signature>`, signing `flicks-req-v1\0`, then length-prefixed server key, method, path and query, and Range, then SHA-256(body), timestamp and nonce. The server checks, in order: the device exists and isn't removed, the timestamp is within 60 s, the nonce is new, then reads at most 64 KiB of body and verifies. Byte-range requests for media are signed the same way.
 
 - **Removing a device** (`flicks device rm`) takes effect on its next request.
 - **Roles:** admin or viewer, per user; viewers see only the libraries their user is given.
 - **Folders:** adding one refuses system and secret locations (`/etc`, `~/.ssh`, the Flicks data dir) after resolving the path.
-- **Recovery:** `flicks pair --admin` on the server machine itself always works, since it reads `server.key` locally.
+- **Local CLI:** admin commands on the server machine (`flicks folder`, `user`, `pair`, `device`) talk to the running server at `https://127.0.0.1:7686`, signing with `server.key` itself as the root admin. So there's one process writing the database, and recovery is just running `flicks pair --admin` on that machine.
 - **Unauthenticated routes:** `/info` and pairing redemption (only while a window is open), both rate-limited globally.
 
 ## Server
 
 - **Catalog:** folders are scanned with folder hashes (an unchanged folder costs one directory listing) and watched for changes (FSEvents, later inotify and ReadDirectoryChangesW). Each file's headers are read with `container`: codecs, duration, HDR flags, audio and subtitle tracks, and the keyframe index from Cues (MKV) or sample tables (MP4) without scanning the file. Files are identified by OSHash.
-- **Matching:** names are parsed from paths (title, year, season, episode, edition), then matched on TMDB; artwork is cached once.
-- **Storage:** one SQLite database (WAL, one writer task): users, devices, libraries, items, files, progress.
+- **Matching:** names are parsed from paths (title, year, season, episode, edition), then matched on TMDB when a key is set (`FLICKS_TMDB_KEY`); artwork is cached once. Without a key everything still scans and plays under its parsed name. Tests use recorded TMDB responses, never the live API.
+- **Storage:** one SQLite database (WAL), owned by `server`, which runs the single writer task and the migrations. `library` defines its catalog tables and works on a connection it's handed, so it has no database of its own.
 - **API:** catalog (home rows, libraries, items, search), `/play/{file}` returning the file's facts and byte ranges for header and resume point in one response, byte-range serving, and progress (`PUT /progress/{item}`: position, played, updated-at; newest wins).
 - **CLI:** `flicks serve`, `flicks folder add|rm|ls`, `flicks user add|ls`, `flicks pair`, `flicks device ls|rm`, `flicks status`. On macOS, `flicks service install` writes a launchd agent.
 
@@ -84,6 +85,10 @@ Device keys and signed requests. No passwords, no bearer tokens.
 | `subtitle` | Subtitle parsing and layout |
 | `apps/desktop` | The Rune app |
 | `core`, `net`, `store` | Deadbolt's signed membership, iroh sync and encrypted storage. Not used by the server or app yet; kept for profiles across servers and iroh later |
+
+## Open questions
+
+1. Ship a Flicks TMDB API key in the binary (as Jellyfin does), or ask each server owner for one?
 
 ## Later (not designed yet, on purpose)
 
