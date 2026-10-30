@@ -11,7 +11,7 @@ Built one platform at a time. Live card status is on the agent board; this table
 | Milestone | Status |
 |---|---|
 | 1. macOS server | **Code complete** (8/8 cards). Waiting on the hands-on check: two Macs over LAN and a real tunnel, launchd at real login |
-| 2. macOS app | **In progress**: hardware decode, video renderer, audio, subtitles and a Rune fix are being built |
+| 2. macOS app | **In progress**: video renderer, audio and subtitles done; hardware decode and the player in progress; the Rune fix is [up for review](https://github.com/anomalyco/rune/pull/49) |
 | 3. Linux server | Not started |
 | 4. Linux app | Not started |
 | 5. Windows | Not started |
