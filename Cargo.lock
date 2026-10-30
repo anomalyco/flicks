@@ -1212,6 +1212,7 @@ version = "0.0.0"
 dependencies = [
  "data-encoding",
  "flicks-container",
+ "flicks-platform",
  "flicks-server",
  "getrandom 0.4.3",
  "hkdf",
@@ -1360,6 +1361,7 @@ dependencies = [
  "objc2-io-surface",
  "objc2-video-toolbox",
  "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1371,6 +1373,7 @@ dependencies = [
  "flicks-container",
  "flicks-library",
  "flicks-metadata",
+ "flicks-platform",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1382,6 +1385,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "socket2",
  "tempfile",
  "thiserror 2.0.21",
  "time",
