@@ -1,5 +1,6 @@
-//! Running at login (`flicks service install|uninstall`; FLK-16): a per-user launchd agent that
-//! runs `flicks serve` at login and keeps it running.
+//! Running at login (`flicks service install|uninstall`): a per-user launchd agent on macOS
+//! (FLK-16) or systemd user service on Linux (FLK-39) that runs `flicks serve` and keeps it
+//! running.
 
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
@@ -11,28 +12,116 @@ const LABEL: &str = "com.flicks.server";
 
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
-    /// Run `flicks serve` at login and keep it running (macOS).
+    /// Run `flicks serve` at login (at boot on Linux) and keep it running (macOS and Linux).
     #[command(subcommand)]
     Service(ServiceCommand),
 }
 
 #[derive(Debug, clap::Subcommand)]
 pub enum ServiceCommand {
-    /// Install the launchd agent and start it now.
+    /// Install the launchd agent or systemd user service and start it now.
     Install,
-    /// Stop the agent and remove it.
+    /// Stop the service and remove it.
     Uninstall,
 }
 
 pub async fn run(command: Command) -> Result<(), Error> {
-    if !cfg!(target_os = "macos") {
-        return Err(Error::Usage("`flicks service` isn't supported on this platform yet (macOS only)"));
+    let linux = cfg!(target_os = "linux");
+    if !cfg!(target_os = "macos") && !linux {
+        return Err(Error::Usage("`flicks service` isn't supported on this platform yet (macOS and Linux only)"));
     }
     let home = crate::home_dir().ok_or(Error::NoHome)?;
-    match command {
-        Command::Service(ServiceCommand::Install) => install(&home, LABEL, &std::env::current_exe()?),
-        Command::Service(ServiceCommand::Uninstall) => uninstall(&home, LABEL),
+    match (command, linux) {
+        (Command::Service(ServiceCommand::Install), false) => install(&home, LABEL, &std::env::current_exe()?),
+        (Command::Service(ServiceCommand::Uninstall), false) => uninstall(&home, LABEL),
+        (Command::Service(ServiceCommand::Install), true) => {
+            install_systemd(&unit_path(&home, config_home().as_deref()), &std::env::current_exe()?)
+        }
+        (Command::Service(ServiceCommand::Uninstall), true) => {
+            uninstall_systemd(&unit_path(&home, config_home().as_deref()))
+        }
     }
+}
+
+/// `$XDG_CONFIG_HOME`, if set to an absolute path (the spec says to ignore a relative one).
+fn config_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
+}
+
+/// The systemd user unit's name.
+const UNIT: &str = "flicks.service";
+
+/// Where systemd looks for user units: `$XDG_CONFIG_HOME/systemd/user`, else `~/.config/...`.
+fn unit_path(home: &Path, config_home: Option<&Path>) -> PathBuf {
+    config_home.map_or_else(|| home.join(".config"), Path::to_path_buf).join("systemd/user").join(UNIT)
+}
+
+fn install_systemd(unit: &Path, exe: &Path) -> Result<(), Error> {
+    if let Some(dir) = unit.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(unit, unit_file(exe))?;
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", UNIT])?;
+    // Restart rather than `enable --now`, so a reinstall (an update, or a moved binary) takes effect.
+    systemctl(&["restart", UNIT])?;
+    println!("Installed {}. `flicks serve` is running; its log is `journalctl --user -u flicks`.", unit.display());
+    // Lingering starts the user's services at boot instead of at their first login.
+    let user = user_name()?;
+    match Process::new("loginctl").args(["enable-linger", &user]).output() {
+        Ok(out) if out.status.success() => {
+            println!("Lingering is on, so it starts at boot. Restart it with: systemctl --user restart {UNIT}");
+        }
+        _ => println!("Couldn't enable lingering; run `sudo loginctl enable-linger {user}` so it starts at boot."),
+    }
+    Ok(())
+}
+
+fn uninstall_systemd(unit: &Path) -> Result<(), Error> {
+    if !unit.exists() {
+        println!("Not installed.");
+        return Ok(());
+    }
+    // Stops it and removes the enable link; fine if it was never enabled.
+    let _ = systemctl(&["disable", "--now", UNIT]);
+    std::fs::remove_file(unit)?;
+    systemctl(&["daemon-reload"])?;
+    // Lingering stays as it is: it's account-wide, and other user services may rely on it.
+    println!("Uninstalled.");
+    Ok(())
+}
+
+fn systemctl(args: &[&str]) -> Result<(), Error> {
+    let out = Process::new("systemctl").arg("--user").args(args).output()?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(Error::Io(std::io::Error::other(format!(
+        "systemctl --user {} failed ({}): {}",
+        args.first().copied().unwrap_or(""),
+        out.status,
+        stderr.trim()
+    ))))
+}
+
+fn user_name() -> Result<String, Error> {
+    let out = Process::new("id").arg("-un").output()?;
+    let name = String::from_utf8_lossy(&out.stdout);
+    let name = name.trim();
+    if !out.status.success() || name.is_empty() {
+        return Err(Error::Io(std::io::Error::other("couldn't read the user name")));
+    }
+    Ok(name.to_owned())
+}
+
+fn unit_file(exe: &Path) -> String {
+    // Quoted, with the characters systemd expands in a command line escaped.
+    let exe = exe.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%").replace('$', "$$");
+    format!(
+        "[Unit]\nDescription=Flicks media server\n\n[Service]\nExecStart=\"{exe}\" serve\nRestart=on-failure\nRestartSec=2\n\n\
+         [Install]\nWantedBy=default.target\n"
+    )
 }
 
 fn plist_path(home: &Path, label: &str) -> PathBuf {
@@ -136,6 +225,26 @@ fn plist_xml(label: &str, exe: &Path, log: &Path) -> String {
 
 fn xml(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod systemd_tests {
+    use super::*;
+
+    #[test]
+    fn unit_path_honours_xdg_config_home() {
+        let home = Path::new("/home/ana");
+        assert_eq!(unit_path(home, None), Path::new("/home/ana/.config/systemd/user/flicks.service"));
+        let config = Path::new("/srv/config");
+        assert_eq!(unit_path(home, Some(config)), Path::new("/srv/config/systemd/user/flicks.service"));
+    }
+
+    #[test]
+    fn unit_restarts_after_a_pause() {
+        let unit = unit_file(Path::new("/opt/flicks 1/50%/flicks"));
+        assert!(unit.contains("ExecStart=\"/opt/flicks 1/50%%/flicks\" serve\n"), "{unit}");
+        assert!(unit.contains("Restart=on-failure\nRestartSec=2\n"), "{unit}");
+    }
 }
 
 /// Drives the real launchd with a throwaway label, a stub binary and a temp HOME:

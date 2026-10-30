@@ -1,6 +1,6 @@
 //! The client against a real server, on localhost and through a local TLS-terminating proxy that
 //! has its own certificate under a hostname: pairing, the catalog and byte ranges, and refusing a
-//! server whose key isn't the pinned one.
+//! server whose key isn't the pinned one. And two servers merged into one library.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use flicks_client::{Client, Error, Server, keys};
+use flicks_client::merge::{self, Library};
+use flicks_client::{Client, Error, Progress, Server, keys};
 use flicks_server::db::{Device, Folder};
 use flicks_server::server::{self, AddFolder, OpenPairing, Pairing, State};
 use hyper::Method;
@@ -48,12 +49,16 @@ async fn setup(name: &str) -> Setup {
 }
 
 fn mp4() -> Vec<u8> {
+    mp4_sized(1280, 720)
+}
+
+fn mp4_sized(width: u16, height: u16) -> Vec<u8> {
     use flicks_container::isobmff::{
         AvcConfig, Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions,
     };
     let avc = AvcConfig::new(vec![vec![0x67, 0x64, 0, 0x28, 1, 2]], vec![vec![0x68, 3]], 4);
     let mut w = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
-    let v = w.add_track(TrackConfig::new(SampleEntry::avc(avc, 1280, 720), 1000)).unwrap();
+    let v = w.add_track(TrackConfig::new(SampleEntry::avc(avc, width, height), 1000)).unwrap();
     for second in 0..5 {
         let sample = WriteSample { data: &[second; 100_000], duration: 1000, composition_offset: 0, is_sync: true };
         w.write_sample(v, sample).unwrap();
@@ -165,6 +170,14 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     // The address that answered is saved first, and gets the head start next time.
     assert_eq!(server.addrs[0], setup.addr.to_string());
     assert!(server.addrs.len() > 1);
+    // Artwork bytes come back as cached; a name that would leave `/artwork/` isn't sent.
+    let artwork = setup.state.data_dir.join("artwork");
+    std::fs::create_dir_all(&artwork).unwrap();
+    std::fs::write(artwork.join("w342-abc123.jpg"), b"jpeg bytes").unwrap();
+    let connection = local.connect(&server.key).await.unwrap();
+    assert_eq!(&connection.artwork("w342-abc123.jpg").await.unwrap()[..], b"jpeg bytes");
+    assert!(matches!(connection.artwork("w342-missing.jpg").await, Err(Error::Status(..))));
+    assert!(matches!(connection.artwork("../flicks.db").await, Err(Error::BadResponse)));
 
     // Through the proxy, by name: its certificate is valid for `localhost` under its authority,
     // and the signed probe proves the server is behind it.
@@ -228,4 +241,143 @@ async fn a_wrong_pinned_key_is_refused() {
     client.servers.push(Server { key: wrong.clone(), name: "x".into(), addrs, user: "dee".into(), admin: false });
     assert!(matches!(client.connect(&wrong).await, Err(Error::Unreachable { tried: 2, .. })));
     assert!(matches!(client.connect(&real).await, Err(Error::NotPaired)));
+}
+
+/// A server that can be stopped, with `files` (name, width, height) in its folder, and this
+/// client paired with it as `ana`. Returns the root connection, the serving task and the folder.
+async fn stoppable(
+    name: &str,
+    files: &[(&str, u16, u16)],
+    client: &mut Client,
+) -> (flicks_client::Connection, tokio::task::JoinHandle<()>, Server, tempfile::TempDir) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = Arc::new(State::open(&dir(&format!("{name}-server")), addr.port()).unwrap());
+    flicks_server::api::start(&state).await.unwrap();
+    let serving = tokio::spawn({
+        let state = state.clone();
+        async move {
+            let _ = server::run(listener, state).await;
+        }
+    });
+    let root =
+        flicks_client::Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    for (file, width, height) in files {
+        std::fs::write(folder.path().join(file), mp4_sized(*width, *height)).unwrap();
+    }
+    let path = folder.path().to_string_lossy().into_owned();
+    let _: Folder = root.call(Method::POST, "/admin/folders", Some(&AddFolder { path })).await.unwrap();
+    let request = OpenPairing { user: "ana".into(), admin: false, addrs: vec![addr.to_string()] };
+    let pairing: Pairing = root.call(Method::POST, "/admin/pair", Some(&request)).await.unwrap();
+    let mut paired = client.pair(&pairing.link, "Laptop").await.unwrap();
+    // Only the loopback address: the link's interface addresses take the 5 s connect timeout
+    // each refresh once the server is stopped.
+    paired.addrs.truncate(1);
+    client.servers.last_mut().unwrap().addrs.truncate(1);
+    // Wait for the first scan.
+    let connection = client.connect(&paired.key).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while connection.items().await.unwrap().len() < files.len() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    (root, serving, paired, folder)
+}
+
+#[tokio::test]
+async fn two_servers_merge_into_one_library() {
+    let home = dir("merge-client");
+    let mut client = Client::open(&home).unwrap();
+    let (_, _a_serving, a, _a_folder) =
+        stoppable("merge-a", &[("Shared (2020).mp4", 1280, 720), ("Only A (2021).mp4", 1280, 720)], &mut client).await;
+    let (_, b_serving, b, _b_folder) =
+        stoppable("merge-b", &[("Shared (2020).mp4", 1920, 1080), ("Only B (2022).mp4", 1280, 720)], &mut client).await;
+    let mut library = Library::open(client);
+
+    // The shared title is one, with a source on each server; the unique ones appear once each.
+    library.refresh().await.unwrap();
+    let names = |library: &Library| -> Vec<(String, usize, bool)> {
+        library.titles().iter().map(|t| (t.item.title.clone(), t.sources.len(), t.available())).collect()
+    };
+    let all_up = vec![("Only A".into(), 1, true), ("Only B".into(), 1, true), ("Shared".into(), 2, true)];
+    assert_eq!(names(&library), all_up);
+    let shared = library.titles().iter().find(|t| t.item.title == "Shared").unwrap().clone();
+    assert_eq!(shared.sources.iter().map(|s| s.server.as_str()).collect::<Vec<_>>(), [&a.key, &b.key]);
+    // Both answer: the 1080p copy on B is best.
+    assert_eq!(
+        merge::best_source(&shared).map(|s| (s.server.as_str(), s.item.height)),
+        Some((b.key.as_str(), Some(1080)))
+    );
+
+    // Progress saved on A (from another device, say) reaches B on the next refresh.
+    let (a_file, b_file) = (shared.sources[0].item.id, shared.sources[1].item.id);
+    let watched = Progress { position: 2_000, played: false, updated_at: 1_700_000_000_000 };
+    let a_conn = library.connection(&a.key).unwrap();
+    let _: Option<Progress> = a_conn.call(Method::PUT, &format!("/progress/{a_file}"), Some(&watched)).await.unwrap();
+    library.refresh().await.unwrap();
+    let on_b: Option<Progress> = library
+        .connection(&b.key)
+        .unwrap()
+        .call(Method::GET, &format!("/progress/{b_file}"), None::<&()>)
+        .await
+        .unwrap();
+    assert_eq!(on_b, Some(watched));
+    // And newer progress set through the library goes to both.
+    let later = Progress { position: 3_000, updated_at: watched.updated_at + 1, ..watched };
+    library.set_progress(&shared.key, later).await.unwrap();
+    for (server, file) in [(&a.key, a_file), (&b.key, b_file)] {
+        let saved: Option<Progress> = library
+            .connection(server)
+            .unwrap()
+            .call(Method::GET, &format!("/progress/{file}"), None::<&()>)
+            .await
+            .unwrap();
+        assert_eq!(saved, Some(later));
+    }
+
+    // B stops: its titles stay listed from the cached catalog, unavailable, and A's 720p copy of
+    // the shared title is the one to play.
+    b_serving.abort();
+    let _ = b_serving.await;
+    library.refresh().await.unwrap();
+    assert!(library.connection(&b.key).is_none());
+    let one_down = vec![("Only A".into(), 1, true), ("Only B".into(), 1, false), ("Shared".into(), 2, true)];
+    assert_eq!(names(&library), one_down);
+    let shared = library.titles().iter().find(|t| t.item.title == "Shared").unwrap();
+    assert!(!shared.sources[1].available);
+    assert_eq!(
+        merge::best_source(shared).map(|s| (s.server.as_str(), s.item.height)),
+        Some((a.key.as_str(), Some(720)))
+    );
+    assert_eq!(shared.progress, Some(later));
+
+    // Servers are reached at once: two that hang (accepting TCP but never answering TLS) cost one
+    // connect timeout for the whole refresh, not one each, and the live server's titles are there.
+    let hang = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hanging = hang.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        loop {
+            held.push(hang.accept().await.unwrap());
+        }
+    });
+    library.client.servers.iter_mut().find(|s| s.key == b.key).unwrap().addrs = vec![hanging.clone()];
+    let gone = keys::encode(&keys::public_bytes(keys::generate().unwrap().verifying_key()));
+    let addrs = vec![hanging];
+    library.client.servers.push(Server { key: gone, name: "Gone".into(), addrs, user: "ana".into(), admin: false });
+    let started = std::time::Instant::now();
+    library.refresh().await.unwrap();
+    let took = started.elapsed();
+    assert!(took >= Duration::from_secs(5) && took < Duration::from_secs(8), "{took:?}");
+    assert_eq!(names(&library), one_down);
+    assert!(library.connection(&a.key).is_some());
+
+    // A fresh start shows the cached catalogs, every title unavailable until a refresh.
+    let reopened = Library::open(Client::open(&home).unwrap());
+    let all_down = vec![("Only A".into(), 1, false), ("Only B".into(), 1, false), ("Shared".into(), 2, false)];
+    assert_eq!(names(&reopened), all_down);
+    assert!(reopened.titles().iter().all(|t| merge::best_source(t).is_none()));
 }

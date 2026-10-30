@@ -32,6 +32,8 @@ pub fn check(path: &Path, data_dir: &Path) -> Result<PathBuf, String> {
         .map(PathBuf::from)
         .chain(home.iter().flat_map(|home| SECRET.iter().map(move |s| home.join(s))))
         .chain([data_dir.to_path_buf()]);
+    #[cfg(windows)]
+    let denied = denied.chain(windows_protected());
     for location in denied {
         // A location that exists is compared by its real path (`/etc` is `/private/etc` on macOS).
         let location = location.canonicalize().unwrap_or(location);
@@ -40,6 +42,24 @@ pub fn check(path: &Path, data_dir: &Path) -> Result<PathBuf, String> {
         }
     }
     Ok(resolved)
+}
+
+#[cfg(windows)]
+fn windows_protected() -> Vec<PathBuf> {
+    let mut paths: Vec<_> = ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "APPDATA"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    // LocalAppData also holds Temp, so don't deny that whole tree. Protect credential/config
+    // locations in both AppData trees as well as the dot-directories under USERPROFILE above.
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let local = PathBuf::from(local);
+        paths.extend(SECRET.iter().map(|s| local.join(s)));
+        paths.extend(["Microsoft", "Google", "Mozilla", "Packages", "Flicks"].map(|s| local.join(s)));
+    }
+    paths
 }
 
 #[cfg(test)]
@@ -64,6 +84,12 @@ mod tests {
             if home.join(".ssh").is_dir() {
                 assert!(check(&home.join(".ssh"), &data).is_err());
             }
+        }
+        #[cfg(windows)]
+        for path in windows_protected().into_iter().filter(|p| p.is_dir()) {
+            assert!(check(&path, &data).is_err(), "{}", path.display());
+            let lower = PathBuf::from(path.to_string_lossy().to_lowercase());
+            assert!(check(&lower, &data).is_err(), "{}", lower.display());
         }
         // A symlink into a refused location is refused.
         #[cfg(unix)]

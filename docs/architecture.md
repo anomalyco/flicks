@@ -26,7 +26,7 @@
 
 A server has one HTTPS listener. The user reaches it however they like: LAN address, tailnet address or name, or a tunnel or reverse proxy (OpenTunnel, Cloudflare Tunnel, Caddy) pointed at it. The server doesn't care which; every request is authenticated the same way, so a tunnel needs no special handling.
 
-- **Server key:** an ECDSA P-256 key, created on first run, stored in `server.key` (mode 0600; owner-only ACL on Windows). On every start the server mints a 365-day self-signed TLS certificate for that key in memory (nothing else on disk), and the app pins the key, not the certificate. P-256 because every TLS stack accepts it, including Apple's and Windows'.
+- **Server key:** an ECDSA P-256 key, created on first run, stored in `server.key` (mode 0600; owner-only ACL on Windows). Windows data directories, keys, saved server lists and the database use a protected ACL granting only the current user and SYSTEM full control, with directory grants inherited by new files (including SQLite sidecars); existing sensitive files are restricted again on open. On every start the server mints a 365-day self-signed TLS certificate for that key in memory (nothing else on disk), and the app pins the key, not the certificate. P-256 because every TLS stack accepts it, including Apple's and Windows'.
 - **Encodings:** public keys are SEC1 compressed (33 bytes), signatures are P-256 ECDSA `r ‖ s` (64 bytes). Every signed message starts with its own label (`flicks-…-v1\0`), so a signature for one purpose, including TLS, can never be replayed as another, and every variable-length field in it is length-prefixed (`lp(x)`: a u32 big-endian length, then `x`).
 - **Probe first, always:** before anything else at an address (pairing included), the app sends `GET /info?probe=<nonce>`, which returns the server key, its name and `Sign(server key, "flicks-info-v1\0" ‖ lp(nonce) ‖ lp(name))`. Only an address whose answer verifies against the pinned key is used. Through a tunnel this is what proves the server is behind it: a tunnel can read traffic, but it can't impersonate the server, rename it or forge requests.
 - **Which certificates count:** a certificate for the server key is accepted at any address (the server itself). Otherwise the address must be a hostname whose certificate is valid for that name under the public web roots (a tunnel or reverse proxy, which terminates TLS); a raw IP address accepts only the server-key certificate. The probe then checks the server either way.
@@ -49,17 +49,17 @@ Device keys and signed requests. No passwords, no bearer tokens.
 
 - **Removing a device** (`flicks device rm`) takes effect on its next request.
 - **Roles:** admin or viewer, per user. For now every viewer sees every folder; per-user library grants come later.
-- **Folders:** adding one refuses system and secret locations (`/etc`, `~/.ssh`, the Flicks data dir) after resolving the path.
+- **Folders:** adding one refuses system and secret locations (`/etc`, `~/.ssh`, the Flicks data dir) after resolving the path. On Windows this also covers Windows, Program Files, ProgramData, roaming AppData, and local AppData credential/configuration directories, but not the local Temp directory.
 - **Local CLI:** admin commands on the server machine (`flicks folder`, `user`, `pair`, `device`) talk to the running server at `https://127.0.0.1:7686`, signing with `server.key` itself as the root admin. So there's one process writing the database, and recovery is just running `flicks pair --admin` on that machine. The admin routes live under `/admin/` (the app's Server screens use the same ones); `pair --admin` with no `--user` pairs to a user named `admin`.
 - **Unauthenticated routes:** `/info` and pairing redemption (only while a window is open; otherwise it answers 401 like any unsigned request), both behind one global rate limit (bursts of 20, 10 a second).
 
 ## Server
 
-- **Catalog:** folders are scanned with folder hashes (an unchanged folder costs one directory listing) and watched for changes (FSEvents, later inotify and ReadDirectoryChangesW). Each file's headers are read with `container`: codecs, duration, HDR flags, audio and subtitle tracks, and the keyframe index from Cues (MKV) or sample tables (MP4) without scanning the file. Files are identified by OSHash.
+- **Catalog:** folders are scanned with folder hashes (an unchanged folder costs one directory listing) and watched for changes (FSEvents, inotify and ReadDirectoryChangesW through `notify`). Each file's headers are read with `container`: codecs, duration, HDR flags, audio and subtitle tracks, and the keyframe index from Cues (MKV) or sample tables (MP4) without scanning the file. Files are identified by OSHash.
 - **Matching:** names are parsed from paths (title, year, season, episode, edition), then matched on TMDB when a key is set (`FLICKS_TMDB_KEY`); artwork is cached once. Without a key everything still scans and plays under its parsed name. Tests use recorded TMDB responses, never the live API.
 - **Storage:** one SQLite database (WAL), owned by `server`, which runs the single writer task and the migrations. `library` defines its catalog tables and works on a connection it's handed, so it has no database of its own.
 - **API:** catalog (home rows, libraries, items, search), `/play/{file}` returning the file's facts and byte ranges for header and resume point in one response, byte-range serving, and progress (`PUT /progress/{item}`: position, played, updated-at; newest wins).
-- **CLI:** `flicks serve`, `flicks folder add|rm|ls`, `flicks user add|ls`, `flicks pair`, `flicks device ls|rm`, `flicks status`. On macOS, `flicks service install` writes a launchd agent.
+- **CLI:** `flicks serve`, `flicks folder add|rm|ls`, `flicks user add|ls`, `flicks pair`, `flicks device ls|rm`, `flicks status`. `flicks service install` writes a launchd agent on macOS and a systemd user service (with lingering, so it starts at boot) on Linux.
 
 ### Catalog API (FLK-11)
 
@@ -95,7 +95,8 @@ through signed `/artwork/{name}` requests. Clients never contact TMDB. Streams a
 
 Progress PUT takes exactly `{position, played, updated_at}`: nonnegative integer milliseconds
 (position within the media; updated_at since Unix epoch). A strictly newer timestamp wins;
-equal/older updates return the existing value. The signed user selects the record, never a
+equal/older updates return the existing value. An updated_at more than 60 s ahead of the server's
+clock gets 400, and clients ignore such values when merging, so one server can't freeze progress on others. The signed user selects the record, never a
 request field. The local root key has no user and gets 403 on progress routes. Continue Watching
 means positive position and not played, newest update first; Recently Added means newest scan
 addition first. Missing/removed items return 404.
@@ -117,7 +118,9 @@ file up through its library root (not ancestors above that root). Scans skip all
 ## App
 
 - **Screens:** Home (Continue Watching, Next Up, Recently Added, libraries), detail, search, player, Add Server (scan QR or paste link), and Server screens for admins (folders, users, devices, pairing).
+  Home's rows after Continue Watching and Recently Added are TV Shows and Movies of the merged library (a show's episodes are one tile; the merged library has no per-server folders to make rows of). The desktop app shows the cached library at launch, refreshes it off the UI thread, and dims a title whose servers didn't answer the last refresh; it can't be played until one does.
 - **Client core** (`client`): server list, keys and request signing (shared with the server and its local CLI), address racing (see "Reaching a server"), catalog merge across servers, progress merge (newest wins, written back to servers that are behind).
+- **Merged library** (`client::merge`, FLK-40): files are one title when TMDB matches (a movie's id; a series id with season and episode), otherwise by parsed title, year, season and episode; an unmatched copy joins a matched title of the same name. The source to play is on a server that answered, then has the most pixels, then the largest file, then the lowest probe latency. Each server's last catalog is cached in `catalog.json` in the data directory, so a server that doesn't answer keeps its titles, unavailable. Every server is refreshed at once, so servers that don't answer cost one connect timeout together.
 - **Player** (`player`): reads byte ranges from a server (with prefetch) or a local file; demuxes with `container`; decodes video with hardware first (VideoToolbox on macOS) and our software decoders as fallback; decodes audio with ours; audio is the master clock; frames are drawn by `gpu`.
 - **Drawing video:** `gpu` is a plain wgpu renderer (no Rune dependency; wgpu pinned to Rune's version, `~30.0.1`): YUV (NV12, P010) to display colour, scaling, HDR tone-mapped to SDR, respecting Rune's `srgb_blend`. The app hosts it through Rune's `Compositor` hook with `El::effect` and `Renderer::draw_with`, so video is drawn in Rune's own pass on Rune's device, with the UI over it.
 - **Audio** (`audio`): one canonical channel order across decoders, stereo downmix (ITU-R BS.775), resampling to the device rate, dynamic range compression off, device output.

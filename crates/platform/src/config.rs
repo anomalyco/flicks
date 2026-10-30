@@ -1,7 +1,7 @@
 //! Configuration validation uses the same SPS parsers as software decode.
 use crate::{Codec, ColorInfo, Error, FrameInfo, PixelFormat, Result};
 use flicks_container::{
-    bitstream::unescape_rbsp,
+    bitstream::{BitReader, length_prefixed_nals, unescape_rbsp},
     isobmff::{AvcConfig, HevcConfig},
 };
 
@@ -18,10 +18,7 @@ impl StreamInfo {
         if data.len() > 256 * 1024 || data.first() != Some(&1) {
             return Err(Error::InvalidData("bad or oversized configuration record"));
         }
-        // The existing software SPS parsers have unchecked arithmetic on malformed Exp-Golomb
-        // values. Contain those panics at this safe boundary as well as ordinary parser errors.
-        std::panic::catch_unwind(|| Self::parse_inner(codec, data))
-            .map_err(|_| Error::InvalidData("SPS arithmetic overflow"))?
+        Self::parse_inner(codec, data)
     }
 
     fn parse_inner(codec: Codec, data: &[u8]) -> Result<Self> {
@@ -165,6 +162,26 @@ impl StreamInfo {
         }
     }
 
+    /// An open GOP starts with non-IDR I slices, not nal_unit_type 5. Check every
+    /// slice so a P/B picture is still rejected as the first picture of a run.
+    pub fn h264_intra(&self, data: &[u8]) -> Result<bool> {
+        let invalid = || Error::InvalidData("invalid H.264 slice header");
+        let nals = length_prefixed_nals(data, self.length_size).map_err(|_| invalid())?;
+        let mut intra = false;
+        for n in nals {
+            if matches!(self.nal_type(n)?, 1 | 5) {
+                let rbsp = unescape_rbsp(n.get(1..).ok_or_else(invalid)?);
+                let mut r = BitReader::new(&rbsp);
+                r.read_ue().map_err(|_| invalid())?; // first_mb_in_slice
+                if !matches!(r.read_ue().map_err(|_| invalid())?, 2 | 7) {
+                    return Ok(false);
+                }
+                intra = true;
+            }
+        }
+        Ok(intra)
+    }
+
     pub fn validate_sample(&self, data: &[u8]) -> Result<Vec<u8>> {
         if data.is_empty() || data.len() > 16 * 1024 * 1024 {
             return Err(Error::InvalidData("empty or oversized access unit"));
@@ -181,9 +198,6 @@ impl StreamInfo {
             let n = rest.get(..len).ok_or(Error::InvalidData("NAL length exceeds sample"))?;
             rest = rest.get(len..).ok_or(Error::InvalidData("short NAL"))?;
             let t = self.nal_type(n)?;
-            if self.codec == Codec::Hevc && matches!(t, 36 | 37) {
-                return Err(Error::Unsupported("HEVC end-of-sequence; recreate decoder"));
-            }
             if self.is_parameter(t) && !self.parameter_sets.iter().any(|p| trim_zeros(p) == trim_zeros(n)) {
                 return Err(Error::Unsupported("in-band parameter change; recreate decoder"));
             }
@@ -191,7 +205,8 @@ impl StreamInfo {
         }
         if !types.iter().any(|&t| match self.codec {
             Codec::H264 => matches!(t, 1 | 5),
-            Codec::Hevc => t <= 21,
+            // EOS/EOB may accompany the last picture or occupy their own sample.
+            Codec::Hevc => t <= 21 || matches!(t, 36 | 37),
         }) {
             return Err(Error::InvalidData("access unit has no picture"));
         }

@@ -91,7 +91,8 @@ pub fn init_with_params(dir: &Path, passphrase: &[u8], device_secret: [u8; 32], 
             txn.open_table(META)?;
         }
         txn.commit()?;
-        File::open(&tmp.0)?.sync_all()?;
+        // Windows FlushFileBuffers requires a handle opened for writing.
+        OpenOptions::new().read(true).write(cfg!(windows)).open(&tmp.0)?.sync_all()?;
     }
 
     link_no_clobber(&tmp.0, &db_path).map_err(|e| match e.kind() {

@@ -72,8 +72,9 @@ fn webvtt_sample_cues_and_styles() {
 
 #[test]
 fn crlf_bom_cr_and_utf16_read_the_same() {
-    let crlf = SRT.replace('\n', "\r\n");
-    let cr = SRT.replace('\n', "\r");
+    let lf = SRT.replace("\r\n", "\n");
+    let crlf = lf.replace('\n', "\r\n");
+    let cr = lf.replace('\n', "\r");
     let mut bom = vec![0xEF, 0xBB, 0xBF];
     bom.extend_from_slice(crlf.as_bytes());
     let mut le = vec![0xFF, 0xFE];
@@ -86,7 +87,7 @@ fn crlf_bom_cr_and_utf16_read_the_same() {
         assert_eq!(plain(&parse_srt(input).unwrap()), expected_srt());
     }
     let mut bom = vec![0xEF, 0xBB, 0xBF];
-    bom.extend_from_slice(VTT.replace('\n', "\r\n").as_bytes());
+    bom.extend_from_slice(VTT.replace("\r\n", "\n").replace('\n', "\r\n").as_bytes());
     assert_eq!(plain(&parse_webvtt(&bom).unwrap()), expected_vtt());
 }
 

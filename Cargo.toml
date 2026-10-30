@@ -2,7 +2,7 @@
 resolver = "3"
 # Rust crates live in crates/. Rust apps (the Rune desktop and admin apps) are added under apps/
 # by path as they land; apps/apple and apps/android are Xcode and Gradle projects, not members.
-members = ["crates/*"]
+members = ["crates/*", "apps/desktop"]
 
 [workspace.package]
 version = "0.0.0"

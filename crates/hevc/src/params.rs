@@ -110,7 +110,7 @@ pub fn skip_hrd(r: &mut BitReader, common: bool, max_sub_layers_minus1: u32) -> 
         }
         let mut cpb_cnt = 1;
         if !low_delay {
-            cpb_cnt = r.read_ue()? + 1;
+            cpb_cnt = r.read_ue_plus(1)?;
             ensure!(cpb_cnt <= 32, "cpb_cnt_minus1 out of range");
         }
         if nal {
@@ -366,8 +366,9 @@ impl StRps {
             ensure!(delta_idx <= idx, "delta_idx_minus1 out of range");
             let rf = &sets[idx - delta_idx];
             let sign = r.read_flag()?;
-            let abs = r.read_ue()? as i32 + 1;
+            let abs = r.read_ue_plus(1)?;
             ensure!(abs <= 1 << 15, "abs_delta_rps_minus1 out of range");
+            let abs = abs as i32;
             let delta_rps = if sign { -abs } else { abs };
             let n = rf.num_delta_pocs();
             let mut used = vec![false; n + 1];
@@ -419,16 +420,16 @@ impl StRps {
             let mut out = StRps::default();
             let mut poc = 0i32;
             for _ in 0..nneg {
-                let d = r.read_ue()? as i32 + 1;
+                let d = r.read_ue_plus(1)?;
                 ensure!(d <= 1 << 15, "delta_poc_s0_minus1 out of range");
-                poc -= d;
+                poc -= d as i32;
                 out.s0.push((poc, r.read_flag()?));
             }
             poc = 0;
             for _ in 0..npos {
-                let d = r.read_ue()? as i32 + 1;
+                let d = r.read_ue_plus(1)?;
                 ensure!(d <= 1 << 15, "delta_poc_s1_minus1 out of range");
-                poc += d;
+                poc += d as i32;
                 out.s1.push((poc, r.read_flag()?));
             }
             Ok(out)
@@ -504,25 +505,32 @@ impl Sps {
         if r.read_flag()? {
             conf_win = (r.read_ue()?, r.read_ue()?, r.read_ue()?, r.read_ue()?);
         }
-        let bit_depth_luma = r.read_ue()? + 8;
-        let bit_depth_chroma = r.read_ue()? + 8;
+        let (l, right, t, b) = conf_win;
+        let sw = if matches!(chroma_format_idc, 1 | 2) { 2 } else { 1 };
+        let sh = if chroma_format_idc == 1 { 2 } else { 1 };
+        ensure!(
+            l.saturating_add(right).saturating_mul(sw) < width && t.saturating_add(b).saturating_mul(sh) < height,
+            "conformance window exceeds picture size"
+        );
+        let bit_depth_luma = r.read_ue_plus(8)?;
+        let bit_depth_chroma = r.read_ue_plus(8)?;
         ensure!(bit_depth_luma <= 16 && bit_depth_chroma <= 16, "bit depth out of range");
-        let log2_max_poc_lsb = r.read_ue()? + 4;
+        let log2_max_poc_lsb = r.read_ue_plus(4)?;
         ensure!(log2_max_poc_lsb <= 16, "log2_max_pic_order_cnt_lsb_minus4 out of range");
         let ordering_all = r.read_flag()?;
         let (mut dpb, mut reorder, mut latency) = (1, 0, 0);
         let start = if ordering_all { 0 } else { max_sub_layers_minus1 };
         for _ in start..=max_sub_layers_minus1 {
             // the values of the highest sub-layer are used
-            dpb = r.read_ue()? + 1;
+            dpb = r.read_ue_plus(1)?;
             reorder = r.read_ue()?;
             latency = r.read_ue()?;
         }
         ensure!(dpb <= 16 && reorder <= 16, "sps_max_dec_pic_buffering out of range");
-        let log2_min_cb = r.read_ue()? + 3;
-        let log2_ctb = log2_min_cb + r.read_ue()?;
-        let log2_min_tb = r.read_ue()? + 2;
-        let log2_max_tb = log2_min_tb + r.read_ue()?;
+        let log2_min_cb = r.read_ue_plus(3)?;
+        let log2_ctb = r.read_ue_plus(log2_min_cb)?;
+        let log2_min_tb = r.read_ue_plus(2)?;
+        let log2_max_tb = r.read_ue_plus(log2_min_tb)?;
         ensure!((4..=6).contains(&log2_ctb) && log2_min_cb <= log2_ctb, "CTB size out of range");
         ensure!(log2_min_tb < log2_min_cb && log2_max_tb <= log2_ctb.min(5), "transform block sizes out of range");
         ensure!(
@@ -554,8 +562,8 @@ impl Sps {
         if pcm {
             pcm_bit_depth_luma = r.read_bits(4)? + 1;
             pcm_bit_depth_chroma = r.read_bits(4)? + 1;
-            log2_min_pcm = r.read_ue()? + 3;
-            log2_max_pcm = log2_min_pcm + r.read_ue()?;
+            log2_min_pcm = r.read_ue_plus(3)?;
+            log2_max_pcm = r.read_ue_plus(log2_min_pcm)?;
             pcm_loop_filter_disabled = r.read_flag()?;
             ensure!(
                 pcm_bit_depth_luma <= bit_depth_luma && pcm_bit_depth_chroma <= bit_depth_chroma,
@@ -662,10 +670,10 @@ impl Sps {
     pub fn crop_rect(&self) -> (u32, u32, u32, u32) {
         let (l, r, t, b) = self.conf_win;
         let (sw, sh) = (self.sub_width_c(), self.sub_height_c());
-        let x = (l * sw).min(self.width - 1);
-        let y = (t * sh).min(self.height - 1);
-        let w = self.width.saturating_sub(x + r * sw).max(1);
-        let h = self.height.saturating_sub(y + b * sh).max(1);
+        let x = l.saturating_mul(sw).min(self.width.saturating_sub(1));
+        let y = t.saturating_mul(sh).min(self.height.saturating_sub(1));
+        let w = self.width.saturating_sub(x.saturating_add(r.saturating_mul(sw))).max(1);
+        let h = self.height.saturating_sub(y.saturating_add(b.saturating_mul(sh))).max(1);
         (x, y, w, h)
     }
 
@@ -972,6 +980,55 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flicks_container::bitstream::BitWriter;
+
+    #[test]
+    fn hostile_sps_sizes_and_crops_return_errors() {
+        // Minimal Main SPS: dimensions, crop, bit depths, POC and coding-block sizes.
+        let baseline = [64, 64, 0, 0, 0, 0, 0, 0, 4, 3, 2, 0, 0, 3, 0, 3];
+        let encode = |values: &[u32; 16]| {
+            let mut w = BitWriter::new();
+            w.write_bits(1, 8); // VPS 0, no sublayers, temporal nesting
+            for _ in 0..12 {
+                w.write_bits(0, 8); // profile_tier_level
+            }
+            w.write_ue(0); // SPS ID
+            w.write_ue(1); // 4:2:0
+            for value in &values[..2] {
+                w.write_ue(*value);
+            }
+            w.write_bit(true); // conformance window
+            for value in &values[2..9] {
+                w.write_ue(*value);
+            }
+            w.write_bit(false); // ordering info for highest sublayer
+            for value in &values[9..] {
+                w.write_ue(*value);
+            }
+            w.write_ue(0); // transform hierarchy inter
+            w.write_ue(0); // transform hierarchy intra
+            w.write_bits(0, 4); // scaling, AMP, SAO, PCM
+            w.write_ue(0); // short-term RPS count
+            w.write_bits(0, 5); // long-term, MVP, smoothing, VUI, extensions
+            w.rbsp_trailing();
+            w.finish()
+        };
+        let mut sps = Sps::parse(&encode(&baseline)).unwrap();
+        assert_eq!(sps.crop_rect(), (0, 0, 64, 64));
+        for value in [1 << 30, i32::MAX as u32, 1 << 31, u32::MAX - 1, u32::MAX] {
+            for field in 0..baseline.len() {
+                let mut values = baseline;
+                values[field] = value;
+                // Latency increase is unrestricted, unlike the remaining fields.
+                if field != 11 {
+                    assert!(Sps::parse(&encode(&values)).is_err(), "field {field}, value {value}");
+                }
+            }
+            // Public SPS values can also be constructed/modified without parsing.
+            sps.conf_win = (value, value, value, value);
+            assert_eq!(sps.crop_rect(), (63, 63, 1, 1));
+        }
+    }
 
     #[test]
     fn picture_size_has_an_aggregate_pixel_budget() {

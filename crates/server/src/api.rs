@@ -150,7 +150,10 @@ async fn dispatch(state: &State, caller: &Caller, parts: &Parts, body: &[u8]) ->
         let Ok(update) = serde_json::from_slice::<Progress>(body) else {
             return Ok(Some(status(StatusCode::BAD_REQUEST)));
         };
-        if update.position < 0 || update.updated_at < 0 {
+        // More than a minute of clock skew ahead is refused: a future timestamp would win forever.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let limit = i64::try_from(now).unwrap_or(i64::MAX).saturating_add(60_000);
+        if update.position < 0 || update.updated_at < 0 || update.updated_at > limit {
             return Ok(Some(status(StatusCode::BAD_REQUEST)));
         }
         return state.db.call(move |conn| {

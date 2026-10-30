@@ -222,3 +222,50 @@ fn surround_51_canonical_and_downmix() {
     }
     let _ = std::fs::remove_file(raw);
 }
+
+/// Fewer channels than the device: each speaker lands on its own canonical slot, never on the
+/// next free one (4.0 surrounds must not reach C and LFE); a speaker the device lacks downmixes.
+#[test]
+fn pass_through_by_speaker() {
+    use Channel::*;
+    // Value k + 1 in source channel k.
+    let frame = |n: usize| (1..=n).map(|v| v as f32).collect::<Vec<_>>();
+    let cases: [(&[Channel], usize, &[f32]); 5] = [
+        (&[L, R, Ls, Rs], 6, &[1.0, 2.0, 0.0, 0.0, 3.0, 4.0]),
+        (&[L, C, R, Ls, Rs], 6, &[1.0, 3.0, 2.0, 0.0, 4.0, 5.0]),
+        (&[C, L, R, Ls, Rs], 8, &[2.0, 3.0, 1.0, 0.0, 4.0, 5.0, 0.0, 0.0]),
+        (layout::aac(6, 6).unwrap(), 6, &[2.0, 3.0, 1.0, 6.0, 4.0, 5.0]),
+        // Quad on a four-channel device has no Ls/Rs slots: stereo downmix in the first two.
+        (
+            &[L, R, Ls, Rs],
+            4,
+            &[1.0 + 3.0 * std::f32::consts::FRAC_1_SQRT_2, 2.0 + 4.0 * std::f32::consts::FRAC_1_SQRT_2, 0.0, 0.0],
+        ),
+    ];
+    for (src, device, want) in cases {
+        let out = remix(src, device, &frame(src.len()));
+        assert_eq!(out, want, "{src:?} on {device} channels");
+    }
+}
+
+/// AAC channel configuration 7 (front wide 7.1, C Lc Rc L R Ls Rs LFE): the centre pair joins
+/// its side's front channel at unity, even on an 8-channel device (it has no Lc/Rc slots).
+#[test]
+fn aac_front_wide_71() {
+    use Channel::*;
+    let order = layout::aac(7, 8).unwrap();
+    assert_eq!(order, [C, Lc, Rc, L, R, Ls, Rs, Lfe]);
+    assert_eq!(layout::aac(7, 6), None);
+    let g = std::f32::consts::FRAC_1_SQRT_2;
+    for device in [2, 8] {
+        for (k, want) in
+            [(0, [g, g]), (1, [1.0, 0.0]), (2, [0.0, 1.0]), (3, [1.0, 0.0]), (5, [g, 0.0]), (7, [0.0, 0.0])]
+        {
+            let mut frame = [0f32; 8];
+            frame[k] = 1.0;
+            let out = remix(order, device, &frame);
+            assert_eq!(out[..2], want, "{:?} on {device} channels", order[k]);
+            assert!(out[2..].iter().all(|v| *v == 0.0));
+        }
+    }
+}
