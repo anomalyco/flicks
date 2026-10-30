@@ -15,6 +15,7 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
     let json = ffprobe_json(ffprobe, path);
     let bytes = std::fs::read(path).unwrap();
     let mut d = Demuxer::from_slice(&bytes).unwrap();
+    d.build_index().unwrap();
     let name = path.file_name().unwrap().to_string_lossy().to_string();
     let file = d.file().clone();
     let streams = json["streams"].as_array().unwrap();
@@ -323,7 +324,7 @@ fn laced_remux() {
             }
             let out = w.finish().unwrap().into_inner();
             let laced = {
-                let f = open(&out[..]).unwrap();
+                let f = open_with(&out[..], &OpenOptions { index: true, verify_crc: false }).unwrap();
                 f.tracks.iter().any(|t| t.samples.iter().any(|s| s.lace > 0))
             };
             assert!(laced, "{src} {mode:?}: nothing was laced");
@@ -350,7 +351,8 @@ fn damaged_resync() {
     for b in &mut bytes[at..at + 200] {
         *b = 0x00;
     }
-    let d = Demuxer::from_slice(&bytes).unwrap();
+    let mut d = Demuxer::from_slice(&bytes).unwrap();
+    d.build_index().unwrap();
     assert!(!d.file().warnings.is_empty());
     let got: Vec<Packet> = d.collect::<Result<_>>().unwrap();
     assert!(got.len() < packets.len());

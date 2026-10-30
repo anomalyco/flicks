@@ -283,7 +283,7 @@ fn block_additional_id_1_is_located() {
     // Xiph lacing with two frames: an addition belongs to the block, not to one frame.
     c.extend(group_with_additions(&block(1, 80, 0x02, &[1, 2, b'a', b'b', b'c']), &[(Some(1), b"laced")]));
     let bytes = one_cluster(0, &c);
-    let f = open_with(&bytes[..], &OpenOptions::default()).unwrap();
+    let f = open_with(&bytes[..], &OpenOptions { index: true, verify_crc: false }).unwrap();
     let t = &f.tracks[0];
     assert_eq!(t.samples.len(), 4);
     let adds: Vec<_> = (0..4).map(|i| f.read_sample_addition(&bytes[..], 0, i).unwrap()).collect();
@@ -296,7 +296,8 @@ fn block_additional_id_1_is_located() {
 fn hostile_cluster_timestamps_saturate() {
     let pts = |bytes: &[u8]| {
         let first = Demuxer::from_slice(bytes).unwrap().next_packet().unwrap().unwrap().pts;
-        let indexed = open_with(bytes, &OpenOptions::default()).unwrap().tracks[0].samples[0].pts;
+        let indexed =
+            open_with(bytes, &OpenOptions { index: true, verify_crc: false }).unwrap().tracks[0].samples[0].pts;
         assert_eq!(first, indexed);
         first
     };
@@ -337,7 +338,11 @@ fn huge_timestamp_scale_is_ignored() {
     el_uint(&mut g, BLOCK_DURATION, u64::MAX);
     let mut c = Vec::new();
     el(&mut c, BLOCK_GROUP, &g);
-    let f = open_with(&one_cluster_scaled(u64::MAX, i64::MAX as u64, &c)[..], &OpenOptions::default()).unwrap();
+    let f = open_with(
+        &one_cluster_scaled(u64::MAX, i64::MAX as u64, &c)[..],
+        &OpenOptions { index: true, verify_crc: false },
+    )
+    .unwrap();
     assert_eq!(f.info.timestamp_scale, 1_000_000);
     assert_eq!(f.tracks[0].samples.len(), 3);
     let f = open_with(&one_cluster_scaled(1 << 32, 0, &c)[..], &OpenOptions::default()).unwrap();
@@ -352,7 +357,8 @@ fn duration_of_a_block_at_the_largest_timestamp_saturates() {
         el_uint(&mut g, BLOCK_DURATION, d);
         let mut c = Vec::new();
         el(&mut c, BLOCK_GROUP, &g);
-        let f = open_with(&one_cluster(i64::MAX as u64, &c)[..], &OpenOptions::default()).unwrap();
+        let f =
+            open_with(&one_cluster(i64::MAX as u64, &c)[..], &OpenOptions { index: true, verify_crc: false }).unwrap();
         assert_eq!(f.duration_ns(), Some(u64::MAX));
     }
 }
@@ -364,7 +370,7 @@ fn empty_laced_frames_exhaust_the_frame_budget() {
     for _ in 0..100 {
         el(&mut c, SIMPLE_BLOCK, &block(1, 0, 0x04, &[0xFF]));
     }
-    let r = open_with(&one_cluster(0, &c)[..], &OpenOptions::default());
+    let r = open_with(&one_cluster(0, &c)[..], &OpenOptions { index: true, verify_crc: false });
     assert!(matches!(r, Err(Error::TooLarge(_))), "{r:?}");
     // Laces of one-byte frames are paid for by their bytes.
     let mut c = Vec::new();
@@ -373,7 +379,7 @@ fn empty_laced_frames_exhaust_the_frame_budget() {
         data.extend_from_slice(&[0; 256]);
         el(&mut c, SIMPLE_BLOCK, &block(1, 0, 0x04, &data));
     }
-    let f = open_with(&one_cluster(0, &c)[..], &OpenOptions::default()).unwrap();
+    let f = open_with(&one_cluster(0, &c)[..], &OpenOptions { index: true, verify_crc: false }).unwrap();
     assert_eq!(f.tracks[0].samples.len(), 1024);
 }
 
@@ -447,4 +453,161 @@ fn overlapping_seek_head_targets_are_read_once() {
     let file = open_with(&src, &OpenOptions { index: false, verify_crc: false }).unwrap();
     assert_eq!(file.seek_head.len(), n as usize);
     assert!(src.1.get() <= 4 * f.len() as u64, "read {} bytes of a {}-byte file", src.1.get(), f.len());
+}
+
+/// Sparse, valid cluster layout: 12,500 four-MB frames, Cues at the end via SeekHead.
+/// Payloads need not be allocated to measure the actual ByteSource reads made by open.
+struct LargeMkv {
+    head: Vec<u8>,
+    cluster: Vec<u8>,
+    cues: Vec<u8>,
+    reads: std::cell::Cell<u64>,
+}
+
+#[test]
+fn relative_cue_seeks_past_blocks_without_scanning_them() {
+    for unknown_size in [false, true] {
+        let mut body = Vec::new();
+        for i in 0..48 {
+            el(&mut body, SIMPLE_BLOCK, &block(1, i * 20, 0, &vec![0; 70_000]));
+        }
+        // one_cluster prefixes a three-byte Timestamp element.
+        let relative = body.len() as u64 + 3;
+        el(&mut body, SIMPLE_BLOCK, &block(1, 1000, 0x80, b"key"));
+        let mut bytes = one_cluster(0, &body);
+        let at = bytes.windows(4).position(|w| w == CLUSTER.to_be_bytes()).unwrap();
+        let seg = bytes.windows(4).position(|w| w == SEGMENT.to_be_bytes()).unwrap() + 12;
+        let cue = |position: u64, relative: u64| {
+            let mut p = Vec::new();
+            el_uint(&mut p, CUE_TRACK, 1);
+            el(&mut p, CUE_CLUSTER_POSITION, &position.to_be_bytes());
+            el(&mut p, CUE_RELATIVE_POSITION, &relative.to_be_bytes());
+            let mut c = Vec::new();
+            el_uint(&mut c, CUE_TIME, 1000);
+            el(&mut c, CUE_TRACK_POSITIONS, &p);
+            let mut points = Vec::new();
+            el(&mut points, CUE_POINT, &c);
+            let mut out = Vec::new();
+            el(&mut out, CUES, &points);
+            out
+        };
+        let cue_len = cue(0, 0).len();
+        if unknown_size {
+            let (_, size_len) = ebml::read_size(&bytes[at + 4..]).unwrap();
+            let mut unknown = Vec::new();
+            write_unknown_size(&mut unknown, size_len);
+            bytes[at + 4..at + 4 + size_len].copy_from_slice(&unknown);
+        }
+        bytes.splice(at..at, cue((at + cue_len - seg) as u64, relative));
+        let src = Counting(&bytes, std::cell::Cell::new(0));
+        let mut d = Demuxer::new(&src).unwrap();
+        let before = src.1.get();
+        let key = d.keyframe_index(0).unwrap();
+        assert_eq!(key.len(), 1);
+        assert_eq!(key[0].relative_position, Some(relative));
+        assert_eq!(src.1.get(), before);
+        let point = d.seek(0, 1_000_000_000).unwrap();
+        let packet = d.next_packet().unwrap().unwrap();
+        assert_eq!((point.pts, packet.pts, packet.data.as_slice()), (1000, 1000, b"key".as_slice()));
+        assert!(src.1.get() - before < 131_072, "seek read {} bytes", src.1.get() - before);
+        assert!(!d.file().indexed);
+    }
+}
+
+impl LargeMkv {
+    const CLUSTERS: u64 = 12_500;
+    const STRIDE: u64 = 4_000_000;
+
+    fn new() -> Self {
+        let mut head = one_cluster(0, &[]);
+        let start = head.windows(4).position(|w| w == CLUSTER.to_be_bytes()).unwrap();
+        head.truncate(start);
+        let seg = head.windows(4).position(|w| w == SEGMENT.to_be_bytes()).unwrap() + 12;
+        let seek = |position: u64| {
+            let mut entry = Vec::new();
+            el(&mut entry, SEEK_ID, &CUES.to_be_bytes());
+            el(&mut entry, SEEK_POSITION, &position.to_be_bytes());
+            let mut entries = Vec::new();
+            el(&mut entries, SEEK, &entry);
+            let mut out = Vec::new();
+            el(&mut out, SEEK_HEAD, &entries);
+            out
+        };
+        let first = (head.len() + seek(0).len() - seg) as u64;
+        head.extend(seek(first + Self::CLUSTERS * Self::STRIDE));
+        let mut cluster = Vec::new();
+        write_id(&mut cluster, CLUSTER);
+        ebml::write_size(&mut cluster, Self::STRIDE - 12, 8);
+        el(&mut cluster, TIMESTAMP, &0u64.to_be_bytes());
+        write_id(&mut cluster, SIMPLE_BLOCK);
+        let size = Self::STRIDE - cluster.len() as u64 - 8;
+        ebml::write_size(&mut cluster, size, 8);
+        cluster.extend(block(1, 0, 0x80, &[]));
+        let mut points = Vec::new();
+        for i in 0..Self::CLUSTERS {
+            let mut position = Vec::new();
+            el_uint(&mut position, CUE_TRACK, 1);
+            el_uint(&mut position, CUE_CLUSTER_POSITION, first + i * Self::STRIDE);
+            el_uint(&mut position, CUE_RELATIVE_POSITION, 10);
+            let mut point = Vec::new();
+            el_uint(&mut point, CUE_TIME, i * 1000);
+            el(&mut point, CUE_TRACK_POSITIONS, &position);
+            el(&mut points, CUE_POINT, &point);
+        }
+        let mut cues = Vec::new();
+        el(&mut cues, CUES, &points);
+        Self { head, cluster, cues, reads: std::cell::Cell::new(0) }
+    }
+}
+
+impl ByteSource for LargeMkv {
+    fn len(&self) -> u64 {
+        self.head.len() as u64 + Self::CLUSTERS * Self::STRIDE + self.cues.len() as u64
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.reads.set(self.reads.get() + buf.len() as u64);
+        buf.fill(0);
+        let tail = self.head.len() as u64 + Self::CLUSTERS * Self::STRIDE;
+        let copy = |start: u64, bytes: &[u8], buf: &mut [u8]| {
+            let lo = offset.max(start);
+            let hi = (offset + buf.len() as u64).min(start + bytes.len() as u64);
+            if lo < hi {
+                buf[(lo - offset) as usize..(hi - offset) as usize]
+                    .copy_from_slice(&bytes[(lo - start) as usize..(hi - start) as usize]);
+            }
+        };
+        copy(0, &self.head, buf);
+        if offset < tail {
+            let i = offset.saturating_sub(self.head.len() as u64) / Self::STRIDE;
+            for j in i..=(i + 1).min(Self::CLUSTERS - 1) {
+                copy(self.head.len() as u64 + j * Self::STRIDE, &self.cluster, buf);
+                copy(self.head.len() as u64 + j * Self::STRIDE + 14, &(j * 1000).to_be_bytes(), buf);
+            }
+        }
+        copy(tail, &self.cues, buf);
+        Ok(())
+    }
+}
+
+#[test]
+fn large_mkv_open_measurement() {
+    let src = LargeMkv::new();
+    let start = std::time::Instant::now();
+    let mut d = Demuxer::new(&src).unwrap();
+    let open_time = start.elapsed();
+    let open_bytes = src.reads.get();
+    let start = std::time::Instant::now();
+    let keys = d.keyframe_index(0).unwrap();
+    eprintln!(
+        "50 GB MKV: open={open_time:?}, bytes={open_bytes}, cues={} index={:?}, total_bytes={}",
+        keys.len(),
+        start.elapsed(),
+        src.reads.get()
+    );
+    assert_eq!(keys.len(), LargeMkv::CLUSTERS as usize);
+    assert!(open_bytes < 1_000_000);
+    assert_eq!(src.reads.get(), open_bytes, "Cues index must not read clusters");
+    assert!(!d.file().indexed);
+    assert!(d.tracks()[0].samples.is_empty());
 }

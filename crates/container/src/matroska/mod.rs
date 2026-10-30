@@ -2,9 +2,8 @@
 //! and the WebM container guidelines.
 //!
 //! - [`open`] / [`open_with`] parse the EBML header and the first Segment (Info, Tracks, SeekHead,
-//!   Cues, Chapters, Tags, Attachments) and, by default, scan every Cluster's block headers to build
-//!   per-track [`Sample`] tables — the same shape as [`isobmff`](crate::isobmff), so callers can treat both
-//!   containers alike. Frame data is read on demand with [`MkvFile::read_sample`].
+//!   Cues, Chapters, Tags, Attachments) without scanning clusters. Set [`OpenOptions::index`] or
+//!   call [`Demuxer::build_index`] for full per-track [`Sample`] tables and [`MkvFile::read_sample`].
 //! - [`Demuxer`] iterates [`Packet`]s in file order (from any [`ByteSource`], `Read + Seek`, or a
 //!   byte slice) and seeks to the keyframe preceding a time, via the index, Cues, or a cluster scan.
 //!
