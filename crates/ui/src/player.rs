@@ -53,6 +53,8 @@ pub struct Shown {
     /// Whole seconds played, so the screen updates once a second.
     pub second: u64,
     pub playing: bool,
+    /// Waiting on data for a moment or longer.
+    pub buffering: bool,
     pub audio: Option<usize>,
     pub subtitle: Option<usize>,
     /// The name of a loaded subtitle file, shown instead of `subtitle`.
@@ -86,6 +88,8 @@ pub struct Screen {
     scrub: Option<f64>,
     controls: bool,
     moved: Instant,
+    /// The pointer is over the controls: they stay.
+    over_controls: bool,
     menu: Option<Menu>,
 }
 
@@ -129,6 +133,7 @@ impl Flicks {
             scrub: None,
             controls: true,
             moved: Instant::now(),
+            over_controls: false,
             menu: None,
         });
         if let Some(send) = &self.network {
@@ -167,9 +172,15 @@ impl Flicks {
         let Some(p) = self.playing(id) else { return };
         p.opening = false;
         p.position = position;
-        if !shown.playing {
-            p.controls = true;
-        } else if p.controls && p.menu.is_none() && p.scrub.is_none() && p.moved.elapsed() >= CONTROLS_FOR {
+        if !shown.playing || !p.shown.playing {
+            // Paused, or just started playing: the controls show for a while.
+            p.show_controls();
+        } else if p.controls
+            && p.menu.is_none()
+            && p.scrub.is_none()
+            && !p.over_controls
+            && p.moved.elapsed() >= CONTROLS_FOR
+        {
             p.controls = false;
         }
         p.shown = shown;
@@ -232,8 +243,9 @@ pub fn view(p: &Screen, cx: &mut Cx<Flicks>) -> El {
         .h_full()
         .fill(Color::BLACK)
         .child(el().key("video").effect(MARK).absolute(0.0, 0.0).w_full().h_full().on_press(|s: &mut Flicks| {
-            if let Some(p) = &s.player {
+            if let Some(p) = &mut s.player {
                 p.send(Command::Toggle);
+                p.show_controls();
             }
         }))
         .on_pointer_move(|s: &mut Flicks, _| {
@@ -251,7 +263,8 @@ pub fn view(p: &Screen, cx: &mut Cx<Flicks>) -> El {
     if !p.controls {
         screen = screen.cursor(Cursor::Hidden);
     }
-    if let Some(message) = p.error.as_deref().or(p.opening.then_some("Opening…")) {
+    let waiting = (p.opening || p.shown.buffering).then_some(if p.opening { "Opening…" } else { "Buffering…" });
+    if let Some(message) = p.error.as_deref().or(waiting) {
         screen = screen.child(
             col()
                 .absolute(0.0, 0.0)
@@ -324,6 +337,7 @@ fn top(p: &Screen, cx: &mut Cx<Flicks>) -> El {
         .center_y()
         .gradient(Color::BLACK.alpha(0.6), Color::BLACK.alpha(0.0))
         .window_drag()
+        .on_hover_change(over_controls)
         .child(button("player-back", "‹  Back", Flicks::close_player))
         .child(text(p.name.clone()).font(style::HEADING).color(style::text()).truncate())
 }
@@ -387,7 +401,15 @@ fn bottom(p: &Screen) -> El {
     if let Some(notice) = &p.notice {
         panel = panel.child(text(notice.clone()).font(style::SMALL).color(style::error()));
     }
-    panel.child(bar)
+    panel.child(bar).on_hover_change(over_controls)
+}
+
+/// The controls stay while the pointer rests on them.
+fn over_controls(s: &mut Flicks, over: bool, _: &mut Tx) {
+    if let Some(p) = &mut s.player {
+        p.over_controls = over;
+        p.show_controls();
+    }
 }
 
 fn menu_panel(p: &Screen, menu: Menu) -> El {
@@ -427,6 +449,7 @@ fn menu_panel(p: &Screen, menu: Menu) -> El {
                 p.send(command);
             }
             p.menu = None;
+            p.show_controls();
         };
         list = list.child(
             row()
@@ -466,14 +489,19 @@ fn button(key: &'static str, label: &'static str, press: impl Fn(&mut Flicks) + 
         .radius(6.0)
         .hover(style::faint())
         .cursor(Cursor::Pointer)
-        .on_press(press)
+        .on_press(move |s: &mut Flicks| {
+            // A press is activity: the controls stay a while longer.
+            if let Some(p) = &mut s.player {
+                p.show_controls();
+            }
+            press(s);
+        })
 }
 
 fn menu_button(key: &'static str, label: &'static str, menu: Menu) -> El {
     button(key, label, move |s| {
         if let Some(p) = &mut s.player {
             p.menu = if p.menu == Some(menu) { None } else { Some(menu) };
-            p.show_controls();
         }
     })
 }

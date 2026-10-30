@@ -23,6 +23,8 @@ pub type Saving = (Key, String, i64);
 const TICK: Duration = Duration::from_millis(4);
 /// Progress is saved this often while playing, and on pause, stop and big seeks.
 const SAVE_EVERY: Duration = Duration::from_secs(180);
+/// Buffering shows once it has lasted this long.
+const BUFFERING_SHOWS: Duration = Duration::from_millis(300);
 /// A seek at least this long saves progress.
 const BIG_SEEK: f64 = 30.0;
 
@@ -60,6 +62,8 @@ fn run(play: &Play, source: Source, resume: f64, rx: Receiver<Command>) -> Resul
     let mut last = Shown::default();
     let mut sidecar = None;
     let mut saved = Instant::now();
+    let mut buffering: Option<Instant> = None;
+    let mut clock = Clock { origin: Instant::now(), base: None };
     loop {
         let playing = matches!(player.state(), State::Playing | State::Buffering);
         let command = if playing {
@@ -76,6 +80,7 @@ fn run(play: &Play, source: Source, resume: f64, rx: Receiver<Command>) -> Resul
             None => {}
             Some(Command::Stop) => {
                 send_progress(play, &player, false);
+                log_stats(&player);
                 return Ok(());
             }
             Some(Command::Toggle) if playing => {
@@ -102,14 +107,22 @@ fn run(play: &Play, source: Source, resume: f64, rx: Receiver<Command>) -> Resul
                 Err(error) => app.update(move |s, _| s.player_notice(id, error)),
             },
         }
-        let frame = player.next_frame_for_display(Instant::now()).map_err(|e| format!("Playback stopped: {e}"))?;
+        let now = Instant::now();
+        let frame = player.next_frame_for_display(now).map_err(|e| format!("Playback stopped: {e}"))?;
         let new_frame = frame.is_some();
+        let playing = matches!(player.state(), State::Playing | State::Buffering);
+        let base = clock.base(now, player.position(), playing);
         if let Some(frame) = frame {
-            SLOT.show(frame);
+            // When the audio clock passed the frame's time: the compositor shows it on that beat.
+            let due = base.and_then(|base| {
+                Duration::try_from_secs_f64(base + frame.pts()).ok().and_then(|d| clock.origin.checked_add(d))
+            });
+            SLOT.show(frame, due);
         }
         if player.state() == State::Ended {
             SLOT.set_playing(false);
             send_progress(play, &player, true);
+            log_stats(&player);
             app.update(move |s, _| s.player_ended(id));
             // Wait for the screen's Stop, so this thread ends where it always does.
             while !matches!(rx.recv(), Ok(Command::Stop) | Err(_)) {}
@@ -119,9 +132,11 @@ fn run(play: &Play, source: Source, resume: f64, rx: Receiver<Command>) -> Resul
             send_progress(play, &player, false);
             saved = Instant::now();
         }
+        buffering = (player.state() == State::Buffering).then(|| buffering.unwrap_or_else(Instant::now));
         let shown = Shown {
             second: player.position() as u64,
             playing: matches!(player.state(), State::Playing | State::Buffering),
+            buffering: buffering.is_some_and(|since| since.elapsed() >= BUFFERING_SHOWS),
             audio: player.selected_audio(),
             subtitle: player.selected_subtitle(),
             sidecar: sidecar.clone(),
@@ -135,6 +150,44 @@ fn run(play: &Play, source: Source, resume: f64, rx: Receiver<Command>) -> Resul
             last = shown.clone();
             app.update(move |s, _| s.player_shown(id, shown, position));
         }
+    }
+}
+
+fn log_stats(player: &Player) {
+    let s = player.stats();
+    let decode = if player.is_hardware() { "hardware" } else { "software" };
+    eprintln!(
+        "flicks: stopped at {:.1} s: {} decoded, {} displayed, {} dropped, {} hardware fallbacks ({decode} decode)",
+        player.position(),
+        s.decoded,
+        s.displayed,
+        s.dropped,
+        s.hardware_fallbacks
+    );
+}
+
+/// The audio clock as wall time: when media time zero was (`base`, seconds after `origin`). Each
+/// reading of the clock wobbles by a few milliseconds; following it slowly gives frames due
+/// exactly one frame apart, so they land on the same refresh pattern throughout.
+struct Clock {
+    origin: Instant,
+    base: Option<f64>,
+}
+
+impl Clock {
+    fn base(&mut self, now: Instant, position: f64, playing: bool) -> Option<f64> {
+        if !playing {
+            self.base = None;
+            return None;
+        }
+        let raw = now.saturating_duration_since(self.origin).as_secs_f64() - position;
+        let base = match self.base {
+            // A seek, a stall or a resume moves the clock for real: follow at once.
+            Some(base) if (raw - base).abs() < 0.02 => base + (raw - base) / 64.0,
+            _ => raw,
+        };
+        self.base = Some(base);
+        Some(base)
     }
 }
 
