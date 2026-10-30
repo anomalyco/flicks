@@ -82,7 +82,6 @@ pub struct Stats {
 /// The null sink still decodes every sample. Its clock advances only through queued audio,
 /// exactly like an underrunning device, using `now` passed to `next_frame_for_display`.
 pub enum AudioSink {
-    #[cfg(target_os = "macos")]
     Device(Box<flicks_audio::Output>),
     Null,
 }
@@ -97,7 +96,7 @@ pub struct Player {
     audio: Option<audio::Decoder>,
     sink: AudioSink,
     frames: VecDeque<VideoFrame>,
-    audio_pending: Vec<audio::Chunk>,
+    audio_pending: VecDeque<audio::Chunk>,
     subtitles: flicks_subtitle::Track,
     sidecar: Option<flicks_subtitle::Track>,
     duration: f64,
@@ -116,17 +115,13 @@ pub struct Player {
 impl Player {
     /// Opens paused. Does not scan the media or decode the whole file.
     pub fn open(source: Source) -> Result<Self> {
-        #[cfg(target_os = "macos")]
-        {
-            Self::with_audio(source, AudioSink::Device(Box::new(flicks_audio::Output::open()?)))
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Self::with_audio(source, AudioSink::Null)
-        }
+        Self::with_audio(source, AudioSink::Device(Box::new(flicks_audio::Output::open()?)))
     }
 
     pub fn with_audio(source: Source, sink: AudioSink) -> Result<Self> {
+        if let AudioSink::Device(output) = &sink {
+            output.pause()?;
+        }
         let (demux, tracks, duration) = demux::Demux::open(source)?;
         let choose = |kind| {
             tracks
@@ -153,7 +148,7 @@ impl Player {
             audio,
             sink,
             frames: VecDeque::new(),
-            audio_pending: Vec::new(),
+            audio_pending: VecDeque::new(),
             subtitles: Default::default(),
             sidecar: None,
             duration,
@@ -203,10 +198,15 @@ impl Player {
         }
     }
 
-    /// Stop queued audio immediately. Resume re-decodes from the index at the frozen time.
+    /// Freeze the audio clock and keep queued frames for a gapless resume.
     pub fn pause(&mut self) -> Result<()> {
+        if let AudioSink::Device(output) = &self.sink {
+            output.pause()?;
+        }
+        self.update_clock(Instant::now());
         self.running = false;
-        self.seek(self.position)
+        self.state = State::Paused;
+        Ok(())
     }
 
     pub fn seek(&mut self, seconds: f64) -> Result<()> {
@@ -222,6 +222,9 @@ impl Player {
     }
 
     fn restart(&mut self, target: f64) -> Result<()> {
+        if let AudioSink::Device(output) = &self.sink {
+            output.pause()?;
+        }
         self.clear_audio();
         let subtitle =
             self.subtitle_track.map(|id| self.demux.subtitle_at(id, (target * 1e9) as i64)).transpose()?.flatten();
@@ -301,12 +304,17 @@ impl Player {
         self.update_clock(now);
         self.fill()?;
         if self.running {
-            for chunk in self.audio_pending.drain(..) {
-                match &mut self.sink {
-                    #[cfg(target_os = "macos")]
-                    AudioSink::Device(output) => output.push(chunk.pts, chunk.rate, chunk.layout, &chunk.samples)?,
-                    AudioSink::Null => {}
+            match &mut self.sink {
+                AudioSink::Device(output) => {
+                    while output.queued().as_secs_f64() < 0.3 {
+                        let Some(chunk) = self.audio_pending.pop_front() else { break };
+                        output.push(chunk.pts, chunk.rate, chunk.layout, &chunk.samples)?;
+                    }
+                    if self.state == State::Buffering {
+                        output.play()?;
+                    }
                 }
+                AudioSink::Null => self.audio_pending.clear(),
             }
             self.anchor.get_or_insert((now, self.position));
             self.state = State::Playing;
@@ -389,7 +397,7 @@ impl Player {
                             chunk.trim(start, end);
                             if !chunk.samples.is_empty() {
                                 self.audio_end = self.audio_end.max(chunk.end());
-                                self.audio_pending.push(chunk);
+                                self.audio_pending.push_back(chunk);
                             }
                         }
                         Vec::new()
@@ -439,7 +447,6 @@ impl Player {
         let wall = start + now.saturating_duration_since(at).as_secs_f64();
         let position = if self.audio_track.is_some() {
             match &self.sink {
-                #[cfg(target_os = "macos")]
                 // Output::position already subtracts CoreAudio's playback latency. Subtracting
                 // Output::latency again would put video behind the sound by two device buffers.
                 AudioSink::Device(output) => output.position().unwrap_or(self.position),
@@ -452,7 +459,6 @@ impl Player {
     }
 
     fn clear_audio(&mut self) {
-        #[cfg(target_os = "macos")]
         if let AudioSink::Device(output) = &mut self.sink {
             output.clear();
         }

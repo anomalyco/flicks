@@ -14,6 +14,19 @@ pub enum Source {
     Network { connection: Arc<flicks_client::Connection>, file: i64, size: u64 },
 }
 
+impl Source {
+    /// Prefer a complete, verified download for this server file. Offline progress belongs to
+    /// the app; a local source otherwise uses exactly the same playback path.
+    pub fn prefer_download(self, downloads: &flicks_client::download::Downloads, server: &str) -> Self {
+        if let Self::Network { file, .. } = &self
+            && let Some(path) = downloads.local_file(server, *file)
+        {
+            return Self::Local(path);
+        }
+        self
+    }
+}
+
 pub(crate) enum Bytes {
     Local(std::fs::File),
     Network(ReadAhead),

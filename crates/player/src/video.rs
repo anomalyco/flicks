@@ -2,15 +2,23 @@ use crate::{Error, Result};
 use flicks_container::matroska::Codec;
 use flicks_gpu::{Color, CpuFrame, Matrix, PixelFormat, Primaries, Range, Transfer};
 
-/// PTS is in seconds. A hardware buffer can be handed directly to `Renderer::import`.
-/// Padded/cropped hardware pictures are copied to a cropped CPU frame, since the renderer
-/// currently samples the whole texture. No coded padding is displayed.
+/// PTS is in seconds. Pass hardware buffers to `Renderer::import` with `color()` and `crop()`.
+/// The renderer samples only the visible rectangle, not coded padding.
 pub enum VideoFrame {
     Hardware(flicks_platform::Frame),
     Software(CpuVideo),
 }
 
 impl VideoFrame {
+    pub fn crop(&self) -> [u32; 4] {
+        match self {
+            Self::Hardware(f) => {
+                let (x, y, w, h) = f.info.crop;
+                [x, y, w, h]
+            }
+            Self::Software(f) => [0, 0, f.size[0], f.size[1]],
+        }
+    }
     pub fn pts(&self) -> f64 {
         match self {
             Self::Hardware(f) => f.pts as f64 / 1e9,
@@ -46,6 +54,7 @@ impl CpuVideo {
         let stride = self.size[0] * if self.format == PixelFormat::P010 { 2 } else { 1 };
         CpuFrame {
             size: self.size,
+            crop: [0, 0, self.size[0], self.size[1]],
             format: self.format,
             planes: [&self.planes[0], &self.planes[1]],
             strides: [stride; 2],
@@ -104,7 +113,7 @@ impl Decoder {
                     None => d.flush(),
                 }
                 .map_err(Error::decode)?;
-                frames.into_iter().map(hardware_frame).collect()
+                Ok(frames.into_iter().map(VideoFrame::Hardware).collect())
             }
             Self::H264(d) => {
                 let frames = match data {
@@ -256,39 +265,6 @@ fn planar(
         format: if bits == 8 { PixelFormat::Nv12 } else { PixelFormat::P010 },
         planes,
     }))
-}
-
-fn hardware_frame(f: flicks_platform::Frame) -> Result<VideoFrame> {
-    let info = f.info;
-    if info.crop == (0, 0, info.width, info.height) {
-        return Ok(VideoFrame::Hardware(f));
-    }
-    let planes = f.copy_planes().map_err(Error::decode)?;
-    let bits = if info.pixel_format == flicks_platform::PixelFormat::Nv12 { 8 } else { 10 };
-    let (x, y, w, h) = info.crop;
-    planar(
-        f.pts,
-        [w, h],
-        bits,
-        [w as usize, w as usize / 2],
-        color(info.color.full_range, info.color.primaries, info.color.transfer, info.color.matrix),
-        |p, i| {
-            let index = if p == 0 {
-                (i / w as usize + y as usize) * info.width as usize + i % w as usize + x as usize
-            } else {
-                (i / (w as usize / 2) + y as usize / 2) * info.width as usize
-                    + (i % (w as usize / 2) + x as usize / 2) * 2
-                    + p
-                    - 1
-            };
-            let plane = planes.get(usize::from(p != 0))?;
-            if bits == 8 {
-                plane.get(index).copied().map(u16::from)
-            } else {
-                Some(u16::from_le_bytes([*plane.get(index * 2)?, *plane.get(index * 2 + 1)?]) >> 6)
-            }
-        },
-    )
 }
 
 fn color(full: bool, primaries: u8, transfer: u8, matrix: u8) -> Color {

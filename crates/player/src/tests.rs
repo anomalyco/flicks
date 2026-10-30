@@ -337,7 +337,7 @@ fn network_ranges_and_seeks() {
     let path = fixture("mp4", "libx264", "aac", "1920x1080", 4);
     let bytes = std::fs::read(&path).unwrap();
     std::fs::rename(&path, media.join("Fixture.2026.mp4")).unwrap();
-    let (connection, item) = runtime.block_on(async {
+    let (connection, item, server_key) = runtime.block_on(async {
         let (addr, state) = server::spawn(&temp.path().join("server"), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let root =
             flicks_client::Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
@@ -371,7 +371,7 @@ fn network_ranges_and_seeks() {
         })
         .await
         .unwrap();
-        (connection, entries[0].item.clone())
+        (connection, entries[0].item.clone(), server.key)
     });
     let source = || Source::Network { connection: connection.clone(), file: item.id, size: item.size };
     let reader = source::Bytes::open(source()).unwrap();
@@ -398,11 +398,40 @@ fn network_ranges_and_seeks() {
         assert!(elapsed < Duration::from_millis(300));
     }
     drop(p);
+    let downloads = flicks_client::download::Downloads::open(&temp.path().join("client")).unwrap();
+    assert!(matches!(source().prefer_download(&downloads, &server_key), Source::Network { .. }));
+    runtime.block_on(async {
+        downloads
+            .start(
+                &connection,
+                &flicks_client::merge::Source {
+                    server: server_key.clone(),
+                    server_name: "test".into(),
+                    item: item.clone(),
+                    progress: None,
+                    available: true,
+                    latency: None,
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while downloads.local_file(&server_key, item.id).is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    let local = source().prefer_download(&downloads, &server_key);
+    assert!(matches!(local, Source::Local(_)));
+    let mut offline = Player::with_audio(local, AudioSink::Null).unwrap();
     drop(runtime);
+    run(&mut offline, 4.0, false);
+    assert_eq!(offline.stats().displayed, 96);
 }
 
 #[test]
-#[ignore = "two-hour paced playback; generates ~2 GB; takes two hours"]
+#[ignore = "two-hour paced playback; generates ~10 GB; takes two hours"]
 fn two_hour_playback() {
     let ff = flicks_testkit::require_ffmpeg!();
     let seed = fixture("mp4", "libx264", "aac", "1920x1080", 2);
@@ -457,18 +486,27 @@ fn two_hour_playback() {
     }
     let start = Instant::now();
     let mut offsets = [0f64; 2];
+    let mut max_call = Duration::ZERO;
+    let mut max_gap = Duration::ZERO;
+    let mut previous = start;
     for tick in 0..(7202 * 120) {
         let deadline = start + Duration::from_secs_f64(tick as f64 / 120.0);
         std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let now = Instant::now();
+        max_gap = max_gap.max(now.duration_since(previous));
+        previous = now;
         for (p, max) in players.iter_mut().zip(&mut offsets) {
+            let call = Instant::now();
             if p.next_frame_for_display(Instant::now()).unwrap().is_some() {
                 *max = max.max(p.stats().av_offset.abs());
             }
+            max_call = max_call.max(call.elapsed());
         }
         if players.iter().all(|p| p.state() == State::Ended) {
             break;
         }
     }
+    eprintln!("2h scheduling: max display-call={max_call:?}, max caller gap={max_gap:?}");
     for (p, offset) in players.iter().zip(offsets) {
         eprintln!(
             "2h: {:?}, max offset={:.3}ms, wall={:?}, position={}",
@@ -477,12 +515,96 @@ fn two_hour_playback() {
             start.elapsed(),
             p.position()
         );
-        assert_eq!(p.state(), State::Ended);
-        assert_eq!(p.stats().displayed, 172_800);
-        assert_eq!(p.stats().dropped, 0);
-        assert!(offset < 0.020);
     }
+    assert!(players.iter().all(|p| p.state() == State::Ended));
+    assert!(players.iter().all(|p| p.stats().displayed == 172_800 && p.stats().dropped == 0));
+    assert!(offsets.iter().all(|&offset| offset < 0.020));
     for path in [seed, mp4, mkv] {
         std::fs::remove_file(path).unwrap();
     }
+}
+
+#[test]
+#[ignore = "60s diagnostic using FLICKS_PLAYER_MEDIA, no file writes"]
+fn scheduling_diagnostic() {
+    let path = PathBuf::from(std::env::var_os("FLICKS_PLAYER_MEDIA").unwrap());
+    let mut players = [player(&path), player(&path)];
+    for p in &mut players {
+        p.fill().unwrap();
+        p.play();
+    }
+    let start = Instant::now();
+    let mut previous = start;
+    let mut max_gap = Duration::ZERO;
+    let mut calls = Vec::new();
+    let mut max_offset = 0f64;
+    for tick in 0..7200 {
+        let deadline = start + Duration::from_secs_f64(tick as f64 / 120.0);
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let now = Instant::now();
+        let gap = now.duration_since(previous);
+        max_gap = max_gap.max(gap);
+        previous = now;
+        for p in &mut players {
+            let dropped = p.stats().dropped;
+            let call = Instant::now();
+            let shown = p.next_frame_for_display(call).unwrap().is_some();
+            let elapsed = call.elapsed();
+            calls.push(elapsed);
+            if shown {
+                max_offset = max_offset.max(p.stats().av_offset.abs());
+            }
+            if dropped != p.stats().dropped {
+                eprintln!(
+                    "drop at tick {tick}: caller gap={gap:?}, call={elapsed:?}, delta={}",
+                    p.stats().dropped - dropped
+                );
+            }
+        }
+    }
+    calls.sort();
+    eprintln!(
+        "60s two-player scheduling: calls p50={:?} p99={:?} max={:?}, max caller gap={max_gap:?}, max offset={:.3}ms, stats={:?}",
+        calls[calls.len() / 2],
+        calls[calls.len() * 99 / 100],
+        calls.last(),
+        max_offset * 1000.0,
+        players.each_ref().map(Player::stats)
+    );
+}
+
+#[test]
+#[ignore = "plays 3s on the real audio output device"]
+fn device_clock_pause_resume() {
+    let path = fixture("mp4", "libx264", "aac", "160x96", 3);
+    let mut p = Player::open(Source::Local(path.clone())).unwrap();
+    p.play();
+    let start = Instant::now();
+    while p.position() < 0.5 && start.elapsed().as_secs() < 5 {
+        p.next_frame_for_display(Instant::now()).unwrap();
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    p.pause().unwrap();
+    let at = p.position();
+    std::thread::sleep(Duration::from_millis(100));
+    p.next_frame_for_display(Instant::now()).unwrap();
+    assert_eq!(p.position(), at);
+    p.play();
+    let mut max_offset = 0f64;
+    while p.state() != State::Ended && start.elapsed().as_secs() < 6 {
+        if p.next_frame_for_display(Instant::now()).unwrap().is_some() {
+            max_offset = max_offset.max(p.stats().av_offset.abs());
+        }
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    eprintln!(
+        "device clock pause/resume: {:?}, max offset={:.3}ms, end={}",
+        p.stats(),
+        max_offset * 1000.0,
+        p.position()
+    );
+    assert_eq!(p.state(), State::Ended);
+    assert_eq!(p.stats().dropped, 0);
+    assert!(max_offset < 0.020);
+    std::fs::remove_file(path).unwrap();
 }
