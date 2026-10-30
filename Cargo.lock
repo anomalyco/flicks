@@ -1058,6 +1058,7 @@ dependencies = [
 name = "flicks-container"
 version = "0.0.0"
 dependencies = [
+ "flicks-testkit",
  "proptest",
  "serde_json",
  "thiserror 2.0.21",

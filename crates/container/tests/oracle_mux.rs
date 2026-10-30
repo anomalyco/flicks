@@ -15,8 +15,8 @@ fn interleave(f: &Mp4File, tracks: &[usize]) -> Vec<(usize, usize)> {
     v.sort_by(|a, b| {
         let ta = &f.tracks[a.0];
         let tb = &f.tracks[b.0];
-        let x = ta.samples[a.1].dts as i128 * tb.timescale as i128;
-        let y = tb.samples[b.1].dts as i128 * ta.timescale as i128;
+        let x = ta.samples.get(a.1).unwrap().dts as i128 * tb.timescale as i128;
+        let y = tb.samples.get(b.1).unwrap().dts as i128 * ta.timescale as i128;
         x.cmp(&y).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1))
     });
     v
@@ -61,7 +61,7 @@ fn remux(
         w.add_timecode_track(map[v], tc, start).unwrap();
     }
     for (t, i) in interleave(&f, &av) {
-        let s = f.tracks[t].samples[i];
+        let s = f.tracks[t].samples.get(i).unwrap();
         let bytes = f.read_sample(data.as_slice(), t, i).unwrap();
         w.write_sample(
             map[t],
@@ -282,7 +282,7 @@ fn fragmented_writer_ffmpeg() {
     }
     let v = f.track_of_kind(TrackKind::Video).unwrap();
     for (t, i) in interleave(&f, &tracks) {
-        let s = f.tracks[t].samples[i];
+        let s = f.tracks[t].samples.get(i).unwrap();
         if t == v && s.is_sync && i > 0 {
             w.flush_fragment().unwrap();
         }

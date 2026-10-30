@@ -1042,11 +1042,11 @@ mod tests {
             let at = &f.tracks[1];
             assert!(at.pcm_chunked);
             assert_eq!(at.samples.len(), 10);
-            assert_eq!(at.samples[3].size, 400);
-            assert_eq!(at.samples[3].duration, 100);
+            assert_eq!(at.samples.get(3).unwrap().size, 400);
+            assert_eq!(at.samples.get(3).unwrap().duration, 100);
             assert_eq!(f.read_sample(out.as_slice(), 1, 3).unwrap(), vec![3u8; 400]);
             if fast {
-                assert!(f.moov_offset < t.samples[0].offset);
+                assert!(f.moov_offset < t.samples.get(0).unwrap().offset);
             }
         }
     }

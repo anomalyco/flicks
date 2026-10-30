@@ -50,10 +50,10 @@ impl FrameBudget {
 }
 
 /// Options for [`open_with`] / [`Demuxer::with_options`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct OpenOptions {
     /// Scan every cluster at open to build per-track sample tables and keyframe indices
-    /// (reads only element and block headers, never frame payloads). Default `true`.
+    /// (reads only element and block headers, never frame payloads). Default `false`.
     ///
     /// With `false`, open stops at the first Cluster and uses the SeekHead to find Cues, Tags,
     /// Chapters… placed after the clusters; [`Demuxer::seek`] then uses Cues (or builds the index
@@ -62,12 +62,6 @@ pub struct OpenOptions {
     /// Verify CRC-32 elements of level-1 elements (and clusters while indexing). Mismatches are
     /// recorded in [`MkvFile::crc_errors`]; parsing continues. Default `false`.
     pub verify_crc: bool,
-}
-
-impl Default for OpenOptions {
-    fn default() -> Self {
-        Self { index: true, verify_crc: false }
-    }
 }
 
 /// A parsed Matroska / WebM file (first Segment).
@@ -152,10 +146,15 @@ pub struct SeekPoint {
 /// A keyframe index entry ([`Demuxer::keyframe_index`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Keyframe {
-    pub sample: usize,
+    /// Only available after building the full sample index.
+    pub sample: Option<usize>,
     pub pts: i64,
     pub pts_ns: i64,
-    pub block_offset: u64,
+    pub cluster_offset: u64,
+    /// Absolute block position, when the full index is available.
+    pub block_offset: Option<u64>,
+    /// Cue block position relative to the Cluster's data, without reading that Cluster.
+    pub relative_position: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -615,7 +614,7 @@ fn scan_cluster<S: ByteSource + ?Sized>(
 // Open
 // ---------------------------------------------------------------------------------------------
 
-/// Open a Matroska/WebM file with default options (full sample index).
+/// Open a Matroska/WebM file without scanning clusters.
 pub fn open<S: ByteSource>(src: S) -> Result<MkvFile> {
     open_with(src, &OpenOptions::default())
 }
@@ -1067,7 +1066,7 @@ impl<'a> Demuxer<&'a [u8]> {
 }
 
 impl<S: ByteSource> Demuxer<S> {
-    /// Open with default options (full index).
+    /// Open with default options (metadata and Cues only).
     pub fn new(src: S) -> Result<Self> {
         Self::with_options(src, OpenOptions::default())
     }
@@ -1119,15 +1118,52 @@ impl<S: ByteSource> Demuxer<S> {
         Ok(())
     }
 
-    /// Keyframes of `track` (builds the index if needed).
+    /// Keyframes of `track`, using Cues without reading clusters. Falls back to a full
+    /// scan only when the track has no Cues. Cue entries have no sample index or absolute
+    /// block offset: resolving those requires reading the Cluster header.
     pub fn keyframe_index(&mut self, track: usize) -> Result<Vec<Keyframe>> {
+        let t = self.file.tracks.get(track).ok_or(Error::NoSuchTrack(track))?;
+        if !self.file.indexed {
+            let keys: Vec<_> = self
+                .file
+                .cues
+                .iter()
+                .filter_map(|c| {
+                    let cp = c.positions.iter().find(|p| p.track == t.number)?;
+                    let cluster_offset = self.file.segment_data_start.checked_add(cp.cluster_position)?;
+                    if cluster_offset >= self.file.segment_end {
+                        return None;
+                    }
+                    let scale = self.file.info.timestamp_scale as i128;
+                    let pts = sat_i64(c.time as i128 - (t.codec_delay_ns as i128 + scale / 2) / scale);
+                    Some(Keyframe {
+                        sample: None,
+                        pts,
+                        pts_ns: sat_i64(c.time as i128 * scale - t.codec_delay_ns as i128),
+                        cluster_offset,
+                        block_offset: None,
+                        relative_position: cp.relative_position,
+                    })
+                })
+                .collect();
+            if !keys.is_empty() {
+                return Ok(keys);
+            }
+        }
         self.build_index()?;
         let t = self.file.tracks.get(track).ok_or(Error::NoSuchTrack(track))?;
         Ok(t.keyframes()
             .iter()
             .map(|&k| {
                 let s = &t.samples[k as usize];
-                Keyframe { sample: k as usize, pts: s.pts, pts_ns: t.ticks_to_ns(s.pts), block_offset: s.block_offset }
+                Keyframe {
+                    sample: Some(k as usize),
+                    pts: s.pts,
+                    pts_ns: t.ticks_to_ns(s.pts),
+                    cluster_offset: self.file.clusters[s.cluster as usize].offset,
+                    block_offset: Some(s.block_offset),
+                    relative_position: None,
+                }
             })
             .collect())
     }
@@ -1146,11 +1182,12 @@ impl<S: ByteSource> Demuxer<S> {
         self.file.read_sample(&self.src, track, index)
     }
 
-    /// Position the packet stream at the keyframe of `track` with the greatest pts ≤ `time_ns`
+    /// Position the packet stream at the indexed keyframe or Cue of `track` with the greatest pts ≤ `time_ns`
     /// (or the track's first keyframe if none precedes it). The next [`Demuxer::next_packet`]
     /// call returns packets starting at that keyframe's block (all tracks).
     ///
-    /// Uses the sample index when present, else Cues (refined by scanning the cued cluster), else
+    /// Uses the sample index when present, else Cues (directly when CueRelativePosition is
+    /// valid, otherwise refined by scanning the cued cluster), else
     /// builds the index first.
     pub fn seek(&mut self, track: usize, time_ns: i64) -> Result<SeekPoint> {
         let t = self.file.tracks.get(track).ok_or(Error::NoSuchTrack(track))?;
@@ -1161,14 +1198,17 @@ impl<S: ByteSource> Demuxer<S> {
                 .file
                 .cues
                 .iter()
-                .filter(|c| c.time as i64 <= ticks)
+                .filter(|c| {
+                    c.time as i128 * self.file.info.timestamp_scale as i128 - t.codec_delay_ns as i128
+                        <= time_ns as i128
+                })
                 .filter_map(|c| c.positions.iter().find(|p| p.track == tn).map(|p| (c.time, *p)))
                 .next_back()
                 .or_else(|| {
                     self.file.cues.iter().find_map(|c| c.positions.iter().find(|p| p.track == tn).map(|p| (c.time, *p)))
                 });
             if let Some((_, cp)) = cue
-                && let Some(sp) = self.seek_via_cue(track, ticks, cp.cluster_position)?
+                && let Some(sp) = self.seek_via_cue(track, ticks, cp)?
             {
                 return Ok(sp);
             }
@@ -1201,7 +1241,8 @@ impl<S: ByteSource> Demuxer<S> {
         self.skip_laces = (lace > 0).then_some((block_offset, lace));
     }
 
-    fn seek_via_cue(&mut self, track: usize, ticks: i64, cluster_position: u64) -> Result<Option<SeekPoint>> {
+    fn seek_via_cue(&mut self, track: usize, ticks: i64, cp: CuePosition) -> Result<Option<SeekPoint>> {
+        let cluster_position = cp.cluster_position;
         let Some(abs) = self.file.segment_data_start.checked_add(cluster_position) else {
             self.file.warnings.push(format!("cue position {cluster_position} is past the segment end"));
             return Ok(None);
@@ -1211,6 +1252,58 @@ impl<S: ByteSource> Demuxer<S> {
         if h.id != CLUSTER {
             self.file.warnings.push(format!("cue points at {abs}, which is not a Cluster"));
             return Ok(None);
+        }
+        // CueRelativePosition is relative to the Cluster payload, not its element header.
+        // Read only the timestamp preceding the first block and the cued block itself.
+        if let Some(relative) = cp.relative_position
+            && let Some(target) = h.data_start().checked_add(relative).filter(|&p| p < h.end(self.file.segment_end))
+        {
+            let end = h.end(self.file.segment_end);
+            let mut pos = h.data_start();
+            let mut timestamp = None;
+            while pos < end {
+                let Some(child) = io.header(pos, end)? else { break };
+                if child.overruns(end) || child.size == Size::Unknown || is_top_level(child.id) {
+                    break;
+                }
+                if child.id == TIMESTAMP {
+                    timestamp = Some(cluster_timestamp(ebml::uint(
+                        io.peek(child.data_start(), (child.end(end) - child.data_start()).min(8) as usize)?,
+                    )));
+                    break;
+                }
+                if matches!(child.id, SIMPLE_BLOCK | BLOCK_GROUP) {
+                    break;
+                }
+                pos = child.end(end);
+            }
+            if let Some(ts) = timestamp
+                && let Some(block) = io.header(target, end)?
+                && block.size != Size::Unknown
+                && !block.overruns(end)
+                && let Some(b) = parse_block_elem(&mut io, &block, block.end(end), ts, &self.lookup)?
+                && b.track == track
+                && b.keyframe
+            {
+                let mut frames = Vec::new();
+                expand(&b, &self.file.tracks[track], self.file.info.timestamp_scale, 0, &mut frames);
+                if let Some(f) = frames.first() {
+                    let sp = SeekPoint {
+                        track,
+                        pts: f.pts,
+                        pts_ns: f.pts_ns,
+                        sample: None,
+                        cluster_offset: abs,
+                        block_offset: target,
+                    };
+                    self.pending.clear();
+                    self.done = false;
+                    self.pos = target;
+                    self.cluster = Some(InCluster { ts, end: (h.size != Size::Unknown).then_some(end) });
+                    self.skip_laces = None;
+                    return Ok(Some(sp));
+                }
+            }
         }
         let mut warnings = Vec::new();
         let mut budget = FrameBudget::new(io.len);

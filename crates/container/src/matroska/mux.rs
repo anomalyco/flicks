@@ -513,6 +513,7 @@ mod tests {
         }
         let bytes = m.finish().unwrap().into_inner();
         let mut d = Demuxer::from_slice(&bytes).unwrap();
+        d.build_index().unwrap();
         assert!(d.file().warnings.is_empty(), "{:?}", d.file().warnings);
         assert_eq!(d.tracks()[2].language, "fre");
         assert!(!d.file().cues.is_empty());

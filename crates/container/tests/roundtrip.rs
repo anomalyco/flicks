@@ -135,11 +135,11 @@ proptest! {
         prop_assert!(f.fragmented);
         let mut dts = 0i64;
         for (i, s) in samples.iter().enumerate() {
-            let r = f.tracks[0].samples[i];
+            let r = f.tracks[0].samples.get(i).unwrap();
             prop_assert_eq!((r.size as usize, r.dts, r.pts, r.is_sync), (s.size, dts, dts + s.cto as i64, s.sync));
             prop_assert_eq!(f.read_sample(out.as_slice(), 0, i).unwrap(), payload(0, i, s.size));
             prop_assert_eq!(f.read_sample(out.as_slice(), 1, i).unwrap(), payload(1, i, s.size / 2));
-            prop_assert_eq!(f.tracks[1].samples[i].dts, 1024 * i as i64);
+            prop_assert_eq!(f.tracks[1].samples.get(i).unwrap().dts, 1024 * i as i64);
             dts += s.duration as i64;
         }
     }
@@ -167,7 +167,7 @@ fn sample_lookup() {
     assert_eq!(tr.sync_sample_before(3), 0);
     assert_eq!(tr.sync_sample_before(4), 4);
     assert_eq!(tr.sync_sample_before(7), 4);
-    assert_eq!(tr.sync_samples(), &[0, 4]);
+    assert_eq!(tr.sync_samples().collect::<Vec<_>>(), vec![0, 4]);
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn patched_co64_and_largesize_mdat_are_read() {
     let out = w.finish().unwrap().into_inner();
     // Replace stco with co64 (same entry count, 64-bit offsets) and rebuild.
     let f = open(out.as_slice()).unwrap();
-    let off = f.tracks[0].samples[0].offset;
+    let off = f.tracks[0].samples.get(0).unwrap().offset;
     let stco = out.windows(4).position(|w| w == b"stco").unwrap() - 4;
     let moov_at = out.windows(4).position(|w| w == b"moov").unwrap() - 4;
     moov.extend_from_slice(&out[moov_at..stco]);
@@ -299,7 +299,7 @@ fn writer_uses_co64_and_largesize_mdat_past_4_gib() {
     let f = open(&out).unwrap();
     let s = &f.tracks[0].samples;
     assert_eq!(s.len(), n + 1);
-    assert!(s[n].offset > u64::from(u32::MAX));
+    assert!(s.get(n).unwrap().offset > u64::from(u32::MAX));
     assert_eq!(f.read_sample(&out, 0, n).unwrap(), b"abc");
 }
 

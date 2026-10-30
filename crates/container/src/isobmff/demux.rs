@@ -70,6 +70,228 @@ pub struct Sample {
     pub description_index: u32,
 }
 
+/// Compact sample storage. Samples are reconstructed by value with [`Self::get`] or
+/// [`Self::iter`], rather than keeping a full `Sample` and two indexes per access unit.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SampleTable {
+    /// The append cursor avoids reconstructing up to 255 offsets for each parsed sample.
+    last_sample: Option<Sample>,
+    sizes: Vec<u32>,
+    /// Nonzero gaps from the preceding sample's end, with one presence bit per sample.
+    gaps: Vec<u32>,
+    gap_marks: Vec<u64>,
+    chunks: Vec<SampleChunk>,
+    times: Vec<SampleTime>,
+    presentation: Vec<PresentationBlock>,
+    /// Empty means no composition offsets (the usual audio and intra-only case).
+    composition: Vec<i32>,
+    /// Only fragmented files can carry composition offsets outside signed 32-bit range.
+    wide_composition: Vec<i64>,
+    /// None means every sample is sync.
+    sync: Option<Vec<u32>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SampleChunk {
+    first: u32,
+    description: u32,
+    offset: u64,
+    gap_start: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SampleTime {
+    first: u32,
+    duration: u32,
+    dts: i64,
+}
+
+/// Bounds for 256 samples in decode order, replacing the full PTS permutation.
+#[derive(Clone, Debug, PartialEq)]
+struct PresentationBlock {
+    min: i64,
+    max: i64,
+    first: u32,
+    last: u32,
+}
+
+impl SampleTable {
+    pub fn len(&self) -> usize {
+        self.sizes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.sizes.is_empty()
+    }
+
+    pub fn get(&self, index: usize) -> Option<Sample> {
+        let size = *self.sizes.get(index)?;
+        let chunk = self.chunks.get(self.chunks.partition_point(|c| c.first as usize <= index).checked_sub(1)?)?;
+        let (dts, pts, duration) = self.timing(index)?;
+        let mut offset = chunk.offset;
+        let mut gap_index = chunk.gap_start;
+        for (i, &size) in self.sizes.get(chunk.first as usize..index)?.iter().enumerate() {
+            let next = chunk.first as usize + i + 1;
+            offset = offset.saturating_add(size as u64);
+            if self.gap_marks.get(next / 64).copied().unwrap_or(0) & (1 << (next % 64)) != 0 {
+                offset = offset.saturating_add(*self.gaps.get(gap_index)? as u64);
+                gap_index += 1;
+            }
+        }
+        Some(Sample {
+            offset,
+            size,
+            dts,
+            pts,
+            duration,
+            is_sync: self.sync.as_ref().is_none_or(|s| s.binary_search(&(index as u32)).is_ok()),
+            description_index: chunk.description,
+        })
+    }
+
+    fn timing(&self, index: usize) -> Option<(i64, i64, u32)> {
+        if index >= self.len() {
+            return None;
+        }
+        let time = self.times.get(self.times.partition_point(|t| t.first as usize <= index).checked_sub(1)?)?;
+        let dts = time.dts.saturating_add(((index - time.first as usize) as i64).saturating_mul(time.duration as i64));
+        let cto = self
+            .wide_composition
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| self.composition.get(index).copied().unwrap_or(0) as i64);
+        Some((dts, dts.saturating_add(cto), time.duration))
+    }
+
+    pub fn first(&self) -> Option<Sample> {
+        self.get(0)
+    }
+    pub fn last(&self) -> Option<Sample> {
+        self.last_sample
+    }
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Sample> + DoubleEndedIterator + '_ {
+        self.into_iter()
+    }
+
+    fn reserve(&mut self, n: usize) {
+        self.sizes.reserve(n);
+    }
+    fn try_reserve(&mut self, n: usize) -> std::result::Result<(), std::collections::TryReserveError> {
+        self.sizes.try_reserve(n)
+    }
+
+    fn push(&mut self, s: Sample) {
+        let index = self.len() as u32;
+        let previous = self.last();
+        let gap = previous
+            .and_then(|p| s.offset.checked_sub(p.offset.saturating_add(p.size as u64)))
+            .and_then(|gap| u32::try_from(gap).ok());
+        if let Some(gap) = gap.filter(|&g| g != 0) {
+            let word = index as usize / 64;
+            self.gap_marks.resize(word + 1, 0);
+            if let Some(bits) = self.gap_marks.get_mut(word) {
+                *bits |= 1 << (index % 64);
+            }
+            self.gaps.push(gap);
+        }
+        // Bound offset reconstruction to 255 additions, even for a whole movie in one chunk.
+        if index.is_multiple_of(256)
+            || gap.is_none()
+            || previous.is_none_or(|p| p.description_index != s.description_index)
+        {
+            self.chunks.push(SampleChunk {
+                first: index,
+                description: s.description_index,
+                offset: s.offset,
+                gap_start: self.gaps.len(),
+            });
+        }
+        if previous.is_none_or(|p| p.dts.saturating_add(p.duration as i64) != s.dts || p.duration != s.duration) {
+            self.times.push(SampleTime { first: index, duration: s.duration, dts: s.dts });
+        }
+        let cto = s.pts.saturating_sub(s.dts);
+        if i32::try_from(cto).is_err() && self.wide_composition.is_empty() {
+            self.wide_composition.reserve(self.sizes.capacity());
+            self.wide_composition.extend(self.composition.iter().map(|&c| c as i64));
+            self.wide_composition.resize(index as usize, 0);
+            self.composition = Vec::new();
+        }
+        if !self.wide_composition.is_empty() || i32::try_from(cto).is_err() {
+            self.wide_composition.push(cto);
+        } else if cto != 0 || !self.composition.is_empty() {
+            if self.composition.is_empty() {
+                self.composition.reserve(self.sizes.capacity());
+                self.composition.resize(index as usize, 0);
+            }
+            self.composition.push(cto as i32);
+        }
+        if !s.is_sync && self.sync.is_none() {
+            self.sync = Some((0..index).collect());
+        }
+        if s.is_sync
+            && let Some(sync) = &mut self.sync
+        {
+            sync.push(index);
+        }
+        if index.is_multiple_of(256) {
+            self.presentation.push(PresentationBlock { min: s.pts, max: s.pts, first: index, last: index });
+        } else if let Some(block) = self.presentation.last_mut() {
+            if s.pts < block.min {
+                block.min = s.pts;
+                block.first = index;
+            }
+            if s.pts >= block.max {
+                block.max = s.pts;
+                block.last = index;
+            }
+        }
+        self.sizes.push(s.size);
+        self.last_sample = Some(s);
+    }
+
+    fn compact(&mut self) {
+        self.sizes.shrink_to_fit();
+        self.gaps.shrink_to_fit();
+        self.gap_marks.shrink_to_fit();
+        self.chunks.shrink_to_fit();
+        self.times.shrink_to_fit();
+        self.presentation.shrink_to_fit();
+        self.composition.shrink_to_fit();
+        self.wide_composition.shrink_to_fit();
+        if let Some(sync) = &mut self.sync {
+            sync.shrink_to_fit();
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a SampleTable {
+    type Item = Sample;
+    type IntoIter = SampleIter<'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        SampleIter { table: self, range: 0..self.len() }
+    }
+}
+
+pub struct SampleIter<'a> {
+    table: &'a SampleTable,
+    range: std::ops::Range<usize>,
+}
+
+impl Iterator for SampleIter<'_> {
+    type Item = Sample;
+    fn next(&mut self) -> Option<Sample> {
+        self.table.get(self.range.next()?)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.range.size_hint()
+    }
+}
+impl DoubleEndedIterator for SampleIter<'_> {
+    fn next_back(&mut self) -> Option<Sample> {
+        self.table.get(self.range.next_back()?)
+    }
+}
+impl ExactSizeIterator for SampleIter<'_> {}
+
 /// One edit list entry (`elst`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Edit {
@@ -126,7 +348,7 @@ pub struct Track {
     /// `tkhd` transformation matrix.
     pub matrix: [i32; 9],
     pub entries: Vec<SampleEntry>,
-    pub samples: Vec<Sample>,
+    pub samples: SampleTable,
     pub edits: Vec<Edit>,
     /// Offset to add to raw pts to get presentation time (track timescale), derived from the
     /// leading empty edits and the first non-empty edit's `media_time`.
@@ -138,8 +360,6 @@ pub struct Track {
     pub sample_groups: Vec<SampleGroup>,
     /// True if uncompressed audio samples were merged into one [`Sample`] per chunk.
     pub pcm_chunked: bool,
-    sync_index: Vec<u32>,
-    pts_order: Vec<u32>,
 }
 
 impl Track {
@@ -178,11 +398,28 @@ impl Track {
     /// Index of the sample being presented at raw media time `pts` (the last sample, in
     /// presentation order, whose pts is ≤ `pts`; the first sample if `pts` precedes all).
     pub fn sample_at_pts(&self, pts: i64) -> Option<usize> {
-        if self.pts_order.is_empty() {
-            return None;
+        let (mut first, mut best) = (None, None);
+        for (bi, block) in self.samples.presentation.iter().enumerate() {
+            let low = (block.min, block.first as usize);
+            if first.is_none_or(|f| low < f) {
+                first = Some(low);
+            }
+            if block.max <= pts {
+                let high = (block.max, block.last as usize);
+                if best.is_none_or(|b| high > b) {
+                    best = Some(high);
+                }
+            } else if block.min <= pts {
+                for i in bi * 256..((bi + 1) * 256).min(self.samples.len()) {
+                    let (_, time, _) = self.samples.timing(i)?;
+                    let candidate = (time, i);
+                    if time <= pts && best.is_none_or(|b| candidate > b) {
+                        best = Some(candidate);
+                    }
+                }
+            }
         }
-        let k = self.pts_order.partition_point(|&i| self.samples[i as usize].pts <= pts);
-        Some(self.pts_order[k.saturating_sub(1)] as usize)
+        best.or(first).map(|(_, i)| i)
     }
     /// Like [`sample_at_pts`](Self::sample_at_pts) but for edit-adjusted presentation time.
     pub fn sample_at_presentation_time(&self, t: i64) -> Option<usize> {
@@ -190,19 +427,20 @@ impl Track {
     }
     /// The closest sync sample at or before `index` (decode order); 0 if there is none.
     pub fn sync_sample_before(&self, index: usize) -> usize {
-        let k = self.sync_index.partition_point(|&i| i as usize <= index);
-        if k == 0 { 0 } else { self.sync_index[k - 1] as usize }
+        let Some(sync) = &self.samples.sync else {
+            return index.min(self.samples.len().saturating_sub(1));
+        };
+        let k = sync.partition_point(|&i| i as usize <= index);
+        if k == 0 { 0 } else { sync[k - 1] as usize }
     }
     /// Indices of all sync samples.
-    pub fn sync_samples(&self) -> &[u32] {
-        &self.sync_index
-    }
-
-    fn finish_indexes(&mut self) {
-        self.sync_index = self.samples.iter().enumerate().filter(|(_, s)| s.is_sync).map(|(i, _)| i as u32).collect();
-        let mut order: Vec<u32> = (0..self.samples.len() as u32).collect();
-        order.sort_by_key(|&i| (self.samples[i as usize].pts, i));
-        self.pts_order = order;
+    pub fn sync_samples(&self) -> impl Iterator<Item = u32> + '_ {
+        self.samples
+            .sync
+            .iter()
+            .flatten()
+            .copied()
+            .chain(0..if self.samples.sync.is_none() { self.samples.len() as u32 } else { 0 })
     }
 }
 
@@ -389,6 +627,7 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
         parse_moof(*moof_off, moof, &mut file.tracks, &track_index, &trex, &mut next_dts, &mut budget)?;
     }
     for t in &mut file.tracks {
+        t.samples.compact();
         if file.fragmented && !moofs.is_empty() {
             let d: u64 = t.samples.iter().map(|s| s.duration as u64).sum();
             t.duration = t.duration.max(d);
@@ -397,7 +636,6 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
                 file.duration = file.duration.max(md);
             }
         }
-        t.finish_indexes();
         // Timecode start frame from the first sample.
         if let Some(CodecConfig::Timecode(tc)) = t.entries.first_mut().map(|e| &mut e.codec)
             && let Some(s) = t.samples.first()
@@ -454,15 +692,13 @@ fn parse_trak(p: &[u8], file: &Mp4File, file_len: u64, budget: &mut SampleBudget
         volume: 0,
         matrix: [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x4000_0000],
         entries: Vec::new(),
-        samples: Vec::new(),
+        samples: SampleTable::default(),
         edits: Vec::new(),
         edit_offset: 0,
         references: Vec::new(),
         sdtp: Vec::new(),
         sample_groups: Vec::new(),
         pcm_chunked: false,
-        sync_index: Vec::new(),
-        pts_order: Vec::new(),
     };
     let mut mdia = None;
     for b in boxes(p) {
@@ -624,7 +860,8 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, budget: &m
     let mut stsc: Vec<(u32, u32, u32)> = Vec::new();
     let mut const_size = 0u32;
     let mut sample_count = 0usize;
-    let mut sizes: Vec<u32> = Vec::new();
+    let mut sizes: &[u8] = &[];
+    let mut size_bits = 32usize;
     let mut chunks: Vec<u64> = Vec::new();
     let mut sbgp: Vec<(FourCc, Vec<(u32, u32)>)> = Vec::new();
     let mut sgpd: HashMap<FourCc, Vec<Vec<u8>>> = HashMap::new();
@@ -668,7 +905,8 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, budget: &m
                 let n = c.u32()? as usize;
                 if const_size == 0 {
                     c.check_count(n, 4)?;
-                    sizes = (0..n).map(|_| c.u32()).collect::<Result<_>>()?;
+                    sizes = c.rest();
+                    size_bits = 32;
                     sample_count = n;
                 } else {
                     // Samples of constant size must fit in the file: clamp absurd counts.
@@ -686,14 +924,9 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, budget: &m
                 if n.checked_mul(bits).is_none_or(|b| b.div_ceil(8) > c.remaining()) {
                     return Err(Error::Truncated("stz2"));
                 }
-                let d = c.rest();
-                sizes = (0..n)
-                    .map(|i| match bits {
-                        4 => ((d[i / 2] >> if i % 2 == 0 { 4 } else { 0 }) & 0xF) as u32,
-                        8 => d[i] as u32,
-                        _ => u16::from_be_bytes([d[2 * i], d[2 * i + 1]]) as u32,
-                    })
-                    .collect();
+                sizes = c.rest();
+                size_bits = bits;
+                const_size = 0;
                 sample_count = n;
             }
             b"stco" => {
@@ -759,7 +992,7 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, budget: &m
     };
     let mut stts_c = SttsCursor { runs: &stts, run: 0, used: 0 };
     let mut ctts_c = SttsCursor { runs: &ctts, run: 0, used: 0 };
-    let mut samples = Vec::new();
+    let mut samples = SampleTable::default();
     let mut sidx = 0usize;
     let mut dts = 0i64;
     let mut stsc_i = 0usize;
@@ -855,7 +1088,26 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, budget: &m
                 if sidx >= sample_count {
                     break 'chunks;
                 }
-                let size = if const_size != 0 { const_size } else { sizes[sidx] };
+                let size = if const_size != 0 {
+                    const_size
+                } else {
+                    match size_bits {
+                        4 => {
+                            ((sizes.get(sidx / 2).ok_or(Error::Truncated("stz2"))?
+                                >> if sidx.is_multiple_of(2) { 4 } else { 0 })
+                                & 0xF) as u32
+                        }
+                        8 => *sizes.get(sidx).ok_or(Error::Truncated("stz2"))? as u32,
+                        16 => {
+                            let b = sizes.get(sidx * 2..sidx * 2 + 2).ok_or(Error::Truncated("stz2"))?;
+                            u16::from_be_bytes([b[0], b[1]]) as u32
+                        }
+                        _ => {
+                            let b = sizes.get(sidx * 4..sidx * 4 + 4).ok_or(Error::Truncated("stsz"))?;
+                            u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+                        }
+                    }
+                };
                 let duration = stts_c.next_value();
                 let cts = ctts_c.next_value() as i32 as i64;
                 let is_sync = match &stss {
@@ -1127,6 +1379,53 @@ mod tests {
 
     use crate::isobmff::bytes::BoxBuf;
 
+    #[test]
+    fn compact_samples_reconstruct_offsets_timing_and_flags() {
+        let mut table = SampleTable::default();
+        let mut reference = Vec::new();
+        let (mut offset, mut dts) = (100u64, 0i64);
+        for i in 0..1200 {
+            // Cross bitmap words and checkpoints, backwards/large offsets, timestamp
+            // discontinuities, description changes, and the unsigned trun cto range.
+            if i % 73 == 0 {
+                offset = 0;
+            }
+            if i % 97 == 0 {
+                offset += u32::MAX as u64 + 100;
+            }
+            if i % 101 == 0 {
+                dts += 300;
+            }
+            let duration = if i % 31 == 0 { 10 } else { 40 };
+            let cto = if i == 900 { u32::MAX as i64 } else { (i % 3 - 1) * 80 };
+            let s = Sample {
+                offset,
+                size: (i % 200) as u32,
+                dts,
+                pts: dts + cto,
+                duration,
+                is_sync: i % 17 == 0,
+                description_index: (i / 100) as u32 + 1,
+            };
+            table.push(s);
+            reference.push(s);
+            offset += s.size as u64 + if i % 3 == 0 { 100 } else { 0 };
+            dts += duration as i64;
+        }
+        table.compact();
+        assert_eq!(table.iter().collect::<Vec<_>>(), reference);
+        assert_eq!(table.iter().rev().collect::<Vec<_>>(), reference.iter().rev().copied().collect::<Vec<_>>());
+        assert_eq!(table.get(table.len()), None);
+        let mut track = open(handmade(None)).unwrap().tracks.remove(0);
+        track.samples = table;
+        let mut order: Vec<_> = reference.iter().enumerate().map(|(i, s)| (s.pts, i)).collect();
+        order.sort_unstable();
+        for target in [i64::MIN, -1, 0, 10, 10_000, 30_000, 50_000, i64::MAX] {
+            let k = order.partition_point(|&(pts, _)| pts <= target).saturating_sub(1);
+            assert_eq!(track.sample_at_pts(target), Some(order[k].1));
+        }
+    }
+
     fn full(b: &mut BoxBuf, kind: &[u8; 4], v: u8, f: impl FnOnce(&mut BoxBuf)) {
         let m = b.start_full(kind, v, 0);
         f(b);
@@ -1284,7 +1583,7 @@ mod tests {
         assert_eq!(t.handler_name, "Video");
         let sizes: Vec<u32> = t.samples.iter().map(|s| s.size).collect();
         assert_eq!(sizes, [3, 1, 2, 4]);
-        let offs: Vec<u64> = t.samples.iter().map(|s| s.offset - t.samples[0].offset).collect();
+        let offs: Vec<u64> = t.samples.iter().map(|s| s.offset - t.samples.get(0).unwrap().offset).collect();
         assert_eq!(offs, [0, 3, 4, 6]);
         let pts: Vec<i64> = t.samples.iter().map(|s| s.pts).collect();
         assert_eq!(pts, [-5, 5, 25, 35]);
@@ -1394,7 +1693,7 @@ mod tests {
         let d = handmade(Some((1, u32::MAX)));
         let f = open(d.as_slice()).unwrap();
         assert_eq!(f.tracks[0].samples.len(), 4);
-        assert!(f.tracks[0].samples.capacity() < 64, "{}", f.tracks[0].samples.capacity());
+        assert!(f.tracks[0].samples.sizes.capacity() < 64, "{}", f.tracks[0].samples.sizes.capacity());
     }
 
     #[test]
@@ -1467,8 +1766,9 @@ mod tests {
         assert_eq!(s.iter().map(|s| u64::from(s.size)).sum::<u64>(), u64::from(u32::MAX));
         assert_eq!(s.iter().map(|s| u64::from(s.duration)).sum::<u64>(), u64::from(u32::MAX));
         assert!(
-            s.windows(2).all(|w| w[1].offset == w[0].offset + u64::from(w[0].size)
-                && w[1].dts == w[0].dts + i64::from(w[0].duration))
+            s.iter()
+                .zip(s.iter().skip(1))
+                .all(|(a, b)| b.offset == a.offset + u64::from(a.size) && b.dts == a.dts + i64::from(a.duration))
         );
     }
 }
