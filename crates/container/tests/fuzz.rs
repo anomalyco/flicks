@@ -6,6 +6,61 @@ use flicks_container::isobmff::*;
 use std::io::Cursor;
 
 struct Rng(u64);
+
+#[test]
+fn cmaf_writer_hostile_inputs() {
+    use flicks_container::isobmff::cmaf;
+    let mut rng = Rng(0x19ca_fef0_1234);
+    for i in 0..10_000 {
+        let len = rng.below(256);
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        let mut cfg = TrackConfig::new(
+            SampleEntry::aac(bytes.clone(), rng.next() as u32, f64::from_bits(rng.next()) as u32),
+            rng.next() as u32,
+        );
+        if i % 2 == 0 {
+            cfg.entry =
+                SampleEntry::avc(AvcConfig::new(vec![bytes.clone()], vec![bytes.clone()], rng.next() as u8), 16, 16);
+        }
+        let _ = cmaf::write_init_segment(&[cfg.clone()]);
+        let _ = cmaf::timing::reorder_depth(&cfg.entry.codec);
+        if let Ok(c) = HevcConfig::parse(&bytes) {
+            let _ = cmaf::timing::reorder_depth(&CodecConfig::Hevc(c));
+        }
+        let _ = cmaf::dolby_config(&bytes, false);
+        let _ = cmaf::dolby_config(&bytes, true);
+        let sample = WriteSample {
+            data: &bytes,
+            duration: rng.next() as u32,
+            composition_offset: rng.next() as i32,
+            is_sync: i % 2 == 0,
+        };
+        let base = rng.next();
+        if let Ok(fragment) = cmaf::write_media_segment(1, base, &[sample]) {
+            assert_eq!(fragment, cmaf::write_media_segment(1, base, &[sample]).unwrap());
+            assert!(fragment.len() < bytes.len() + 256);
+        }
+        let _ = cmaf::timing::timestamp(
+            rng.next() as i64,
+            rng.next() as i64,
+            rng.below(100_000),
+            rng.next() as u32,
+            rng.next() as u32,
+        );
+    }
+    let sample = WriteSample { data: &[1], duration: 1, composition_offset: 0, is_sync: true };
+    assert!(cmaf::write_media_segment(0, 0, &[sample]).is_err());
+    assert!(cmaf::write_media_segment(1, u64::MAX, &[sample]).is_err());
+    assert!(cmaf::write_media_segment(1, 0, &vec![sample; cmaf::MAX_SAMPLES + 1]).is_err());
+    assert!(cmaf::write_init_segment(&[]).is_err());
+    let cfg = TrackConfig::new(SampleEntry::aac(vec![0x11, 0x90], 2, 48000), 48000);
+    let mut bytes = cmaf::write_init_segment(&[cfg]).unwrap();
+    bytes.extend(cmaf::write_media_segment(77, 12345, &[sample]).unwrap());
+    let parsed = open(bytes.as_slice()).unwrap();
+    let s = parsed.tracks[0].samples.get(0).unwrap();
+    assert_eq!(s.dts, 12345);
+    assert_eq!(parsed.read_sample(bytes.as_slice(), 0, 0).unwrap(), [1]);
+}
 impl Rng {
     fn next(&mut self) -> u64 {
         // xorshift64*
@@ -17,6 +72,63 @@ impl Rng {
     fn below(&mut self, n: usize) -> usize {
         (self.next() % n.max(1) as u64) as usize
     }
+}
+
+#[test]
+fn cmaf_configuration_prefixes_and_bit_flips() {
+    use flicks_container::isobmff::cmaf;
+    let mut count = 0;
+    for name in ["h264_bframes.mp4", "hevc.mp4"] {
+        let Some(path) = common::fixture(name) else {
+            return;
+        };
+        let source = std::fs::read(path).unwrap();
+        let doc = open(source.as_slice()).unwrap();
+        let track = doc.tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap();
+        let entry = track.entries[0].clone();
+        assert!(cmaf::timing::reorder_depth(&entry.codec).unwrap() <= 16);
+        let sps = match &entry.codec {
+            CodecConfig::Avc(c) => c.sps[0].clone(),
+            CodecConfig::Hevc(c) => c.sps()[0].to_vec(),
+            _ => unreachable!(),
+        };
+        let mut cases: Vec<Vec<u8>> = (0..sps.len()).map(|n| sps[..n].to_vec()).collect();
+        for i in 0..sps.len() {
+            for bit in 0..8 {
+                let mut bytes = sps.clone();
+                bytes[i] ^= 1 << bit;
+                cases.push(bytes);
+            }
+        }
+        for bytes in cases {
+            let mut entry = entry.clone();
+            match &mut entry.codec {
+                CodecConfig::Avc(c) => c.sps = vec![bytes],
+                CodecConfig::Hevc(c) => c.arrays.iter_mut().find(|a| a.nal_type == 33).unwrap().nalus = vec![bytes],
+                _ => unreachable!(),
+            }
+            if let Ok(depth) = cmaf::timing::reorder_depth(&entry.codec) {
+                assert!(depth <= 16);
+            }
+            let _ = cmaf::write_init_segment(&[TrackConfig::new(entry, track.timescale)]);
+            count += 1;
+        }
+        if let CodecConfig::Hevc(c) = &entry.codec {
+            let sample = doc.read_sample(source.as_slice(), 0, 0).unwrap();
+            for n in 0..sample.len() {
+                let _ = cmaf::hvc1_sample(c, &sample[..n]);
+                count += 1;
+            }
+            let mut repeated = Vec::new();
+            for n in c.arrays.iter().filter(|a| matches!(a.nal_type, 32..=34)).flat_map(|a| &a.nalus) {
+                repeated.extend((n.len() as u32).to_be_bytes());
+                repeated.extend(n);
+            }
+            repeated.extend(&sample);
+            assert_eq!(cmaf::hvc1_sample(c, &repeated).unwrap(), cmaf::hvc1_sample(c, &sample).unwrap());
+        }
+    }
+    eprintln!("CMAF configuration/sample mutations: {count}");
 }
 
 fn synthetic_files() -> Vec<Vec<u8>> {

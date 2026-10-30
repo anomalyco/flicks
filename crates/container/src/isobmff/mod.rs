@@ -12,6 +12,7 @@
 
 pub mod boxes;
 mod bytes;
+pub mod cmaf;
 mod codec;
 mod demux;
 mod error;

@@ -1,6 +1,7 @@
 //! Signed catalog, playback and per-user progress. One file is one item.
 
 mod files;
+pub(crate) mod hls;
 mod scan;
 
 use std::path::Path;
@@ -71,6 +72,9 @@ pub async fn route(state: &State, caller: &Caller, parts: &Parts, body: &Bytes) 
 
 async fn dispatch(state: &State, caller: &Caller, parts: &Parts, body: &[u8]) -> Result<Option<Reply>, Error> {
     let path = parts.uri.path();
+    if path.starts_with("/hls/") {
+        return hls::route(state, caller, parts).await.map(Some);
+    }
     let user = caller.user;
     if parts.method == Method::GET {
         if let Some(name) = path.strip_prefix("/artwork/") {

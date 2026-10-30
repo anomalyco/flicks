@@ -1648,6 +1648,7 @@ dependencies = [
  "flicks-library",
  "flicks-metadata",
  "flicks-platform",
+ "flicks-testkit",
  "http-body-util",
  "hyper",
  "hyper-util",

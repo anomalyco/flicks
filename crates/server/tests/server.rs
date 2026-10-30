@@ -22,6 +22,275 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+/// Real HTTPS HLS oracle, including native-player grants (the oracle cannot sign
+/// individual requests). FLICKS_HLS_MEDIA optionally supplies read-only real media.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hls_oracle() {
+    if std::env::var_os("FLICKS_HLS_MEDIA").is_some() {
+        hls_case("h264", "aac").await;
+    } else {
+        for (video, audio) in [("h264", "aac"), ("hevc", "aac"), ("h264", "ac3"), ("hevc", "eac3")] {
+            hls_case(video, audio).await;
+        }
+    }
+}
+
+async fn hls_case(video_codec: &str, audio_codec: &str) {
+    use serde_json::Value;
+    use std::process::Command;
+    use std::time::Instant;
+    async fn fetch(server: &Server, viewer: &Connection, path: &str) -> net::Response {
+        let auth = sign(&viewer.key, &viewer.server_key, "GET", path, b"", b"", flicks_server::unix_now());
+        https(server.addr, pinned(&server.state), signed_request(Method::GET, path, &auth, None, b"")).await.unwrap()
+    }
+    let (ffmpeg, ffprobe) = flicks_testkit::require_oracles!();
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("B frames.mkv");
+    let mut generator = Command::new(&ffmpeg);
+    generator.args(["-v", "error", "-y"]);
+    if let Some(real) = std::env::var_os("FLICKS_HLS_MEDIA") {
+        generator.arg("-i").arg(real).args(["-t", "16", "-map", "0:v:0", "-map", "0:a:0", "-c", "copy"]);
+    } else {
+        generator.args([
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=24",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000",
+            "-t",
+            "12",
+            "-c:v",
+            if video_codec == "h264" { "libx264" } else { "libx265" },
+            "-g",
+            "48",
+            "-bf",
+            "3",
+            if video_codec == "h264" { "-x264-params" } else { "-x265-params" },
+            "scenecut=0:open-gop=0",
+            "-c:a",
+            audio_codec,
+        ]);
+    }
+    let output = generator.arg(&input).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let server = start(&format!("hls-{video_codec}-{audio_codec}")).await;
+    let viewer = pair_device(&server, server.addr, pinned(&server.state), "hls", false).await;
+    let _: Folder = server
+        .root
+        .call(Method::POST, "/admin/folders", Some(&AddFolder { path: dir.path().to_string_lossy().into_owned() }))
+        .await
+        .unwrap();
+    let items = catalog_ready(&viewer, 1).await;
+    let id = items[0]["item"]["id"].as_i64().unwrap();
+    let root = format!("/hls/{id}");
+    let grant: Value = viewer.call(Method::POST, &format!("{root}/token"), None::<&()>).await.unwrap();
+    let grant = grant["url"].as_str().unwrap();
+    let query = grant.split_once('?').unwrap().1;
+    // ffmpeg 8/9 does not propagate tls_verify to HLS child playlists. A test-only
+    // loopback HTTP adapter calls the exact same authenticated handler; production
+    // remains HTTPS-only. Latency and ordinary clients below use actual pinned TLS.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let oracle_addr = listener.local_addr().unwrap();
+    let state = server.state.clone();
+    let adapter = tokio::spawn(async move {
+        loop {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let state = state.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |request| {
+                    let state = state.clone();
+                    async move { Ok::<_, std::convert::Infallible>(server::handle(&state, request).await) }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(hyper_util::rt::TokioIo::new(tcp), service)
+                    .await;
+            });
+        }
+    });
+    let url = format!("http://{oracle_addr}{grant}");
+    let response = fetch(&server, &viewer, &format!("{root}/master.m3u8")).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", String::from_utf8_lossy(&response.body));
+    let master = String::from_utf8(response.body.to_vec()).unwrap();
+    assert!(master.contains("TYPE=AUDIO"));
+    let video = master.lines().last().unwrap().strip_suffix(".m3u8").unwrap();
+    let segment_path = format!("{root}/{video}/0.m4s");
+    let start = Instant::now();
+    let first = fetch(&server, &viewer, &segment_path).await;
+    let cold = start.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(first.status, StatusCode::OK);
+    let mut times = Vec::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        let response = fetch(&server, &viewer, &segment_path).await;
+        times.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(response.body, first.body);
+    }
+    times.sort_by(f64::total_cmp);
+    // Fetch out of order as well as repeatedly; each fragment is self-contained
+    // with an absolute decode time, and audio segment zero must not disappear.
+    for track in [0, 1] {
+        let playlist = fetch(&server, &viewer, &format!("{root}/{track}.m3u8")).await;
+        assert_eq!(playlist.status, StatusCode::OK);
+        let playlist = String::from_utf8(playlist.body.to_vec()).unwrap();
+        let init = fetch(&server, &viewer, &format!("{root}/{track}/init.mp4")).await;
+        let paths: Vec<_> = playlist.lines().filter(|s| s.ends_with(".m4s")).collect();
+        assert!(paths.len() >= 2);
+        for path in paths.into_iter().rev() {
+            let a = fetch(&server, &viewer, &format!("{root}/{path}")).await;
+            let b = fetch(&server, &viewer, &format!("{root}/{path}")).await;
+            assert_eq!(a.status, StatusCode::OK, "fragment {path}; playlist {playlist}");
+            assert_eq!(a.body, b.body);
+            let mut bytes = init.body.to_vec();
+            bytes.extend(&a.body);
+            let parsed = flicks_container::isobmff::open(bytes.as_slice()).unwrap();
+            assert!(!parsed.tracks[0].samples.is_empty());
+        }
+    }
+    eprintln!(
+        "HLS_PERF {video_codec}/{audio_codec} bytes={} cold_ms={cold:.3} n=20 p50_ms={:.3} p95_ms={:.3} max_ms={:.3}",
+        first.body.len(),
+        times[9],
+        times[18],
+        times[19]
+    );
+    if !cfg!(debug_assertions) {
+        assert!(cold < 50.0 && times[18] < 50.0);
+    }
+    let probe = Command::new(&ffprobe)
+        .args(["-v", "error", "-rw_timeout", "10000000", "-show_streams", "-of", "json"])
+        .arg(&url)
+        .output()
+        .unwrap();
+    assert!(probe.status.success(), "{}", String::from_utf8_lossy(&probe.stderr));
+    let streams: Value = serde_json::from_slice(&probe.stdout).unwrap();
+    assert!(
+        streams["streams"].as_array().unwrap().iter().any(|s| s["codec_name"] == video_codec),
+        "{streams}; {}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    assert!(streams["streams"].as_array().unwrap().iter().any(|s| s["codec_name"] == audio_codec));
+    for seek in ["0", "8"] {
+        let decoded = Command::new(&ffmpeg)
+            .args(["-v", "error", "-xerror", "-rw_timeout", "10000000", "-ss", seek, "-i"])
+            .arg(&url)
+            .args(["-t", "2", "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"])
+            .output()
+            .unwrap();
+        assert!(decoded.status.success(), "seek {seek}: {}", String::from_utf8_lossy(&decoded.stderr));
+        assert!(decoded.stderr.is_empty(), "seek {seek}: {}", String::from_utf8_lossy(&decoded.stderr));
+    }
+    // All decoded video pixels, not merely a parser accepting the boxes.
+    let hashes = |source: &str, network: bool, seek: Option<&str>| {
+        let mut command = Command::new(&ffmpeg);
+        command.args(["-v", "error", "-xerror"]);
+        if network {
+            command.args(["-rw_timeout", "10000000"]);
+        }
+        if let Some(seek) = seek {
+            command.args(["-ss", seek]);
+        }
+        let output = command.args(["-i", source, "-map", "0:v:0", "-f", "framemd5", "-"]).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .filter(|s| !s.starts_with('#'))
+            .map(|s| s.rsplit(',').next().unwrap().trim().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let all = hashes(&url, true, None);
+    assert!(all.len() >= 280);
+    assert_eq!(all, hashes(input.to_str().unwrap(), false, None));
+    // Account for the common reordering delay when comparing absolute audio PTS.
+    // Player seeks remain relative to playback start, as with an ordinary file.
+    let init = fetch(&server, &viewer, &format!("{root}/{video}/init.mp4")).await;
+    let init_doc = flicks_container::isobmff::open(init.body.as_ref()).unwrap();
+    let depth = flicks_container::isobmff::cmaf::timing::reorder_depth(&init_doc.tracks[0].entries[0].codec).unwrap();
+    let mkv = flicks_container::matroska::open(std::fs::File::open(&input).unwrap()).unwrap();
+    let duration = mkv.tracks.iter().find(|t| t.video.is_some()).unwrap().default_duration_ns.unwrap() / 1000;
+    let delay = (duration * u64::from(depth)) as f64 / 1_000_000.0;
+    let sought = hashes(&url, true, Some("8"));
+    assert!(sought.len() >= 90);
+    let source_sought = hashes(input.to_str().unwrap(), false, Some("8"));
+    assert!(sought == source_sought, "seek video frames differ");
+    let audio_time = |source: &str, target: f64| {
+        let output = Command::new(&ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "frame=pts_time,nb_samples:stream=sample_rate",
+                "-read_intervals",
+                &format!("{target:.6}%+6"),
+                "-of",
+                "json",
+                source,
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let doc: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let rate: f64 = doc["streams"][0]["sample_rate"].as_str().unwrap().parse().unwrap();
+        let frame = doc["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["pts_time"].as_str().and_then(|s| s.parse::<f64>().ok()).is_some_and(|p| p >= target))
+            .unwrap();
+        (
+            frame["pts_time"].as_str().unwrap().parse::<f64>().unwrap(),
+            frame["nb_samples"].as_u64().unwrap() as f64 / rate,
+        )
+    };
+    for target in [0.0, 8.0] {
+        let (hls, frame) = audio_time(&url, target + delay);
+        let (source, _) = audio_time(input.to_str().unwrap(), target);
+        let error = (hls - delay - source).abs();
+        eprintln!(
+            "HLS_AUDIO {video_codec}/{audio_codec} target={target} error_ms={:.3} frame_ms={:.3}",
+            error * 1000.0,
+            frame * 1000.0
+        );
+        assert!(
+            error <= if audio_codec == "aac" { frame.min(0.023) } else { frame },
+            "audio offset {:.3} ms exceeds one frame {:.3} ms",
+            error * 1000.0,
+            frame * 1000.0
+        );
+    }
+    let unsigned = https(server.addr, pinned(&server.state), get(&format!("{root}/master.m3u8"))).await.unwrap();
+    assert_eq!(unsigned.status, StatusCode::UNAUTHORIZED);
+    for bad in [
+        format!("/hls/{}/master.m3u8?{query}", id + 1),
+        format!("/files/{id}?{query}"),
+        format!("{root}/master.m3u8?{query}x"),
+    ] {
+        assert_eq!(
+            https(server.addr, pinned(&server.state), get(&bad)).await.unwrap().status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // The URL is valid before revocation, and unusable immediately afterwards.
+    assert_eq!(https(server.addr, pinned(&server.state), get(grant)).await.unwrap().status, StatusCode::OK);
+    let key = keys::public_bytes(viewer.key.verifying_key());
+    server
+        .state
+        .db
+        .call(move |conn| {
+            conn.execute("DELETE FROM devices WHERE key=?1", [key])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(https(server.addr, pinned(&server.state), get(grant)).await.unwrap().status, StatusCode::UNAUTHORIZED);
+    adapter.abort();
+}
+
 fn data_dir(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("server-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
