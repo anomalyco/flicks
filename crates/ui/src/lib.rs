@@ -7,6 +7,7 @@
 
 mod add_server;
 pub mod library;
+pub mod player;
 pub mod server;
 mod style;
 #[cfg(test)]
@@ -41,13 +42,6 @@ pub enum Status {
     Failed(String),
 }
 
-/// The choice the Play button records until the player screen (FLK-6) takes it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PlayChoice {
-    pub server: String,
-    pub item: i64,
-}
-
 /// What the screens ask of the network.
 pub enum Request {
     /// Fetch every server's catalog again.
@@ -58,6 +52,10 @@ pub enum Request {
     Artwork(String, String),
     /// A change on a server's admin routes: its key and the change.
     Admin(String, server::Op),
+    /// Play a title: the play's number (see [`Flicks::player_started`]) and the title.
+    Play(u64, Box<flicks_client::merge::Title>),
+    /// Save progress on a title: its key, and the server and file played.
+    Progress(flicks_client::merge::Key, String, i64, flicks_client::Progress),
 }
 
 /// The most posters and backdrops kept in memory (about 1 MB each, decoded); past it the oldest
@@ -81,7 +79,10 @@ pub struct Flicks {
     pub link: TextEdit,
     pub pairing: bool,
     pub pair_error: Option<String>,
-    pub play: Option<PlayChoice>,
+    /// The player, over every screen while it's open.
+    pub player: Option<player::Screen>,
+    /// Plays started, numbering each.
+    plays: u64,
     /// The tile the pointer is over, which lifts (its key).
     pub lifted: Option<String>,
     /// The season a show's page lists.
@@ -116,7 +117,8 @@ impl Flicks {
             link: TextEdit::new(""),
             pairing: false,
             pair_error: None,
-            play: None,
+            player: None,
+            plays: 0,
             lifted: None,
             season: None,
             row_x: Default::default(),
@@ -176,10 +178,7 @@ impl Flicks {
     }
 
     pub fn play(&mut self, title: usize) {
-        let source = self.catalog.titles.get(title).and_then(flicks_client::merge::best_source);
-        if let Some(source) = source {
-            self.play = Some(PlayChoice { server: source.server.clone(), item: source.item.id });
-        }
+        self.open_player(title);
     }
 
     /// Whether a title is shown as offline: a refresh found none of its servers.
@@ -290,6 +289,10 @@ pub fn artwork_key(server: &str, name: &str) -> String {
 }
 
 fn view(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
+    if let Some(player) = &s.player {
+        let screen = el().key("screen-player").w_full().h_full().transition(screen_transition());
+        return screen.child(player::view(player, cx));
+    }
     // Home and a title's page run full-bleed under the top bar; the rest start below it.
     let (name, body, hero) = match &s.screen {
         Screen::Home => ("home", library::home(s, cx), Some("hero")),
@@ -392,6 +395,9 @@ fn logo(s: &Flicks) -> El {
 }
 
 fn on_key(s: &mut Flicks, event: &KeyEvent, _: &mut Tx) -> bool {
+    if s.player.is_some() {
+        return player::on_key(s, event);
+    }
     match event.key {
         Key::Command('f') => s.go(Screen::Search),
         Key::Escape if matches!(s.screen, Screen::Detail(_)) => s.go_back(),

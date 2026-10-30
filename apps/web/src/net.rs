@@ -75,6 +75,11 @@ impl Net {
                 }
                 // The Server screens aren't on the web yet: no server is listed for them.
                 Request::Admin(..) => {}
+                // Playback isn't on the web yet.
+                Request::Play(id, _) => {
+                    app.update(move |s, _| s.player_failed(id, "Playing isn't in the web app yet.".into()))
+                }
+                Request::Progress(..) => {}
             }
         });
     }
