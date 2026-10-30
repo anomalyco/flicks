@@ -327,7 +327,7 @@ fn real_file() {
 #[test]
 fn network_ranges_and_seeks() {
     use flicks_container::matroska::ByteSource;
-    use flicks_server::{cli, db, server};
+    use flicks_server::{db, server};
     use std::sync::Arc;
     let _ff = flicks_testkit::require_ffmpeg!();
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
@@ -339,7 +339,8 @@ fn network_ranges_and_seeks() {
     std::fs::rename(&path, media.join("Fixture.2026.mp4")).unwrap();
     let (connection, item) = runtime.block_on(async {
         let (addr, state) = server::spawn(&temp.path().join("server"), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let root = cli::Client::new(state.key.clone(), state.key.verifying_key(), addr).unwrap();
+        let root =
+            flicks_client::Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
         let _: db::Folder = root
             .call(
                 hyper::Method::POST,
@@ -422,6 +423,8 @@ fn two_hour_playback() {
                 "1:a",
                 "-t",
                 "7200",
+                "-frames:v",
+                "172800",
                 "-c:v",
                 "copy",
                 "-c:a",
@@ -445,7 +448,11 @@ fn two_hour_playback() {
             .success()
     );
     let mut players = [player(&mp4), player(&mkv)];
+    if let demux::Demux::Mp4 { file, .. } = &players[0].demux {
+        assert_eq!(file.tracks[players[0].video_track].samples.len(), 172_800);
+    }
     for p in &mut players {
+        p.fill().unwrap(); // Initial buffering completes before starting either clock.
         p.play();
     }
     let start = Instant::now();
