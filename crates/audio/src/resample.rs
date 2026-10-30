@@ -13,8 +13,9 @@ const HALF: f64 = 32.0;
 /// Cutoff as a fraction of the lower Nyquist frequency.
 const CUTOFF: f64 = 0.91;
 const BETA: f64 = 9.0;
-/// The most filter phases (output rate / gcd) accepted; every pair of common rates needs ≤ 640.
-const MAX_PHASES: usize = 1024;
+/// The most filter phases (output rate / gcd) accepted. Every pair of common rates from 8 to
+/// 192 kHz needs ≤ 2560 (11.025 → 192 kHz; 2560 × 64 taps is 640 KB of filter).
+const MAX_PHASES: usize = 2560;
 const MAX_CHANNELS: usize = 8;
 
 pub struct Resampler {

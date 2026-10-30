@@ -94,7 +94,11 @@ impl Color {
 /// Bi-planar 4:2:0 data, with explicit byte strides. Padding is allowed; the final row need
 /// only contain its active pixels. Chroma is centre-sited and reconstructed bilinearly.
 pub struct CpuFrame<'a> {
+    /// Coded size, including any padding rows and columns the decoder adds (1920×1088).
     pub size: [u32; 2],
+    /// The visible rectangle (x, y, width, height in luma samples) within `size`: only it is
+    /// drawn, and sampling never reads outside it.
+    pub crop: [u32; 4],
     pub format: PixelFormat,
     pub planes: [&'a [u8]; 2],
     pub strides: [u32; 2],
@@ -107,6 +111,7 @@ pub struct Frame {
     planes: [wgpu::Texture; 2],
     format: PixelFormat,
     color: Color,
+    crop: [u32; 4],
 }
 
 impl Frame {
@@ -169,7 +174,7 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(80),
+                        min_binding_size: wgpu::BufferSize::new(96),
                     },
                     count: None,
                 },
@@ -199,6 +204,7 @@ impl Renderer {
 
     pub fn upload(&self, queue: &wgpu::Queue, frame: &CpuFrame<'_>) -> Result<Frame, Error> {
         validate_size(&self.device, frame.size, frame.format)?;
+        validate_crop(frame.size, frame.crop)?;
         validate_color(frame.color)?;
         let row_bytes = frame.size[0] * if frame.format == PixelFormat::P010 { 2 } else { 1 };
         for (i, rows) in [frame.size[1], frame.size[1] / 2].into_iter().enumerate() {
@@ -224,20 +230,26 @@ impl Renderer {
             );
             texture
         });
-        Ok(Frame { planes, format: frame.format, color: frame.color })
+        Ok(Frame { planes, format: frame.format, color: frame.color, crop: frame.crop })
     }
 
     /// Import a completed IOSurface-backed VideoToolbox frame without locking or copying pixels.
     /// The caller must not recycle or modify the pixels until GPU work completes. The import
     /// retains the buffer (preventing CVPixelBufferPool reuse); no dependency on the decoder.
     /// Range comes from the buffer's fourcc; matrix/transfer/primaries come from stream metadata.
+    /// `crop` is the visible rectangle as in [`CpuFrame::crop`].
     #[cfg(target_os = "macos")]
-    pub fn import(&mut self, buffer: &objc2_core_video::CVPixelBuffer, color: Color) -> Result<Frame, Error> {
+    pub fn import(
+        &mut self,
+        buffer: &objc2_core_video::CVPixelBuffer,
+        color: Color,
+        crop: [u32; 4],
+    ) -> Result<Frame, Error> {
         validate_color(color)?;
         if self.importer.is_none() {
             self.importer = Some(macos::Importer::new(&self.device)?);
         }
-        self.importer.as_ref().ok_or_else(|| Error::Import("missing cache".into()))?.import(buffer, color)
+        self.importer.as_ref().ok_or_else(|| Error::Import("missing cache".into()))?.import(buffer, color, crop)
     }
 
     pub fn prepare(&mut self, frame: &Frame, target: Target) -> Result<Draw, Error> {
@@ -306,7 +318,7 @@ impl Renderer {
             Transfer::Pq => 2.0,
             Transfer::Hlg => 3.0,
         };
-        let uniforms: [[f32; 4]; 5] = [
+        let uniforms: [[f32; 4]; 6] = [
             target.rect,
             [target.size[0] as f32, target.size[1] as f32, f32::from(target.srgb_blend), 0.0],
             [yoff, yrange, 128.0 * scale, crange],
@@ -317,6 +329,7 @@ impl Renderer {
                 0.0,
                 0.0,
             ],
+            frame.crop.map(|v| v as f32),
         ];
         let uniform = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Flicks draw"),
@@ -346,6 +359,15 @@ fn validate_size(device: &wgpu::Device, size: [u32; 2], format: PixelFormat) -> 
     }
     if format == PixelFormat::P010 && !device.features().contains(P010_FEATURES) {
         return Err(Error::P010Feature);
+    }
+    Ok(())
+}
+
+fn validate_crop(size: [u32; 2], crop: [u32; 4]) -> Result<(), Error> {
+    let [x, y, w, h] = crop;
+    if w == 0 || h == 0 || x.checked_add(w).is_none_or(|r| r > size[0]) || y.checked_add(h).is_none_or(|b| b > size[1])
+    {
+        return Err(Error::Frame("crop must be a non-empty rectangle within the frame"));
     }
     Ok(())
 }

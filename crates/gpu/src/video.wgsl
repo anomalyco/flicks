@@ -7,6 +7,7 @@ struct U {
     range: vec4<f32>, // Y offset/range, C offset/range
     yuv: vec4<f32>, // Kr, Kb, stored-code scale, transfer
     color: vec4<f32>, // BT.2020 primaries, source peak nits, reserved
+    crop: vec4<f32>, // visible x, y, width, height in luma samples
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var y_plane: texture_2d<f32>;
@@ -27,16 +28,16 @@ fn linear_to_srgb(v: vec3<f32>) -> vec3<f32> {
     return select(1.055 * pow(v, vec3(1.0 / 2.4)) - 0.055, v * 12.92, v <= vec3(0.0031308));
 }
 // Explicit float interpolation avoids low-precision UNORM sampler interpolation becoming
-// visible after HDR/gamut conversion, especially near the BT.2020 gamut boundary.
-fn sample_plane(tex: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
-    let dim = vec2<i32>(textureDimensions(tex));
-    let p = uv * vec2<f32>(dim) - 0.5;
+// visible after HDR/gamut conversion, especially near the BT.2020 gamut boundary. `at` is in
+// texels; loads clamp to texels lo..=hi, so coded padding outside the crop never bleeds in.
+fn sample_plane(tex: texture_2d<f32>, at: vec2<f32>, lo: vec2<i32>, hi: vec2<i32>) -> vec4<f32> {
+    let p = at - 0.5;
     let i = vec2<i32>(floor(p));
     let f = fract(p);
-    let a = textureLoad(tex, clamp(i, vec2(0), dim - 1), 0);
-    let b = textureLoad(tex, clamp(i + vec2(1, 0), vec2(0), dim - 1), 0);
-    let c = textureLoad(tex, clamp(i + vec2(0, 1), vec2(0), dim - 1), 0);
-    let d = textureLoad(tex, clamp(i + vec2(1, 1), vec2(0), dim - 1), 0);
+    let a = textureLoad(tex, clamp(i, lo, hi), 0);
+    let b = textureLoad(tex, clamp(i + vec2(1, 0), lo, hi), 0);
+    let c = textureLoad(tex, clamp(i + vec2(0, 1), lo, hi), 0);
+    let d = textureLoad(tex, clamp(i + vec2(1, 1), lo, hi), 0);
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 // SMPTE ST 2084: 1 = 10,000 cd/m².
@@ -105,8 +106,12 @@ fn display(rgb: vec3<f32>) -> vec3<f32> {
     return c;
 }
 @fragment fn fs(in: Vertex) -> @location(0) vec4<f32> {
-    let yc = sample_plane(y_plane, in.uv).r * u.yuv.z;
-    let uv = sample_plane(uv_plane, in.uv).rg * u.yuv.z;
+    let luma = u.crop.xy + in.uv * u.crop.zw;
+    let lo = vec2<i32>(u.crop.xy);
+    let hi = vec2<i32>(u.crop.xy + u.crop.zw) - 1;
+    let yc = sample_plane(y_plane, luma, lo, hi).r * u.yuv.z;
+    // 4:2:0: chroma texel k covers luma 2k and 2k + 1.
+    let uv = sample_plane(uv_plane, luma * 0.5, lo / 2, hi / 2).rg * u.yuv.z;
     let y = (yc - u.range.x) / u.range.y;
     let cbcr = (uv - u.range.z) / u.range.w;
     let r = y + 2.0 * (1.0 - u.yuv.x) * cbcr.y;

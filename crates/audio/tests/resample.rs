@@ -104,3 +104,21 @@ fn cost() {
         println!("{from}->{to} stereo: {us:.0} µs per second of audio");
     }
 }
+
+/// Low rates up to the highest device rates: 22.05 → 192 kHz needs 1280 filter phases and
+/// 11.025 → 192 kHz 2560.
+#[test]
+fn low_to_high_rates() {
+    for from in [22_050, 11_025] {
+        let to = 192_000;
+        let out = resample(from, to, &sine(from, 1_000.0, from as usize, 1), 1);
+        assert!(
+            out.len().abs_diff(to as usize) <= 32 * to as usize / from as usize,
+            "{from}->{to}: {} frames",
+            out.len()
+        );
+        let (thdn, max) = measure(&out, 1, to, 1_000.0);
+        println!("{from}->{to} 1000 Hz: THD+N {thdn:.1} dB, max |err| {max:.2e}");
+        assert!(thdn < -100.0 && max < 1e-4, "{from}->{to}: THD+N {thdn:.1} dB, max {max:.2e}");
+    }
+}
