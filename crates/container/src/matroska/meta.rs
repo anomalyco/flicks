@@ -18,6 +18,7 @@ const MAX_STRIPPED_HEADER: usize = 256;
 /// Largest accepted `TimestampScale` (about 4.3 s per tick). It keeps tick to nanosecond
 /// arithmetic on 64-bit timestamps within `i128`.
 const MAX_TIMESTAMP_SCALE: u64 = 1 << 32;
+const MAX_CUE_POSITIONS: usize = 1 << 20;
 
 /// `Info` element.
 #[derive(Clone, Debug, PartialEq)]
@@ -222,13 +223,21 @@ pub(crate) fn parse_seekhead(d: &[u8]) -> Vec<SeekEntry> {
 }
 
 pub(crate) fn parse_cues(d: &[u8], out: &mut Vec<CuePoint>) {
+    let mut count: usize = out.iter().map(|c| c.positions.len()).sum();
     for cp in Children::new(d).filter(|e| e.id == CUE_POINT) {
+        if count >= MAX_CUE_POSITIONS {
+            break;
+        }
         let mut time = None;
         let mut positions = Vec::new();
         for e in Children::new(cp.data) {
             match e.id {
                 CUE_TIME => time = Some(uint(e.data)),
                 CUE_TRACK_POSITIONS => {
+                    if count >= MAX_CUE_POSITIONS {
+                        break;
+                    }
+                    count += 1;
                     let mut p = CuePosition {
                         track: 0,
                         cluster_position: u64::MAX,
@@ -593,6 +602,42 @@ pub(crate) fn parse_tracks(d: &[u8], timestamp_scale: u64) -> Vec<Track> {
 mod metadata_depth_tests {
     use super::*;
     use crate::matroska::mux::{el, el_uint};
+
+    #[test]
+    fn oversized_cues_keep_only_a_bounded_number_of_positions() {
+        let mut position = Vec::new();
+        el_uint(&mut position, CUE_TRACK, 1);
+        el_uint(&mut position, CUE_CLUSTER_POSITION, 0);
+        let mut entry = Vec::new();
+        el(&mut entry, CUE_TRACK_POSITIONS, &position);
+        let mut point = Vec::new();
+        el_uint(&mut point, CUE_TIME, 42);
+        for _ in 0..=MAX_CUE_POSITIONS {
+            point.extend_from_slice(&entry);
+        }
+        let mut cues = Vec::new();
+        el(&mut cues, CUE_POINT, &point);
+        let mut out = Vec::new();
+        parse_cues(&cues, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].time, 42);
+        assert_eq!(out[0].positions.len(), MAX_CUE_POSITIONS);
+        // The budget also applies across multiple Cues elements.
+        parse_cues(&cues, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].positions.len(), MAX_CUE_POSITIONS);
+
+        // Many separate CuePoints cannot evade the same total-position limit.
+        let mut point = Vec::new();
+        el_uint(&mut point, CUE_TIME, 7);
+        point.extend_from_slice(&entry);
+        let mut entry = Vec::new();
+        el(&mut entry, CUE_POINT, &point);
+        out.clear();
+        parse_cues(&entry.repeat(MAX_CUE_POSITIONS + 1), &mut out);
+        assert_eq!(out.len(), MAX_CUE_POSITIONS);
+        assert!(out.iter().all(|c| c.positions.len() == 1));
+    }
 
     fn header_stripping(bytes: &[u8]) -> Vec<ContentEncoding> {
         let mut comp = Vec::new();
