@@ -313,7 +313,7 @@ fn subtitles(cues: &[Cue], controls: bool) -> El {
                     .px(10.0)
                     .py(2.0)
                     .radius(4.0)
-                    .fill(Color::BLACK.alpha(0.6)),
+                    .fill(surface()),
             );
         }
     }
@@ -322,24 +322,50 @@ fn subtitles(cues: &[Cue], controls: bool) -> El {
     col().key("subtitles").pin(Some(48.0), None, Some(48.0), Some(bottom)).items_center().child(lines)
 }
 
+// The player's look, in one place to retune with the app's visual system: flat, darkened
+// surfaces over the video, no gradients.
 const SUBTITLE: rune::TextStyle = rune::TextStyle::new(26.0, 500.0).lh(34.0);
 const TIME: rune::TextStyle = rune::TextStyle::new(13.0, 550.0).features("'tnum' 1");
+const SURFACE_RADIUS: f32 = 14.0;
+/// What the controls and subtitles sit on.
+fn surface() -> Color {
+    Color::BLACK.alpha(0.62)
+}
+fn surface_shadow() -> Color {
+    Color::BLACK.alpha(0.35)
+}
+/// The seek bar's track and the part played.
+fn track() -> Color {
+    Color::WHITE.alpha(0.25)
+}
+fn played() -> Color {
+    style::coral()
+}
 
 fn top(p: &Screen, cx: &mut Cx<Flicks>) -> El {
     let left = cx.titlebar_inset() + 16.0;
+    let title = row()
+        .key("player-title")
+        .h(44.0)
+        .pl(6.0)
+        .pr(18.0)
+        .gap(10.0)
+        .center_y()
+        .radius(SURFACE_RADIUS)
+        .fill(surface())
+        .shadow(4.0, 16.0, surface_shadow())
+        .on_hover_change(over_controls)
+        .child(button("player-back", "‹  Back", Flicks::close_player))
+        .child(text(p.name.clone()).font(style::HEADING).color(style::text()).truncate());
     row()
         .key("player-top")
         .pin(Some(0.0), Some(0.0), Some(0.0), None)
-        .h(64.0)
+        .h(style::BAR_H)
         .pl(left.max(style::GUTTER))
         .pr(style::GUTTER)
-        .gap(14.0)
         .center_y()
-        .gradient(Color::BLACK.alpha(0.6), Color::BLACK.alpha(0.0))
         .window_drag()
-        .on_hover_change(over_controls)
-        .child(button("player-back", "‹  Back", Flicks::close_player))
-        .child(text(p.name.clone()).font(style::HEADING).color(style::text()).truncate())
+        .child(title)
 }
 
 fn bottom(p: &Screen) -> El {
@@ -352,9 +378,13 @@ fn bottom(p: &Screen) -> El {
         .h(20.0)
         .center_y()
         .cursor(Cursor::Pointer)
-        .child(el().w_full().h(4.0).radius(2.0).fill(Color::WHITE.alpha(0.25)).child(
-            el().w_frac(fraction).h_full().radius(2.0).linear_gradient(std::f32::consts::PI / 2.0, style::progress()),
-        ))
+        .child(
+            el().w_full()
+                .h(4.0)
+                .radius(2.0)
+                .fill(track())
+                .child(el().w_frac(fraction).h_full().radius(2.0).fill(played())),
+        )
         .on_drag(move |s: &mut Flicks, drag: &mut Drag, _: &mut Tx| {
             let Some(p) = &mut s.player else { return };
             let at = (drag.x / drag.w.max(1.0)).clamp(0.0, 1.0) as f64 * duration;
@@ -388,12 +418,13 @@ fn bottom(p: &Screen) -> El {
     bar = bar.child(menu_button("subtitle-menu", "Subtitles", Menu::Subtitles));
     let mut panel = col()
         .key("player-bottom")
-        .pin(Some(0.0), None, Some(0.0), Some(0.0))
-        .px(style::GUTTER)
-        .pt(40.0)
-        .pb(24.0)
-        .gap(10.0)
-        .gradient(Color::BLACK.alpha(0.0), Color::BLACK.alpha(0.7));
+        .pin(Some(style::GUTTER), None, Some(style::GUTTER), Some(24.0))
+        .px(14.0)
+        .py(10.0)
+        .gap(8.0)
+        .radius(SURFACE_RADIUS)
+        .fill(surface())
+        .shadow(4.0, 16.0, surface_shadow());
     if let Some(notice) = &p.notice {
         panel = panel.child(text(notice.clone()).font(style::SMALL).color(style::error()));
     }
@@ -431,12 +462,12 @@ fn menu_panel(p: &Screen, menu: Menu) -> El {
     let mut list = col()
         .key("player-menu")
         .transition(Transition::offset(0.0, 8.0).combined(Transition::opacity()))
-        .pin(None, None, Some(style::GUTTER), Some(76.0))
+        .pin(None, None, Some(style::GUTTER), Some(88.0))
         .w(260.0)
         .padding(6.0)
-        .radius(10.0)
+        .radius(SURFACE_RADIUS)
         .fill(style::raised().alpha(0.96))
-        .shadow(8.0, 24.0, Color::BLACK.alpha(0.5));
+        .shadow(4.0, 16.0, surface_shadow());
     for (i, (label, on, command)) in options.into_iter().enumerate() {
         let command = std::cell::Cell::new(Some(command));
         let pick = move |s: &mut Flicks| {
