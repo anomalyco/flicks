@@ -325,7 +325,7 @@ fn first_scan_of_10k_files() {
             }
         }
     }
-    println!("generated 10000 files in {:?}", t.elapsed());
+    println!("generated 10000 files from a {}-byte base in {:?}", base.len(), t.elapsed());
 
     let mut conn = db();
     let t = Instant::now();
