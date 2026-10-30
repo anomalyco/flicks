@@ -21,6 +21,10 @@ Status: research. No code yet.
 4. Catalog and progress sync.
 5. Jellyfin API layer and in-process HLS.
 
+## Docs
+
+- [`docs/architecture.md`](docs/architecture.md): nodes, crates, state streams, playback, remote access, friends and open questions.
+
 ## Research
 
 - [`research/2026-10-30-fast-stack.md`](research/2026-10-30-fast-stack.md): the fastest stack, layer by layer, with sources and the build order. Notes behind it are in [`research/2026-10-30-fast-stack/`](research/2026-10-30-fast-stack/).
