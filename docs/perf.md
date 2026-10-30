@@ -177,7 +177,6 @@ scan and **22.7 ms** for the unchanged rescan (241 listings, zero media opens). 
 runs were 770–850 ms and 24–29 ms respectively; warm-cache run-to-run variation applies.
 Command: `CARGO_PROFILE_RELEASE_STRIP=none cargo test -p flicks-library --release -- --ignored --nocapture first_scan_of_10k_files`.
 
-<<<<<<< HEAD
 ## FLK-22 — subtitle parse and active-cue lookup (2026-10-30)
 
 Apple M5 Max, macOS 27.2, rustc 1.99.0, release profile, code `dec9210`. One thread; the player
@@ -198,8 +197,8 @@ left as is. "Worst" is the slowest single call, which includes timer noise and o
 
 Reproduce: `cargo test -p flicks-subtitle --release -- --ignored --nocapture lookup_cost`.
 The file is generated in the test (made-up text); three runs for the first three rows, two for the last.
-=======
-## FLK-4 — direct video draw (2026-10-30, performance criterion still open)
+
+## FLK-4 — direct video draw (2026-10-30)
 
 Apple M5 Max (not M1), macOS, wgpu 30.0.1 Metal; debug Rust test harness, normal GPU
 shader compilation. 3840×2160 P010 Y + UV textures, BT.2020 primaries, limited range,
@@ -238,4 +237,3 @@ The normal `scripts/check.sh` gate passes (benchmark intentionally ignored). Cor
 RGBA/BGRA and linear/encoded Rgba16Float layer targets. 24 IOSurface/CPU comparisons are
 byte-identical, and 12 cases retain correct pixels after dropping the source buffer,
 imported frame and texture cache before submitting the draw.
->>>>>>> flk-4
