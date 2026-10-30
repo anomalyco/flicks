@@ -83,6 +83,8 @@ pub struct Flicks {
     pub pair_error: Option<String>,
     /// The player, over every screen while it's open.
     pub player: Option<player::Screen>,
+    /// Switches the app's video slot immediately, without waiting for network or decode.
+    pub player_video: Option<Box<dyn Fn(Option<u64>)>>,
     /// Plays started, numbering each.
     plays: u64,
     /// The tile the pointer is over, which lifts (its key).
@@ -122,6 +124,7 @@ impl Flicks {
             pairing: false,
             pair_error: None,
             player: None,
+            player_video: None,
             plays: 0,
             lifted: None,
             season: None,
@@ -182,10 +185,6 @@ impl Flicks {
         }
     }
 
-    pub fn play(&mut self, title: usize) {
-        self.open_player(title);
-    }
-
     /// Whether a title is shown as offline: a refresh found none of its servers.
     pub fn offline(&self, title: usize) -> bool {
         self.refreshed && self.catalog.titles.get(title).is_some_and(|t| !t.available())
@@ -218,6 +217,10 @@ impl Flicks {
         self.refreshed = refreshed;
         self.error = error;
         self.status = Status::Ready;
+        self.catalog_artwork();
+    }
+
+    fn catalog_artwork(&mut self) {
         self.search_changed();
         let shown: Vec<usize> = self.catalog.rows.iter().flat_map(|r| r.titles.iter().copied()).collect();
         for t in shown {
@@ -424,9 +427,8 @@ fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>, solid: bool) -> El {
         .child(nav("Add Server", "nav-add-server", Screen::AddServer))
 }
 
-/// The lockup, drawn from its SVG at three device pixels a point so it stays sharp on every
-/// screen.
-const LOCKUP: &[u8] = include_bytes!("../../../assets/brand/lockup.svg");
+/// The fixed lockup, rendered at three device pixels a point.
+const LOCKUP: &[u8] = include_bytes!("../../../assets/brand/lockup.png");
 
 fn logo(s: &Flicks) -> El {
     let mut logo = el().key("logo").size(style::LOGO_W, style::LOGO_H).label("Flicks");
@@ -476,7 +478,7 @@ pub fn spec() -> AppSpec<Flicks> {
         scenes: library::fixture::SCENES,
         setup: Some(|s, waker| {
             let images = ImageCache::new(waker);
-            s.logo = Some(images.svg(LOCKUP, style::LOGO_W, 3.0));
+            s.logo = Some(images.load(LOCKUP.to_vec()));
             if let Some(intro) = &mut s.intro {
                 intro.load(&images);
             }

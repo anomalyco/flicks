@@ -31,10 +31,11 @@ const BIG_SEEK: f64 = 30.0;
 pub fn start(app: AppHandle<Flicks>, id: u64, source: Source, resume: f64, saving: Saving, rx: Receiver<Command>) {
     let spawned = std::thread::Builder::new().name("flicks-playback".into()).spawn(move || {
         let reporter = app.clone();
-        if let Err(error) = run(&Play { app, id, saving }, source, resume, rx) {
+        let result = run(&Play { app, id, saving, resume }, source, rx);
+        SLOT.clear(id);
+        if let Err(error) = result {
             reporter.update(move |s, _| s.player_failed(id, error));
         }
-        SLOT.clear();
     });
     if let Err(error) = spawned {
         eprintln!("flicks: couldn't start playback: {error}");
@@ -46,16 +47,27 @@ struct Play {
     app: AppHandle<Flicks>,
     id: u64,
     saving: Saving,
+    resume: f64,
 }
 
-fn run(play: &Play, source: Source, resume: f64, rx: Receiver<Command>) -> Result<(), String> {
-    let (app, id) = (&play.app, play.id);
+fn run(play: &Play, source: Source, rx: Receiver<Command>) -> Result<(), String> {
     let mut player = Player::open(source).map_err(|e| format!("Couldn't open this file: {e}"))?;
+    let result = playing(play, &mut player, rx);
+    if result.is_err() {
+        send_progress(play, &player, false);
+        log_stats(&player);
+    }
+    result
+}
+
+fn playing(play: &Play, player: &mut Player, rx: Receiver<Command>) -> Result<(), String> {
+    let (app, id) = (&play.app, play.id);
+    let resume = play.resume;
     if resume > 0.0 && resume < player.duration() {
         player.seek(resume).map_err(|e| e.to_string())?;
     }
     player.play();
-    let tracks = tracks(&player);
+    let tracks = tracks(player);
     let duration = player.duration();
     app.update(move |s, _| s.player_opened(id, tracks, duration));
 
@@ -76,60 +88,65 @@ fn run(play: &Play, source: Source, resume: f64, rx: Receiver<Command>) -> Resul
             Some(rx.recv().unwrap_or(Command::Stop))
         };
         let mut save = false;
-        match command {
-            None => {}
-            Some(Command::Stop) => {
-                send_progress(play, &player, false);
-                log_stats(&player);
-                return Ok(());
-            }
-            Some(Command::Toggle) if playing => {
-                player.pause().map_err(|e| e.to_string())?;
-                save = true;
-            }
-            Some(Command::Toggle) => player.play(),
-            Some(Command::Seek(to)) => save = seek(&mut player, to)?,
-            Some(Command::SeekBy(by)) => {
-                let to = player.position() + by;
-                save = seek(&mut player, to)?;
-            }
-            Some(Command::Audio(id)) => player.select_audio(Some(id)).map_err(|e| e.to_string())?,
-            Some(Command::Subtitle(id)) => {
-                // A file's own track replaces a loaded sidecar (the player drops it).
-                sidecar = None;
-                player.select_subtitle(id).map_err(|e| e.to_string())?;
-            }
-            Some(Command::Sidecar(path)) => match read_subtitles(&path) {
-                Ok(track) => {
-                    player.set_subtitles(Some(track));
-                    sidecar = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        for command in coalesce(command, &rx, player.position()) {
+            match command {
+                Command::Stop => {
+                    send_progress(play, player, false);
+                    log_stats(player);
+                    return Ok(());
                 }
-                Err(error) => app.update(move |s, _| s.player_notice(id, error)),
-            },
+                Command::Toggle if matches!(player.state(), State::Playing | State::Buffering) => {
+                    player.pause().map_err(|e| e.to_string())?;
+                    save = true;
+                }
+                Command::Toggle => player.play(),
+                Command::Seek(to) => {
+                    SLOT.flush(id);
+                    clock.base = None;
+                    save |= seek(player, to)?;
+                }
+                Command::SeekBy(_) => {} // Coalesced into one absolute seek below.
+                Command::Audio(track) => {
+                    SLOT.flush(id);
+                    clock.base = None;
+                    player.select_audio(Some(track)).map_err(|e| e.to_string())?;
+                }
+                Command::Subtitle(track) => {
+                    SLOT.flush(id);
+                    clock.base = None;
+                    // A file's own track replaces a loaded sidecar (the player drops it).
+                    sidecar = None;
+                    player.select_subtitle(track).map_err(|e| e.to_string())?;
+                }
+                Command::Sidecar(path) => match read_subtitles(&path) {
+                    Ok(track) => {
+                        player.set_subtitles(Some(track));
+                        sidecar = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                    }
+                    Err(error) => app.update(move |s, _| s.player_notice(id, error)),
+                },
+            }
         }
         let now = Instant::now();
         let frame = player.next_frame_for_display(now).map_err(|e| format!("Playback stopped: {e}"))?;
         let new_frame = frame.is_some();
-        let playing = matches!(player.state(), State::Playing | State::Buffering);
+        let playing = player.state() == State::Playing;
         let base = clock.base(now, player.position(), playing);
         if let Some(frame) = frame {
             // When the audio clock passed the frame's time: the compositor shows it on that beat.
             let due = base.and_then(|base| {
                 Duration::try_from_secs_f64(base + frame.pts()).ok().and_then(|d| clock.origin.checked_add(d))
             });
-            SLOT.show(frame, due);
+            SLOT.show(id, frame, due);
         }
         if player.state() == State::Ended {
-            SLOT.set_playing(false);
-            send_progress(play, &player, true);
-            log_stats(&player);
+            send_progress(play, player, true);
+            log_stats(player);
             app.update(move |s, _| s.player_ended(id));
-            // Wait for the screen's Stop, so this thread ends where it always does.
-            while !matches!(rx.recv(), Ok(Command::Stop) | Err(_)) {}
             return Ok(());
         }
         if save || (playing && saved.elapsed() >= SAVE_EVERY) {
-            send_progress(play, &player, false);
+            send_progress(play, player, false);
             saved = Instant::now();
         }
         buffering = (player.state() == State::Buffering).then(|| buffering.unwrap_or_else(Instant::now));
@@ -143,14 +160,33 @@ fn run(play: &Play, source: Source, resume: f64, rx: Receiver<Command>) -> Resul
             cues: player.active_cues().into_iter().cloned().collect::<Vec<Cue>>(),
         };
         // Before the screen hears of it, so the frame it draws already animates.
-        SLOT.set_playing(shown.playing);
+        let animation_changed = SLOT.set_playing(id, playing);
         // A frame shown while paused (after a seek) needs a redraw: the compositor isn't animating.
-        if shown != last || (new_frame && !shown.playing) {
+        if shown != last || animation_changed || (new_frame && !playing) {
             let position = player.position();
             last = shown.clone();
             app.update(move |s, _| s.player_shown(id, shown, position));
         }
     }
+}
+
+/// Drain each wake before doing blocking work. The latest absolute seek replaces earlier
+/// seeks; relative deltas after it add up. Stop discards everything, including track changes.
+fn coalesce(first: Option<Command>, rx: &Receiver<Command>, position: f64) -> Vec<Command> {
+    let mut commands = Vec::new();
+    let mut seek = None;
+    for command in first.into_iter().chain(rx.try_iter()) {
+        match command {
+            Command::Stop => return vec![Command::Stop],
+            Command::Seek(to) => seek = Some(to),
+            Command::SeekBy(by) => seek = Some(seek.unwrap_or(position) + by),
+            other => commands.push(other),
+        }
+    }
+    if let Some(to) = seek {
+        commands.push(Command::Seek(to));
+    }
+    commands
 }
 
 fn log_stats(player: &Player) {
@@ -202,6 +238,9 @@ fn seek(player: &mut Player, to: f64) -> Result<bool, String> {
 fn send_progress(play: &Play, player: &Player, ended: bool) {
     let (position, duration) = (player.position(), player.duration());
     let played = ended || (duration > 0.0 && position >= duration * 0.95);
+    if !played && position < 5.0 && play.resume <= 0.0 {
+        return;
+    }
     let progress = flicks_client::Progress {
         position: if played { 0 } else { (position * 1000.0) as i64 },
         played,
@@ -259,4 +298,26 @@ fn read_subtitles(path: &std::path::Path) -> Result<flicks_subtitle::Track, Stri
         return Err(format!("{name} has no subtitles in it."));
     }
     Ok(track)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn held_arrows_and_scrubbing_do_one_seek_per_wake_and_stop_wins() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..40 {
+            tx.send(Command::SeekBy(10.0)).unwrap();
+        }
+        assert_eq!(coalesce(Some(Command::SeekBy(-10.0)), &rx, 20.0), [Command::Seek(410.0)]);
+        for command in [Command::Seek(100.0), Command::Seek(200.0), Command::SeekBy(-10.0)] {
+            tx.send(command).unwrap();
+        }
+        assert_eq!(coalesce(None, &rx, 0.0), [Command::Seek(190.0)]);
+        for command in [Command::Audio(2), Command::Seek(30.0), Command::Stop, Command::Seek(50.0)] {
+            tx.send(command).unwrap();
+        }
+        assert_eq!(coalesce(Some(Command::SeekBy(10.0)), &rx, 0.0), [Command::Stop]);
+    }
 }

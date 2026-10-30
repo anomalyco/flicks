@@ -158,6 +158,72 @@ fn a_home_row_holds_at_most_60_tiles() {
     assert_eq!(movies.titles.len(), 60);
 }
 
+#[test]
+fn player_switches_video_before_a_slow_open_answers_and_ignores_stale_reports() {
+    let mut s = Flicks::new();
+    s.catalog = fixture::catalog();
+    let (video, switched) = std::sync::mpsc::channel();
+    s.player_video = Some(Box::new(move |id| video.send(id).unwrap()));
+    s.open_player(0);
+    assert_eq!(switched.try_recv().unwrap(), Some(1));
+    s.close_player();
+    assert_eq!(switched.try_recv().unwrap(), None);
+    s.open_player(1);
+    assert_eq!(switched.try_recv().unwrap(), Some(2));
+    let (commands, rx) = std::sync::mpsc::channel();
+    s.player_started(1, Box::new(move |c| commands.send(c).unwrap()));
+    assert_eq!(rx.try_recv().unwrap(), player::Command::Stop);
+    s.player_ended(1);
+    assert!(s.player.is_some());
+    assert!(switched.try_recv().is_err());
+}
+
+#[test]
+fn progress_saves_do_not_retry_failed_artwork_but_refresh_does() {
+    let mut rt = runtime("home");
+    let (tx, rx) = std::sync::mpsc::channel();
+    rt.update(move |s, tx_ui| {
+        s.network = Some(Box::new(move |request| {
+            if let Request::Artwork(_, name) = request {
+                tx.send(name).unwrap();
+            }
+        }));
+        let mut catalog = fixture::catalog();
+        catalog.titles[0].sources[0].item.poster = Some("failed.jpg".into());
+        s.loaded(catalog, None, true, tx_ui);
+    });
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["failed.jpg"]);
+    rt.update(|s, tx| s.progress_saved(Catalog::build(s.catalog.titles.clone()), tx));
+    assert!(rx.try_recv().is_err());
+    rt.update(|s, tx| s.loaded(Catalog::build(s.catalog.titles.clone()), None, true, tx));
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["failed.jpg"]);
+}
+
+#[test]
+fn pointer_activity_while_controls_are_visible_does_not_rebuild() {
+    // No asynchronous logo load: only pointer events can commit in this check.
+    let mut spec = spec();
+    spec.setup = None;
+    let state = rune::tooling::initial_state(&spec, Some("home"));
+    let mut rt =
+        App::new(spec).init(move || state).headless_runtime((1180.0, 760.0), Env { system_dark: true, scale: 2.0 });
+    // Match release: debug builds intentionally re-run live-only views every quarter second.
+    rt.check_live_only(false);
+    rt.frame(0.0);
+    rt.update(|s, _| s.open_player(0));
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    rt.pointer_move(500.0, 300.0);
+    rt.frame(1.0 / 60.0);
+    let commits = rt.stats.commits;
+    for x in 501..520 {
+        rt.pointer_move(x as f32, 300.0);
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.stats.commits, commits);
+}
+
 /// The app on Home with the launch intro, and the cues its sound got.
 fn intro(reduced: bool) -> (Runtime<Flicks>, std::rc::Rc<std::cell::RefCell<Vec<Sound>>>) {
     let cues = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));

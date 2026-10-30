@@ -765,6 +765,8 @@ stats when it stops (`flicks: stopped at …: N decoded, N displayed, N dropped,
 HOME=$TMP/server flicks serve &                     # then folder add, user add, pair
 HOME=$TMP/app flicks connect '<link>'
 HOME=$TMP/app target/release/flicks-desktop --native --trace pacing.jsonl
+```
+
 ## FLK-50 — launch intro pacing (2026-10-30)
 
 Apple M5 Max, macOS 27.2, release profile, code `ea0df52`, Rune `e450c92`. The real app
@@ -802,3 +804,55 @@ HOME=$tmp target/release/flicks-desktop --native --trace pacing.jsonl   # close 
 # Intervals from present_dt_ms after the first frame whose quality.why has "tracks"; CPU from
 # quality.cpu_ms; missed = intervals > 1.5 refresh periods.
 ```
+
+## FLK-6 review fixes — player lifetime, idle and controls (2026-10-30)
+
+Release desktop on macOS, a 60 Hz display, temp server/client homes and the existing TV test
+media read-only. The local server was stopped with SIGSTOP to block its reads, then resumed;
+no other server or app process was stopped. The following are after-fix measurements, not
+before/after CPU comparisons.
+
+| Check | Result |
+|---|---|
+| Back during a blocked network open | Home visible, 0.0% CPU in 5 one-second `top` samples |
+| Paused during playback | 0.0% CPU in 6 samples |
+| Paused from a visible Buffering state | 0.0% CPU at rest in 4 samples; one earlier 0.7% sample while a progress save completed |
+| Unpaused Buffering | 0.3% CPU from the playback thread's existing 4 ms polling; compositor no longer animates |
+| Downloaded episode with server stopped | Resume works; offline 229,763 ms progress appears in Continue Watching |
+| Reconnect by next desktop launch | Server receives exactly 229,763 ms, pending offline record cleared |
+| Queued seeks | 40 queued arrow deltas become one seek; latest absolute target replaces older targets; Stop wins over seeks and track changes (desktop test) |
+
+The real app also accepted 20 successive right-arrow presses and was idle immediately after
+pause. A true held-key test remains unverified: the GUI driver's key calls serialized at about
+one per second, and a separate PID-targeted autorepeat injection did not reach the window.
+No claim of native held-key coverage is made from those attempts.
+
+Native Rune trace (`--native --trace`, without `--frames`, which would keep an idle app drawing):
+**1,749 player present intervals**, p50 **16.667 ms**, p95 **16.668 ms**, max **16.692 ms**,
+**0 missed refreshes** (>25 ms). Window startup/intro are excluded; the interval starts with the
+Play press and ends at the last paused-control frame. Each top/bottom panel had **80 intermediate
+opacity samples** across its entrances/exits. One exit fell from 0.979 to 0.004 over 283 ms,
+rather than unmounting at once. The existing Rune transition path handles reduced motion;
+this native trace used normal motion. See [the real blocked-open screen](images/flk-6-slow-open.png).
+
+### Fixed logo rasterization
+
+Size-optimized release web build (`apps/web/build.sh`, wasm-bindgen 0.2.130), including the
+merged intro and stills changes:
+
+| Build | Shipped wasm bytes |
+|---|---:|
+| Main `8e027c9`, runtime SVGs | 7,506,703 |
+| Fixed 3× PNG lockup and intro pieces, no Rune `svg` | 6,709,110 |
+| Saved | **797,593 (10.6%)** |
+
+Before the intro merge, the same cut measured 7,492,245 → 6,665,903 bytes (826,342 saved).
+The lockfile drops 15 package entries, including the duplicate PNG version. The intro's boxes,
+colors, springs and sound are unchanged; its fixed pieces also needed rasterizing after the
+merge because `ImageCache::svg` otherwise returns an unsupported-feature image at runtime.
+
+Verification: `scripts/check.sh` passed (format, locked workspace Clippy with warnings denied,
+dependency policy, **819 tests/doctests passed, 36 ignored**). Includes 21 UI tests, 3 desktop
+unit tests, the existing eight-scene desktop render test, and the client offline-progress
+sync test against a real server. No private trace, playback screenshot, credentials, downloaded
+media or runtime database is committed.
