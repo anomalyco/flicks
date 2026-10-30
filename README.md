@@ -1,4 +1,4 @@
-# flicks
+<h1><img src="assets/brand/lockup.svg" alt="flicks" height="56"></h1>
 
 A lightweight Plex alternative. Run a Flicks server on a Mac (later Linux and Windows) pointed at your folders; the Flicks app connects to any number of servers and shows them as one library. No account, no paywall, nothing we host: reach a server on your LAN, your tailnet or through a tunnel.
 
