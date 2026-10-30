@@ -6,12 +6,16 @@
 //! unavailable. Progress is newest-wins across servers, written back to the ones behind.
 
 use std::collections::{BTreeMap, HashMap};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use hyper::Method;
-use tokio::task::JoinSet;
-
-use crate::{Client, Connection, Entry, Error, Item, Progress, Server};
+use crate::{Entry, Item, Progress, Server};
+#[cfg(not(target_arch = "wasm32"))]
+use {
+    crate::{Client, Connection, Error},
+    hyper::Method,
+    std::time::Instant,
+    tokio::task::JoinSet,
+};
 
 /// The last catalog each server gave, in the data directory.
 pub const CATALOG_FILE: &str = "catalog.json";
@@ -54,7 +58,8 @@ const CLOCK_SKEW_MS: i64 = 60_000;
 
 /// `progress`, unless it claims to be from the future.
 fn current(progress: Option<Progress>) -> Option<Progress> {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    // `web_time` is std's clock on native, and the browser's on wasm, where std has none.
+    let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
     let limit = i64::try_from(now).unwrap_or(i64::MAX).saturating_add(CLOCK_SKEW_MS);
     progress.filter(|p| p.updated_at <= limit)
 }
@@ -105,6 +110,7 @@ pub fn best_source(title: &Title) -> Option<&Source> {
         .max_by(|a, b| quality(a).cmp(&quality(b)).then(b.latency.cmp(&a.latency)))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Every saved server's catalog, merged.
 pub struct Library {
     pub client: Client,
@@ -113,6 +119,7 @@ pub struct Library {
     connections: HashMap<String, Connection>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Library {
     /// The library as last cached, every source unavailable until [`Library::refresh`].
     pub fn open(client: Client) -> Library {
@@ -196,6 +203,7 @@ impl Library {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn put_progress(connection: &Connection, file: i64, progress: &Progress) -> Result<Option<Progress>, Error> {
     connection.call(Method::PUT, &format!("/progress/{file}"), Some(progress)).await
 }
@@ -204,6 +212,7 @@ fn newest(sources: &[Source]) -> Option<Progress> {
     sources.iter().filter_map(|s| s.progress).max_by_key(|p| p.updated_at)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The cached catalogs by server key; a missing or unreadable cache is empty.
 fn read_cache(client: &Client) -> BTreeMap<String, Vec<Entry>> {
     std::fs::read(client.dir.join(CATALOG_FILE))
@@ -216,7 +225,7 @@ fn read_cache(client: &Client) -> BTreeMap<String, Vec<Entry>> {
 /// unavailable. Matched files go first, so an unmatched copy of a matched title (a server without
 /// a TMDB key) joins it by name, or by name without the year when the copy has none and only one
 /// matched title has that name.
-fn merge(
+pub fn merge(
     servers: &[Server],
     catalogs: &BTreeMap<String, Vec<Entry>>,
     latencies: &HashMap<String, Duration>,
