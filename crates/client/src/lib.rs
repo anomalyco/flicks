@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod auth;
+pub mod download;
 pub mod keys;
 pub mod merge;
 pub mod net;
