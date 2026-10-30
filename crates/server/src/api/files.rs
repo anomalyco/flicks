@@ -51,7 +51,7 @@ fn range(header: &str, size: u64) -> Option<Range> {
 }
 
 /// Recheck containment on every open, and refuse symlinks (including directory components).
-fn open(root: &str, path: &str) -> io::Result<File> {
+pub(super) fn open(root: &str, path: &str) -> io::Result<File> {
     let denied = || io::Error::from(io::ErrorKind::PermissionDenied);
     let root = Path::new(root);
     let path = Path::new(path);

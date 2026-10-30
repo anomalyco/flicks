@@ -206,6 +206,9 @@ where
 {
     let (parts, body) = request.into_parts();
     let path = parts.uri.path();
+    if let Some(reply) = crate::api::hls::signed_url(state, &parts).await {
+        return reply;
+    }
     if parts.method == Method::GET && path == "/info" {
         if !state.limiter.allow() {
             return status(StatusCode::TOO_MANY_REQUESTS);
