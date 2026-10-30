@@ -18,10 +18,7 @@ impl StreamInfo {
         if data.len() > 256 * 1024 || data.first() != Some(&1) {
             return Err(Error::InvalidData("bad or oversized configuration record"));
         }
-        // The existing software SPS parsers have unchecked arithmetic on malformed Exp-Golomb
-        // values. Contain those panics at this safe boundary as well as ordinary parser errors.
-        std::panic::catch_unwind(|| Self::parse_inner(codec, data))
-            .map_err(|_| Error::InvalidData("SPS arithmetic overflow"))?
+        Self::parse_inner(codec, data)
     }
 
     fn parse_inner(codec: Codec, data: &[u8]) -> Result<Self> {
