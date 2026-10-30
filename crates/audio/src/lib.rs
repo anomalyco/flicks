@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Audio for the Flicks player: one canonical channel layout across decoders, the ITU-R BS.775
-//! stereo downmix, resampling to the device rate, and device output (macOS).
+//! stereo downmix, resampling to the device rate, and device output (macOS; elsewhere
+//! [`Output::open`] reports no device).
 //!
 //! Decoders hand over planar f32 in their own channel order; [`layout`] names each order as a
 //! list of [`Channel`]s. [`Output::push`] takes interleaved frames with that list, a rate and a
@@ -11,12 +12,10 @@
 
 pub mod layout;
 pub mod mix;
-#[cfg(target_os = "macos")]
 mod output;
 mod resample;
 
 pub use layout::Channel;
-#[cfg(target_os = "macos")]
 pub use output::Output;
 pub use resample::Resampler;
 
