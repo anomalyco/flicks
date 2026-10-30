@@ -58,6 +58,52 @@ Device keys and signed requests. No passwords, no bearer tokens.
 - **API:** catalog (home rows, libraries, items, search), `/play/{file}` returning the file's facts and byte ranges for header and resume point in one response, byte-range serving, and progress (`PUT /progress/{item}`: position, played, updated-at; newest wins).
 - **CLI:** `flicks serve`, `flicks folder add|rm|ls`, `flicks user add|ls`, `flicks pair`, `flicks device ls|rm`, `flicks status`. On macOS, `flicks service install` writes a launchd agent.
 
+### Catalog API (FLK-11)
+
+All routes below require the normal device signature, including the exact query and `Range`.
+One file is one item: the positive integer ID is the same in `/items`, `/play`, `/files` and
+`/progress`. Paths on the server never appear in these responses. Currently every paired user
+can read every configured folder; per-user folder grants are not implemented yet. Removing a
+folder makes its items inaccessible immediately. Startup awaits table creation, then scans and
+watches in a per-server worker on its own SQLite connection; adding/removing folders wakes it.
+
+| Request | JSON response |
+|---|---|
+| `GET /libraries` | `[{id, name}]` (one configured folder per library) |
+| `GET /items`, `GET /search?q=title` | `[{item, progress}]` |
+| `GET /home` | `{continue_watching: [{item, progress}], recently_added: [{item, progress}]}` |
+| `GET /items/{id}` | `{item, streams, progress}` |
+| `GET /play/{id}` | `{item, streams, keyframes: [{time_ms, offset}], progress, url: "/files/{id}", resume_ms, ranges: {header: [{start, end}], media: {start, end}}}` |
+| `GET /progress` | `[{item: id, progress}]`, only the caller's saved records |
+| `GET /progress/{id}`, `PUT /progress/{id}` | `{position, played, updated_at}` or `null` when not saved |
+
+List routes (`items`, `search`, `home`, `progress`) accept `library=<id>`, `limit` (default 50,
+clamped to 1–200) and `offset` (default 0); for home these apply to each row. Search `q` is
+UTF-8 percent-encoded, with `+` also accepted for a space. Unknown query parameters are 400.
+Items contain `id`, `title`, `year`, `season`, `episode`, `episode_end`, `edition`, `tmdb_id`,
+`tmdb_media`, `poster`, `backdrop`, `added_at` (Unix seconds), `size`, `oshash`, `container`,
+`duration_ms`, `video_codec`, `width`, `height`, `hdr`; unavailable facts are `null`. Artwork
+values are TMDB image paths, not server URLs. Streams are audio/subtitle tracks in file order:
+`{kind, codec, language, title, channels, default, forced}`; video facts are on the item.
+
+Progress PUT takes exactly `{position, played, updated_at}`: nonnegative integer milliseconds
+(position within the media; updated_at since Unix epoch). A strictly newer timestamp wins;
+equal/older updates return the existing value. The signed user selects the record, never a
+request field. The local root key has no user and gets 403 on progress routes. Continue Watching
+means positive position and not played, newest update first; Recently Added means newest scan
+addition first. Missing/removed items return 404.
+
+`/play` is the single **metadata** request before fetching media: header ranges cover MP4's
+actual `ftyp`/`moov` (including tail `moov`) and box headers, or MKV's prefix and SeekHead-referenced
+Info/Tracks/Cues. All byte ends are inclusive. `media` is up to 1 MiB starting at the indexed
+keyframe at/before progress (or the first keyframe when starting over; byte 0 if no index).
+`resume_ms` is the target presentation time; played items restart at 0. Clients fetch the
+listed ranges through signed `GET /files/{id}` and continue requesting media as needed.
+No Range returns streamed 200; one closed, open-ended or suffix byte range returns 206 with
+`Content-Range`, `Content-Length` and `Accept-Ranges: bytes`. Invalid, multiple or unsatisfiable
+ranges return 416 with `Content-Range: bytes */<size>`. Files are streamed in at most 64 KiB
+frames; every open rechecks containment with `library::resolve` and refuses symlinks.
+
 ## App
 
 - **Screens:** Home (Continue Watching, Next Up, Recently Added, libraries), detail, search, player, Add Server (scan QR or paste link), and Server screens for admins (folders, users, devices, pairing).
