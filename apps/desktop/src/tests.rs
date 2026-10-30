@@ -26,20 +26,16 @@ fn shows(rt: &Runtime<Flicks>, text: &str) -> bool {
 }
 
 #[test]
-fn a_shows_episodes_are_one_title_and_home_has_its_rows() {
+fn episodes_group_into_their_show_and_home_has_its_rows() {
     let catalog = fixture::catalog();
-    assert_eq!(catalog.titles.len(), 1);
-    let show = &catalog.titles[0];
-    assert!(show.show);
-    let episodes: Vec<_> = show.media.iter().map(|&m| catalog.media[m].item.episode).collect();
+    let names: Vec<_> = catalog.groups.iter().map(|g| (g.name.as_str(), g.is_show(), g.titles.len())).collect();
+    assert_eq!(names, [("VisionQuest", true, 2), ("Arrival", false, 1)]);
+    let show = &catalog.groups[0];
+    let episodes: Vec<_> = show.titles.iter().map(|&t| catalog.titles[t].item.episode).collect();
     assert_eq!(episodes, [Some(2), Some(6)], "in episode order");
-    let rows: Vec<_> = catalog.rows.iter().map(|r| (r.name.as_str(), r.media.len())).collect();
-    assert_eq!(
-        rows,
-        [("Continue Watching", 1), ("Recently Added", 2), ("TV", 1)],
-        "one tile for the show in its library"
-    );
-    let newest = &catalog.media[catalog.rows[1].media[0]];
+    let rows: Vec<_> = catalog.rows.iter().map(|r| (r.name.as_str(), r.titles.len())).collect();
+    assert_eq!(rows, [("Continue Watching", 1), ("Recently Added", 3), ("TV Shows", 1), ("Movies", 1)]);
+    let newest = &catalog.titles[catalog.rows[1].titles[0]];
     assert_eq!(newest.item.episode, Some(6), "Recently Added is newest first");
 }
 
@@ -53,23 +49,48 @@ fn search_matches_every_word_of_the_title_ignoring_case() {
 }
 
 #[test]
-fn a_tile_opens_its_title_where_play_records_the_episode_and_escape_goes_back() {
+fn a_tile_opens_its_show_where_play_records_the_episode_and_escape_goes_back() {
     let mut rt = runtime("home");
     assert!(shows(&rt, "Recently Added"));
-    let newest = rt.state.catalog.rows[1].media[0];
-    press(&mut rt, &format!("media-{newest}"));
+    let newest = rt.state.catalog.rows[1].titles[0];
+    press(&mut rt, &format!("title-{newest}"));
     assert!(matches!(rt.state.screen, Screen::Detail(_)));
     assert!(shows(&rt, "Episode 2") && shows(&rt, "Episode 6"));
 
     // Play resumes the episode in progress (episode 2), not the tile's.
     press(&mut rt, "play");
-    let resumed = rt.state.catalog.titles[0].media[0];
-    let item = rt.state.catalog.media[resumed].item.id;
+    let resumed = rt.state.catalog.groups[0].titles[0];
+    let item = rt.state.catalog.titles[resumed].item.id;
     assert_eq!(rt.state.play, Some(PlayChoice { server: "fixture".into(), item }));
 
     rt.key(KeyEvent { key: Key::Escape, mods: Mods::default() });
     rt.frame(1.0 / 60.0);
     assert_eq!(rt.state.screen, Screen::Home);
+}
+
+#[test]
+fn a_title_whose_servers_did_not_answer_is_dimmed_and_cannot_play() {
+    let mut rt = runtime("home");
+    let arrival = rt.state.catalog.titles.iter().position(|t| t.item.title == "Arrival").unwrap();
+    let tile = |rt: &Runtime<Flicks>| {
+        rt.elements().into_iter().find(|e| e.key.as_deref() == Some(&format!("title-{arrival}")))
+    };
+    assert!(tile(&rt).unwrap().opacity < 0.5);
+    assert!(shows(&rt, "Offline"));
+
+    press(&mut rt, &format!("title-{arrival}"));
+    assert!(shows(&rt, "Offline: its server didn't answer."));
+    assert!(rt.find("play").is_none());
+
+    // From the cache, before any refresh, nothing is offline yet.
+    rt.update(|s, _| {
+        s.refreshed = false;
+        s.go(Screen::Home);
+    });
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(tile(&rt).unwrap().opacity > 0.99);
 }
 
 #[test]

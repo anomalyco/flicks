@@ -16,20 +16,20 @@ use std::collections::{HashMap, HashSet};
 
 use rune::{App, AppSpec, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, TextEdit, Tx, col, row, spacer, text};
 
-use library::catalog::Catalog;
+use library::catalog::{self, Catalog, GroupKey};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Screen {
     Home,
-    /// A title's page, by [`library::catalog::Title::key`].
-    Detail(String),
+    /// A movie's or show's page.
+    Detail(GroupKey),
     Search,
     AddServer,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Status {
-    /// Reading the catalog.
+    /// Nothing to show yet.
     Loading,
     Ready,
     NoServers,
@@ -52,8 +52,11 @@ pub struct Flicks {
     pub back: Screen,
     pub status: Status,
     pub catalog: Catalog,
-    /// Servers that couldn't be read, one line each.
-    pub errors: Vec<String>,
+    /// The catalog comes from a refresh, not only the cache, so titles whose servers didn't
+    /// answer are offline.
+    pub refreshed: bool,
+    /// Why the last refresh failed.
+    pub error: Option<String>,
     pub query: TextEdit,
     /// Search results, indices into the catalog's media.
     pub results: Vec<usize>,
@@ -75,7 +78,8 @@ impl Flicks {
             back: Screen::Home,
             status: Status::Loading,
             catalog: Catalog::default(),
-            errors: Vec::new(),
+            refreshed: false,
+            error: None,
             query: TextEdit::new(""),
             results: Vec::new(),
             link: TextEdit::new(""),
@@ -129,10 +133,16 @@ impl Flicks {
         }
     }
 
-    pub fn play(&mut self, media: usize) {
-        if let Some(m) = self.catalog.media.get(media) {
-            self.play = Some(PlayChoice { server: m.server.clone(), item: m.item.id });
+    pub fn play(&mut self, title: usize) {
+        let source = self.catalog.titles.get(title).and_then(flicks_client::merge::best_source);
+        if let Some(source) = source {
+            self.play = Some(PlayChoice { server: source.server.clone(), item: source.item.id });
         }
+    }
+
+    /// Whether a title is shown as offline: a refresh found none of its servers.
+    pub fn offline(&self, title: usize) -> bool {
+        self.refreshed && self.catalog.titles.get(title).is_some_and(|t| !t.available())
     }
 
     // Answers from the network thread.
@@ -147,18 +157,24 @@ impl Flicks {
         self.screen = Screen::AddServer;
     }
 
-    fn loaded(&mut self, catalog: Catalog, errors: Vec<String>, tx: &mut Tx) {
-        if self.status == Status::Loading {
-            // The first answer lands still, as part of launch.
+    /// A catalog from the cache (`refreshed` false, at launch) or a refresh.
+    fn loaded(&mut self, catalog: Catalog, error: Option<String>, refreshed: bool, tx: &mut Tx) {
+        if self.status == Status::Loading || !self.refreshed {
+            // The cache and the first refresh land still, as part of launch.
             tx.instant();
         }
+        if refreshed {
+            // Artwork that had no connection before is worth asking for again.
+            self.requested.retain(|key| self.artwork.contains_key(key));
+        }
         self.catalog = catalog;
-        self.errors = errors;
+        self.refreshed = refreshed;
+        self.error = error;
         self.status = Status::Ready;
         self.search_changed();
-        let shown: Vec<usize> = self.catalog.rows.iter().flat_map(|r| r.media.iter().copied()).collect();
-        for m in shown {
-            self.want_poster(m);
+        let shown: Vec<usize> = self.catalog.rows.iter().flat_map(|r| r.titles.iter().copied()).collect();
+        for t in shown {
+            self.want_poster(t);
         }
         if let Screen::Detail(key) = &self.screen {
             let key = key.clone();
@@ -179,27 +195,31 @@ impl Flicks {
     }
 
     fn artwork(&mut self, server: &str, name: &str, bytes: Option<Vec<u8>>) {
-        if let (Some(bytes), Some(images)) = (bytes, &self.images) {
-            self.artwork.insert(artwork_key(server, name), images.load(bytes));
+        let key = artwork_key(server, name);
+        match (bytes, &self.images) {
+            (Some(bytes), Some(images)) => {
+                self.artwork.insert(key, images.load(bytes));
+            }
+            // Not reachable yet: the next refresh asks again.
+            _ => {
+                self.requested.remove(&key);
+            }
         }
     }
 
-    fn want_poster(&mut self, media: usize) {
-        if let Some(m) = self.catalog.media.get(media)
-            && let Some(name) = m.item.poster.clone()
-        {
-            let server = m.server.clone();
+    fn want_poster(&mut self, title: usize) {
+        let Some(source) = self.catalog.titles.get(title).and_then(catalog::source) else { return };
+        if let Some(name) = source.item.poster.clone() {
+            let server = source.server.clone();
             self.want_artwork(server, name);
         }
     }
 
-    fn want_backdrop(&mut self, title: &str) {
-        let Some(m) = self.catalog.title(title).and_then(|t| t.media.first()).and_then(|&m| self.catalog.media.get(m))
-        else {
-            return;
-        };
-        if let Some(name) = m.item.backdrop.clone().or_else(|| m.item.poster.clone()) {
-            let server = m.server.clone();
+    fn want_backdrop(&mut self, group: &GroupKey) {
+        let first = self.catalog.group(group).and_then(|g| g.titles.first().copied());
+        let Some(source) = first.and_then(|t| self.catalog.titles.get(t)).and_then(catalog::source) else { return };
+        if let Some(name) = source.item.backdrop.clone().or_else(|| source.item.poster.clone()) {
+            let server = source.server.clone();
             self.want_artwork(server, name);
         }
     }
@@ -226,8 +246,8 @@ fn view(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
         Screen::AddServer => add_server::view(s),
     };
     let mut page = col().w_full().h_full().fill(style::bg()).child(top_bar(s, cx));
-    for error in &s.errors {
-        let line = format!("Couldn't reach {error}");
+    if let Some(error) = &s.error {
+        let line = format!("Couldn't refresh the library: {error}");
         page = page.child(text(line).font(style::SMALL).color(style::error()).px(style::GUTTER).pb(8.0).truncate());
     }
     page.child(body.w_full().grow(1.0).min_h(0.0))

@@ -8,7 +8,8 @@ use std::f32::consts::PI;
 use rune::{Color, Cursor, El, ScrollSpec, SurfaceFit, col, el, oklch, row, spacer, text, text_input};
 
 use crate::{Flicks, Screen, Status, artwork_key, message, style};
-use catalog::Media;
+use catalog::{episode_label, source, watched};
+use flicks_client::merge::Title;
 
 pub fn home(s: &Flicks) -> El {
     match &s.status {
@@ -22,7 +23,7 @@ pub fn home(s: &Flicks) -> El {
     }
     let mut rows = col().w_full().gap(36.0).pt(12.0).pb(48.0);
     for (i, r) in s.catalog.rows.iter().enumerate() {
-        let tiles: Vec<El> = r.media.iter().map(|&m| tile(s, m, r.titles)).collect();
+        let tiles: Vec<El> = r.titles.iter().map(|&t| tile(s, t, r.groups)).collect();
         rows = rows.child(
             col()
                 .key(format!("row-{i}"))
@@ -40,32 +41,46 @@ fn scrolling(content: El) -> El {
     col().w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).child(content)
 }
 
-/// A poster with its caption. A library row's tile stands for its whole title; the others name
-/// the episode.
-fn tile(s: &Flicks, m: usize, whole_title: bool) -> El {
-    let (Some(media), Some(title)) = (s.catalog.media.get(m), s.catalog.title_for(m)) else { return el() };
-    let (line, sub) = match (whole_title, media.episode_label()) {
-        (false, Some(episode)) => (title.name.clone(), episode),
-        _ if title.show => (title.name.clone(), episodes(title.media.len())),
-        _ => (title.name.clone(), title.year.map(|y| y.to_string()).unwrap_or_default()),
+/// The decoded artwork for a title's poster (or backdrop), once it has arrived.
+fn artwork<'a>(s: &'a Flicks, title: &Title, backdrop: bool) -> Option<&'a rune::Image> {
+    let source = source(title)?;
+    let name = if backdrop {
+        source.item.backdrop.as_ref().or(source.item.poster.as_ref())
+    } else {
+        source.item.poster.as_ref()
     };
-    let poster = media.item.poster.as_ref().and_then(|name| s.artwork.get(&artwork_key(&media.server, name)));
+    s.artwork.get(&artwork_key(&source.server, name?))
+}
+
+/// A poster with its caption. A tile in a TV Shows or Movies row stands for its whole group; the
+/// others name the episode. A title none of whose servers answered is dimmed.
+fn tile(s: &Flicks, t: usize, whole_group: bool) -> El {
+    let (Some(title), Some(group)) = (s.catalog.titles.get(t), s.catalog.group_for(t)) else { return el() };
+    let offline = if whole_group { s.refreshed && !s.catalog.group_available(group) } else { s.offline(t) };
+    let (line, sub) = match (whole_group, episode_label(&title.item)) {
+        _ if offline => (group.name.clone(), "Offline".to_string()),
+        (false, Some(episode)) => (group.name.clone(), episode),
+        _ if group.is_show() => (group.name.clone(), episodes(group.titles.len())),
+        _ => (group.name.clone(), group.year.map(|y| y.to_string()).unwrap_or_default()),
+    };
+    let poster = artwork(s, title, false);
     let art = match poster {
         Some(image) => {
             el().size(style::POSTER_W, style::POSTER_H).radius(6.0).pixels_fit(image.pixels(), SurfaceFit::Fill)
         }
-        None => title_card(&title.name, style::POSTER_W, style::POSTER_H, 18.0),
+        None => title_card(&group.name, style::POSTER_W, style::POSTER_H, 18.0),
     };
     let mut art = art.border(1.0, style::faint());
-    if let Some(watched) = media.watched() {
+    if let Some(watched) = watched(title) {
         let inset = 10.0;
         art = art.child(
             progress_bar(watched).absolute(inset, style::POSTER_H - inset - 3.0).w(style::POSTER_W - 2.0 * inset),
         );
     }
-    let key = title.key.clone();
+    let key = group.key.clone();
     col()
-        .key(format!("media-{m}"))
+        .key(format!("title-{t}"))
+        .opacity(if offline { 0.4 } else { 1.0 })
         .w(style::POSTER_W)
         .gap(4.0)
         .label(format!("{line}, {sub}"))
@@ -107,22 +122,25 @@ fn title_card(name: &str, w: f32, h: f32, size: f32) -> El {
     )
 }
 
-pub fn detail(s: &Flicks, key: &str) -> El {
-    let Some(title) = s.catalog.title(key) else {
+pub fn detail(s: &Flicks, key: &catalog::GroupKey) -> El {
+    let Some(group) = s.catalog.group(key) else {
         return message("Not in your library", "It may have been removed from its server.");
     };
-    let episodes_of: Vec<(usize, &Media)> =
-        title.media.iter().filter_map(|&m| s.catalog.media.get(m).map(|media| (m, media))).collect();
-    let Some(&(first, lead)) = episodes_of.first() else { return message("Not in your library", "") };
-    // Resume the episode in progress, else start at the first.
-    let (next, next_media) =
-        episodes_of.iter().copied().find(|(_, media)| media.watched().is_some()).unwrap_or((first, lead));
+    let titles: Vec<(usize, &Title)> =
+        group.titles.iter().filter_map(|&t| s.catalog.titles.get(t).map(|title| (t, title))).collect();
+    let Some(&(first, lead)) = titles.first() else { return message("Not in your library", "") };
+    // Resume the episode in progress, else start at the first that can play.
+    let (next, next_title) = titles
+        .iter()
+        .copied()
+        .find(|(_, title)| watched(title).is_some())
+        .or_else(|| titles.iter().copied().find(|(t, _)| !s.offline(*t)))
+        .unwrap_or((first, lead));
 
-    let art = lead.item.backdrop.as_ref().or(lead.item.poster.as_ref());
-    let backdrop = match art.and_then(|name| s.artwork.get(&artwork_key(&lead.server, name))) {
+    let backdrop = match artwork(s, lead, true) {
         Some(image) => el().pixels_fit(image.pixels(), SurfaceFit::Fill),
         None => {
-            let (top, bottom) = tint(&title.name);
+            let (top, bottom) = tint(&group.name);
             el().linear_gradient(PI * 0.75, [(0.0, top), (1.0, bottom)])
         }
     };
@@ -133,16 +151,17 @@ pub fn detail(s: &Flicks, key: &str) -> El {
     let scrim_bottom = el().absolute(0.0, 0.0).w_full().h_full().gradient(style::bg().alpha(0.0), style::bg());
 
     let mut facts = Vec::new();
-    facts.extend(title.year.map(|y| y.to_string()));
-    if title.show {
-        facts.push(episodes(title.media.len()));
+    facts.extend(group.year.map(|y| y.to_string()));
+    if group.is_show() {
+        facts.push(episodes(group.titles.len()));
     } else if let Some(ms) = lead.item.duration_ms {
         facts.push(duration(ms));
     }
     facts.extend(quality(&lead.item));
 
-    let play_label = if next_media.watched().is_some() { "Resume" } else { "Play" };
-    let play_label = match (title.show, next_media.episode_label()) {
+    let offline = s.offline(next);
+    let play_label = if watched(next_title).is_some() { "Resume" } else { "Play" };
+    let play_label = match (group.is_show(), episode_label(&next_title.item)) {
         (true, Some(episode)) => format!("{play_label}  {episode}"),
         _ => play_label.to_string(),
     };
@@ -150,10 +169,19 @@ pub fn detail(s: &Flicks, key: &str) -> El {
         .key("detail-info")
         .max_w(640.0)
         .gap(14.0)
-        .child(text(title.name.clone()).key("detail-title").font(style::HERO).color(style::text()).wrap())
-        .child(text(facts.join("  ·  ")).font(style::META).color(style::muted()))
-        .child(play_button(&play_label, next).mt(8.0));
-    if s.play.as_ref().is_some_and(|p| episodes_of.iter().any(|(_, m)| m.server == p.server && m.item.id == p.item)) {
+        .child(text(group.name.clone()).key("detail-title").font(style::HERO).color(style::text()).wrap())
+        .child(text(facts.join("  ·  ")).font(style::META).color(style::muted()));
+    info = if offline {
+        info.child(
+            text("Offline: its server didn't answer.").key("offline").font(style::BODY).color(style::muted()).mt(8.0),
+        )
+    } else {
+        info.child(play_button(&play_label, next).mt(8.0))
+    };
+    let chosen = |title: &Title| {
+        title.sources.iter().any(|src| s.play.as_ref().is_some_and(|p| src.server == p.server && src.item.id == p.item))
+    };
+    if titles.iter().any(|(_, title)| chosen(title)) {
         info = info.child(
             text("Playback comes with the player, which isn't built yet.").font(style::SMALL).color(style::muted()),
         );
@@ -171,15 +199,15 @@ pub fn detail(s: &Flicks, key: &str) -> El {
         .child(info);
 
     let mut page = col().w_full().pb(48.0).child(hero);
-    if title.show {
+    if group.is_show() {
         let mut list = col()
             .key("episodes")
             .w_full()
             .px(style::GUTTER)
             .gap(2.0)
             .child(text("Episodes").font(style::HEADING).color(style::text()).mb(12.0));
-        for &(m, media) in &episodes_of {
-            list = list.child(episode_row(media, m));
+        for &(t, title) in &titles {
+            list = list.child(episode_row(title, t, s.offline(t)));
         }
         page = page.child(list);
     }
@@ -211,41 +239,49 @@ fn play_icon(color: Color, size: f32) -> El {
     el().size(size * 10.0 / 12.0, size).shape(triangle)
 }
 
-fn episode_row(media: &Media, m: usize) -> El {
-    let number = media.item.episode.map(|e| e.to_string()).unwrap_or_default();
-    let name = match (media.item.episode, media.item.episode_end) {
+fn episode_row(title: &Title, t: usize, offline: bool) -> El {
+    let item = &title.item;
+    let number = item.episode.map(|e| e.to_string()).unwrap_or_default();
+    let name = match (item.episode, item.episode_end) {
         (Some(first), Some(last)) if last > first => format!("Episodes {first}–{last}"),
         (Some(episode), _) => format!("Episode {episode}"),
-        _ => media.item.title.clone(),
+        _ => item.title.clone(),
     };
     let mut facts = Vec::new();
-    facts.extend(media.item.season.map(|s| format!("Season {s}")));
-    facts.extend(media.item.duration_ms.map(duration));
-    facts.extend(quality(&media.item));
+    if offline {
+        facts.push("Offline".to_string());
+    }
+    facts.extend(item.season.map(|s| format!("Season {s}")));
+    facts.extend(item.duration_ms.map(duration));
+    facts.extend(quality(item));
     let mut middle = col()
         .grow(1.0)
         .gap(4.0)
         .child(text(name).font(style::TILE.lh(19.0)).color(style::text()))
         .child(text(facts.join("  ·  ")).font(style::SMALL).color(style::muted()));
-    if let Some(watched) = media.watched() {
+    if let Some(watched) = watched(title) {
         middle = middle.child(progress_bar(watched).w(220.0).mt(4.0));
     }
-    row()
-        .key(format!("episode-{m}"))
+    let row = row()
+        .key(format!("episode-{t}"))
+        .opacity(if offline { 0.4 } else { 1.0 })
         .w_full()
         .h(76.0)
         .px(16.0)
         .gap(20.0)
         .center_y()
         .radius(8.0)
-        .hover(style::faint())
-        .cursor(Cursor::Pointer)
-        .focusable(true)
         .child(text(number).font(style::HEADING.lh(24.0)).color(style::muted()).w(28.0))
         .child(middle)
-        .child(spacer())
+        .child(spacer());
+    if offline {
+        return row;
+    }
+    row.hover(style::faint())
+        .cursor(Cursor::Pointer)
+        .focusable(true)
         .child(play_icon(style::text(), 14.0).mr(8.0))
-        .on_press(move |s: &mut Flicks| s.play(m))
+        .on_press(move |s: &mut Flicks| s.play(t))
 }
 
 fn duration(ms: u64) -> String {
@@ -283,7 +319,7 @@ pub fn search(s: &Flicks) -> El {
             .font(style::BODY)
             .color(style::muted())
     } else {
-        let tiles: Vec<El> = s.results.iter().map(|&m| tile(s, m, false)).collect();
+        let tiles: Vec<El> = s.results.iter().map(|&t| tile(s, t, false)).collect();
         row().key("results").w_full().gap(14.0).flex_wrap().children(tiles)
     };
     let content = col()

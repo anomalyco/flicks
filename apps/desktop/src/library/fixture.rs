@@ -1,17 +1,20 @@
-//! A small catalog for headless scenes and tests: the two VisionQuest episodes the test server
-//! serves, one of them half watched.
+//! A small merged library for headless scenes and tests: the two VisionQuest episodes the test
+//! server serves (one half watched), and a movie on a server that didn't answer.
 
-use flicks_client::{Entry, Item, Progress};
+use flicks_client::merge::{Key, Source, Title};
+use flicks_client::{Item, Progress};
 
-use super::catalog::{Catalog, Home, ServerCatalog};
+use super::catalog::Catalog;
 use crate::{Flicks, Screen, Status};
 
 pub const SCENES: &[(&str, fn(&mut Flicks))] = &[
     ("home", |s| ready(s, Screen::Home)),
     ("detail", |s| {
         ready(s, Screen::Home);
-        let key = s.catalog.titles.first().map(|t| t.key.clone()).unwrap_or_default();
-        s.go(Screen::Detail(key));
+        if let Some(group) = s.catalog.groups.iter().find(|g| g.is_show()) {
+            let key = group.key.clone();
+            s.go(Screen::Detail(key));
+        }
     }),
     ("search", |s| {
         ready(s, Screen::Search);
@@ -31,16 +34,26 @@ pub const SCENES: &[(&str, fn(&mut Flicks))] = &[
 fn ready(s: &mut Flicks, screen: Screen) {
     s.catalog = catalog();
     s.status = Status::Ready;
+    s.refreshed = true;
     s.go(screen);
 }
 
 pub fn catalog() -> Catalog {
-    let episode = |id: i64, episode: u16, added_at: i64, minutes: u64| Item {
+    let watched = Progress { position: 20 * 60_000, played: false, updated_at: 1_790_000_000_000 };
+    Catalog::build(vec![
+        title(item(1, "VisionQuest", Some(2), 1_790_000_000, 52), Some(watched), true),
+        title(item(2, "VisionQuest", Some(6), 1_790_000_100, 58), None, true),
+        title(item(3, "Arrival", None, 1_780_000_000, 116), None, false),
+    ])
+}
+
+fn item(id: i64, name: &str, episode: Option<u16>, added_at: i64, minutes: u64) -> Item {
+    Item {
         id,
-        title: "VisionQuest".into(),
-        year: Some(2026),
-        season: Some(1),
-        episode: Some(episode),
+        title: name.into(),
+        year: Some(if episode.is_some() { 2026 } else { 2016 }),
+        season: episode.map(|_| 1),
+        episode,
         episode_end: None,
         edition: None,
         tmdb_id: None,
@@ -56,15 +69,20 @@ pub fn catalog() -> Catalog {
         width: Some(3840),
         height: Some(2160),
         hdr: Some("hdr10".into()),
+    }
+}
+
+fn title(item: Item, progress: Option<Progress>, available: bool) -> Title {
+    let key =
+        Key::Name { title: item.title.to_lowercase(), year: item.year, season: item.season, episode: item.episode };
+    let server = if available { "fixture" } else { "away" };
+    let source = Source {
+        server: server.into(),
+        server_name: server.into(),
+        item: item.clone(),
+        progress,
+        available,
+        latency: None,
     };
-    let watched = Progress { position: 20 * 60_000, played: false, updated_at: 1_790_000_000_000 };
-    let theseus = Entry { item: episode(1, 2, 1_790_000_000, 52), progress: Some(watched) };
-    let deadlock = Entry { item: episode(2, 6, 1_790_000_100, 58), progress: None };
-    let home =
-        Home { continue_watching: vec![theseus.clone()], recently_added: vec![deadlock.clone(), theseus.clone()] };
-    Catalog::build(vec![ServerCatalog {
-        server: "fixture".into(),
-        libraries: vec![("TV".into(), vec![theseus, deadlock])],
-        home,
-    }])
+    Title { key, item, sources: vec![source], progress }
 }

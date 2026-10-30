@@ -1,17 +1,17 @@
-//! The network thread: it owns the client (this device's key and saved servers), and answers the
-//! window's requests by updating its state through the app handle. Nothing here polls; the thread
-//! sleeps on its channel.
+//! The network thread: it owns the merged library (this device's key, saved servers and their
+//! cached catalogs), and answers the window's requests by updating its state through the app
+//! handle. Nothing here polls; the thread sleeps on its channel.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use flicks_client::{Client, Connection};
+use flicks_client::Client;
+use flicks_client::merge::Library;
 use rune::AppHandle;
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::Flicks;
-use crate::library::catalog::{self, Catalog};
+use crate::library::catalog::Catalog;
 
 /// What this device calls itself to a server it pairs with.
 const DEVICE_NAME: &str = "Flicks for Mac";
@@ -20,7 +20,7 @@ const DEVICE_NAME: &str = "Flicks for Mac";
 const ARTWORK_AT_ONCE: usize = 6;
 
 pub enum Request {
-    Load,
+    Refresh,
     Pair(String),
     /// A poster or backdrop: the server key and the artwork name.
     Artwork(String, String),
@@ -36,8 +36,8 @@ impl Worker {
     }
 }
 
-/// Starts the thread; it loads the catalog straight away, or opens Add Server when there are no
-/// servers yet.
+/// Starts the thread. It shows the cached library at once, then refreshes it, or opens Add
+/// Server when there are no servers yet.
 pub fn start(app: AppHandle<Flicks>) -> Worker {
     let (tx, rx) = mpsc::unbounded_channel();
     let spawned = std::thread::Builder::new().name("flicks-network".into()).spawn(move || {
@@ -50,7 +50,7 @@ pub fn start(app: AppHandle<Flicks>) -> Worker {
     if let Err(error) = spawned {
         eprintln!("flicks: couldn't start the network thread: {error}");
     }
-    tx.send(Request::Load).ok();
+    tx.send(Request::Refresh).ok();
     Worker(tx)
 }
 
@@ -58,26 +58,32 @@ async fn serve(app: AppHandle<Flicks>, mut rx: mpsc::UnboundedReceiver<Request>)
     let Some(dir) = data_dir() else {
         return app.update(|s, _| s.failed("no home folder to keep this device's key in".into()));
     };
-    let mut client = match Client::open(&dir) {
+    let client = match Client::open(&dir) {
         Ok(client) => client,
         Err(error) => return app.update(move |s, _| s.failed(format!("couldn't open this device's key: {error}"))),
     };
-    let mut connections: HashMap<String, Arc<Connection>> = HashMap::new();
+    let mut library = Library::open(client);
+    if !library.client.servers.is_empty() {
+        let cached = Catalog::build(library.titles().to_vec());
+        app.update(move |s, tx| s.loaded(cached, None, false, tx));
+    }
     let downloads = Arc::new(Semaphore::new(ARTWORK_AT_ONCE));
     while let Some(request) = rx.recv().await {
         match request {
-            Request::Load if client.servers.is_empty() => app.update(|s, tx| s.no_servers(tx)),
-            Request::Load => load(&app, &mut client, &mut connections).await,
+            Request::Refresh => refresh(&app, &mut library).await,
             Request::Pair(link) => {
-                let paired = client.pair(&link, DEVICE_NAME).await.map(|server| server.name).map_err(|e| e.to_string());
+                let paired = library.client.pair(&link, DEVICE_NAME).await.map(|s| s.name).map_err(|e| e.to_string());
                 let ok = paired.is_ok();
                 app.update(move |s, _| s.paired(paired));
                 if ok {
-                    load(&app, &mut client, &mut connections).await;
+                    refresh(&app, &mut library).await;
                 }
             }
             Request::Artwork(server, name) => {
-                let Some(connection) = connections.get(&server).cloned() else { continue };
+                let Some(connection) = library.connection(&server).cloned() else {
+                    app.update(move |s, _| s.artwork(&server, &name, None));
+                    continue;
+                };
                 let (app, downloads) = (app.clone(), downloads.clone());
                 tokio::spawn(async move {
                     let Ok(_permit) = downloads.acquire().await else { return };
@@ -89,12 +95,13 @@ async fn serve(app: AppHandle<Flicks>, mut rx: mpsc::UnboundedReceiver<Request>)
     }
 }
 
-async fn load(app: &AppHandle<Flicks>, client: &mut Client, connections: &mut HashMap<String, Arc<Connection>>) {
-    let loaded = catalog::load(client).await;
-    connections.extend(loaded.connections);
-    let errors = loaded.errors;
-    let catalog = Catalog::build(loaded.servers);
-    app.update(move |s, tx| s.loaded(catalog, errors, tx));
+async fn refresh(app: &AppHandle<Flicks>, library: &mut Library) {
+    if library.client.servers.is_empty() {
+        return app.update(|s, tx| s.no_servers(tx));
+    }
+    let error = library.refresh().await.err().map(|e| e.to_string());
+    let catalog = Catalog::build(library.titles().to_vec());
+    app.update(move |s, tx| s.loaded(catalog, error, true, tx));
 }
 
 /// Where this device's key and server list live: the same directory the `flicks` CLI uses

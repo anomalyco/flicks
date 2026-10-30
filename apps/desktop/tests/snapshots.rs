@@ -33,13 +33,13 @@ fn rect(element: &Value) -> [f32; 4] {
 fn home_detail_and_search_render_headless() {
     // Each scene: texts it shows, and keyed elements (by prefix) whose box must be drawn.
     let scenes: [(&str, &[&str], &[&str]); 3] = [
-        ("home", &["Continue Watching", "Recently Added", "S1 · E2", "S1 · E6"], &["media-"]),
+        ("home", &["Continue Watching", "Recently Added", "S1 · E2", "S1 · E6"], &["title-"]),
         (
             "detail",
             &["VisionQuest", "2026  ·  2 episodes  ·  4K  ·  HDR", "Resume  S1 · E2", "Episode 2", "Episode 6"],
             &["play"],
         ),
-        ("search", &["S1 · E2", "S1 · E6"], &["media-"]),
+        ("search", &["S1 · E2", "S1 · E6"], &["title-"]),
     ];
     let dir = dir();
     for (scene, texts, drawn) in scenes {
