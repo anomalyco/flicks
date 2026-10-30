@@ -51,7 +51,7 @@ Device keys and signed requests. No passwords, no bearer tokens.
 - **Roles:** admin or viewer, per user. For now every viewer sees every folder; per-user library grants come later.
 - **Folders:** adding one refuses system and secret locations (`/etc`, `~/.ssh`, the Flicks data dir) after resolving the path. On Windows this also covers Windows, Program Files, ProgramData, roaming AppData, and local AppData credential/configuration directories, but not the local Temp directory.
 - **Local CLI:** admin commands on the server machine (`flicks folder`, `user`, `pair`, `device`) talk to the running server at `https://127.0.0.1:7686`, signing with `server.key` itself as the root admin. So there's one process writing the database, and recovery is just running `flicks pair --admin` on that machine. The admin routes live under `/admin/` (the app's Server screens use the same ones); `pair --admin` with no `--user` pairs to a user named `admin`.
-- **Unauthenticated routes:** `/info` and pairing redemption (only while a window is open; otherwise it answers 401 like any unsigned request), both behind one global rate limit (bursts of 20, 10 a second).
+- **Unauthenticated routes:** `/info` and pairing redemption (only while a window is open; otherwise it answers 401 like any unsigned request), and with `flicks serve --web <dir>` the web app's files (an unsigned `GET` for a file in that folder; `/` is `index.html`), all behind one global rate limit (bursts of 20, 10 a second).
 
 ## Server
 
@@ -119,6 +119,8 @@ file up through its library root (not ancestors above that root). Scans skip all
 
 - **Screens:** Home (Continue Watching, Next Up, Recently Added, libraries), detail, search, player, Add Server (scan QR or paste link), and Server screens for admins (folders, users, devices, pairing).
   Home's rows after Continue Watching and Recently Added are TV Shows and Movies of the merged library (a show's episodes are one tile; the merged library has no per-server folders to make rows of). The desktop app shows the cached library at launch, refreshes it off the UI thread, and dims a title whose servers didn't answer the last refresh; it can't be played until one does.
+- **Shared screens** (`ui`): the screens, their state and look, used by the desktop app and the web app; no I/O. Each app answers the screens' requests (refresh, pair, artwork, admin changes) with its own network: the desktop's network thread, the browser's fetches.
+- **Web app** (`apps/web`, FLK-49): the same screens on Rune's web host (WebGPU), served by the server itself (`flicks serve --web`, the folder `apps/web/build.sh` makes), so every request is a same-origin `fetch` to the one server that served the page. Browsers don't trust the server's self-signed certificate, so it's reached through an HTTPS front with a real certificate (a tailnet name, a tunnel, a reverse proxy); the `/info` probe still proves the server behind it. Requests are signed exactly as `client` signs them (its message bytes, `auth::header`), with a non-extractable WebCrypto P-256 key kept in IndexedDB with the paired server; pairing takes a pasted `flicks://pair` link whose key must be this page's server. No playback in the browser yet (that needs CMAF segments and MSE).
 - **Client core** (`client`): server list, keys and request signing (shared with the server and its local CLI), address racing (see "Reaching a server"), catalog merge across servers, progress merge (newest wins, written back to servers that are behind).
 - **Merged library** (`client::merge`, FLK-40): files are one title when TMDB matches (a movie's id; a series id with season and episode), otherwise by parsed title, year, season and episode; an unmatched copy joins a matched title of the same name. The source to play is on a server that answered, then has the most pixels, then the largest file, then the lowest probe latency. Each server's last catalog is cached in `catalog.json` in the data directory, so a server that doesn't answer keeps its titles, unavailable. Every server is refreshed at once, so servers that don't answer cost one connect timeout together.
 - **Player** (`player`): reads byte ranges from a server (with prefetch) or a local file; demuxes with `container`; decodes video with hardware first (VideoToolbox on macOS) and our software decoders as fallback; decodes audio with ours; audio is the master clock; frames are drawn by `gpu`.
@@ -136,13 +138,15 @@ file up through its library root (not ancestors above that root). Scans skip all
 | `library` | Scanner, probe, OSHash, catalog in SQLite |
 | `metadata` | Filename parser, TMDB matching, artwork |
 | `server` | HTTPS, auth, pairing, API, CLI (`flicks` binary) |
-| `client` | Server list, signing, address racing, merge |
+| `client` | Server list, signing, address racing, merge (keys, messages and merge also build for wasm) |
+| `ui` | The app's screens (Rune), shared by `apps/desktop` and `apps/web` |
 | `platform` | OS hardware decode (the only crate with `unsafe`, with `gpu` and later `ffi`) |
 | `gpu` | wgpu video renderer |
 | `audio` | Channel layout, downmix, resample, output |
 | `player` | Playback engine |
 | `subtitle` | Subtitle parsing and layout |
-| `apps/desktop` | The Rune app |
+| `apps/desktop` | The Rune app on macOS (later Linux, Windows): the `ui` screens in a window |
+| `apps/web` | The same screens in the browser, served by the server |
 | `core`, `net`, `store` | Deadbolt's signed membership, iroh sync and encrypted storage. Not used by the server or app yet; kept for profiles across servers and iroh later |
 
 ## Open questions
