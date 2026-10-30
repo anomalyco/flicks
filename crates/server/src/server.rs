@@ -212,7 +212,10 @@ where
 {
     let (parts, body) = request.into_parts();
     let path = parts.uri.path();
-    if let Some(reply) = crate::api::hls::signed_url(state, &parts).await {
+    if let Some(mut reply) = crate::api::hls::signed_url(state, &parts).await {
+        if reply.status() == StatusCode::UNAUTHORIZED && !state.limiter.allow() {
+            *reply.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+        }
         return reply;
     }
     if parts.method == Method::GET && path == "/info" {

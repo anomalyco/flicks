@@ -22,6 +22,41 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hls_forged_tokens_never_wait_for_database_and_are_rate_limited() {
+    let server = start("hls-forgery").await;
+    let (release, blocked) = std::sync::mpsc::channel();
+    let (ready, entered) = tokio::sync::oneshot::channel();
+    let db = server.state.db.clone();
+    let job = tokio::spawn(async move {
+        db.call(move |_| {
+            ready.send(()).unwrap();
+            blocked.recv().unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    });
+    entered.await.unwrap();
+    let path = format!(
+        "/hls/1/master.m3u8?token=1.{}.{}.{}",
+        flicks_server::unix_now() + 300,
+        keys::encode(&[7; 16]),
+        keys::encode(&[0; 32])
+    );
+    let outcome = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+        for i in 0..25 {
+            let reply = server::handle(&server.state, get(&path)).await;
+            assert_eq!(reply.status(), if i < 20 { StatusCode::UNAUTHORIZED } else { StatusCode::TOO_MANY_REQUESTS });
+            assert_eq!(reply.headers()["referrer-policy"], "no-referrer");
+        }
+    })
+    .await;
+    release.send(()).unwrap();
+    job.await.unwrap();
+    outcome.expect("forged tokens must not queue behind the database");
+}
+
 /// Real HTTPS HLS oracle, including native-player grants (the oracle cannot sign
 /// individual requests). FLICKS_HLS_MEDIA optionally supplies read-only real media.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
