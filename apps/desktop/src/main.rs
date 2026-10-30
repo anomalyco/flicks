@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod admin;
+mod player;
 mod worker;
 
 use rune::App;
@@ -17,7 +18,7 @@ const ICON: &[u8] = include_bytes!("../../../assets/brand/app-icon.png");
 
 fn main() {
     rune::prewarm_gpu();
-    let app = App::new(flicks_ui::spec());
+    let app = App::new(flicks_ui::spec()).compositor(player::video::Video::default());
     let handle = app.handle();
     // The network starts after the first frame, so launch draws at once.
     app.on_ready(move |_| {

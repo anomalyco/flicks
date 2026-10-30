@@ -376,14 +376,6 @@ pub fn detail(s: &Flicks, key: &catalog::GroupKey) -> El {
     } else {
         info.child(play_button(&play_label, next).mt(10.0))
     };
-    let chosen = |title: &Title| {
-        title.sources.iter().any(|src| s.play.as_ref().is_some_and(|p| src.server == p.server && src.item.id == p.item))
-    };
-    if titles.iter().any(|(_, title)| chosen(title)) {
-        info = info.child(
-            text("Playback comes with the player, which isn't built yet.").font(style::SMALL).color(style::muted()),
-        );
-    }
     // The backdrop, sharp at the top and fading into the same picture blurred behind the page.
     let hero = col()
         .key("detail-hero")
