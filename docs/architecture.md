@@ -36,13 +36,13 @@ Device keys and signed requests. No passwords, no bearer tokens.
 
 ### Pairing
 
-1. The admin runs `flicks pair --user <name> [--admin]` (or Add Device in the app). It opens a 5-minute pairing window and prints a QR code and a link containing the server key, a 128-bit one-time code and the server's addresses. While no window is open, the pairing route answers nothing.
+1. The admin runs `flicks pair --user <name> [--admin] [--addr host:port]…` (or Add Device in the app). It opens a 5-minute pairing window and prints a QR code and a link containing the server key, a 128-bit one-time code and the server's addresses (its interface addresses, then any `--addr` tunnel or tailnet names). While no window is open, the pairing route answers nothing.
 2. The app creates its device key (P-256, in a `client.key` file, mode 0600) and sends, to every address at once: its public key and name, and `HMAC(HKDF(salt = "flicks pair v1" ‖ server key, ikm = code), transcript)`, signed with its device key. The code itself never travels, so whoever relays the request can't reuse it.
-3. The server checks the HMAC and signature, adds the device to its `devices` table under that user, and answers with its own signature over `flicks-pair-ok-v1\0` and the transcript. Redeeming twice with the same device key is a no-op; any other key gets "used".
+3. The server checks the HMAC and signature, adds the device to its `devices` table under that user, and answers with its own signature over `flicks-pair-ok-v1\0`, the transcript, the user's name and the admin flag. Redeeming twice with the same device key is a no-op; any other key gets "used".
 
 ### Every request
 
-`Authorization: Flicks <device key id> <timestamp> <nonce> <signature>`, signing `flicks-req-v1\0`, then length-prefixed server key, method, path and query, and Range, then SHA-256(body), timestamp and nonce. The server checks, in order: the device exists and isn't removed, the timestamp is within 60 s, the nonce is new, then reads at most 64 KiB of body and verifies. Byte-range requests for media are signed the same way. The device key id is the device's public key itself (base64url), the timestamp is Unix seconds, the nonce 16 random bytes; the exact byte layouts of this and the pairing messages are in `crates/server/src/auth.rs` and `pair.rs`.
+`Authorization: Flicks <device key id> <timestamp> <nonce> <signature>`, signing `flicks-req-v1\0`, then length-prefixed server key, method, path and query, and Range, then SHA-256(body), timestamp and nonce. The server checks, cheapest first: one `Authorization` and at most one `Range` header, the timestamp is within 60 s, the nonce is new, the key is a P-256 point, the device exists and isn't removed, then reads at most 64 KiB of body (within 10 s) and verifies. Byte-range requests for media are signed the same way. The device key id is the device's public key itself (base64url), the timestamp is Unix seconds, the nonce 16 random bytes; the exact byte layouts of this and the pairing messages are in `crates/server/src/auth.rs` and `pair.rs`.
 
 - **Removing a device** (`flicks device rm`) takes effect on its next request.
 - **Roles:** admin or viewer, per user; viewers see only the libraries their user is given.
