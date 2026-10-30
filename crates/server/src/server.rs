@@ -2,7 +2,8 @@
 //!
 //! Two routes answer without a signature, both behind one global rate limit: `GET /info?probe=`
 //! and, only while a pairing window is open, `POST /pair/redeem`. Everything else is a signed
-//! request: the server's own admin routes under `/admin/`, then [`crate::api`].
+//! request: the server's own admin routes under `/admin/`, then [`crate::api`]. With `--web`,
+//! an unsigned `GET` for one of the web app's files gets it ([`crate::web`]), behind the same limit.
 
 use std::convert::Infallible;
 use std::net::{Ipv6Addr, SocketAddr};
@@ -57,6 +58,8 @@ pub struct State {
     pub port: u16,
     pub nonces: auth::Nonces,
     pub pairing: tokio::sync::Mutex<Option<pair::Window>>,
+    /// The web app's folder (`flicks serve --web`), served at `/`.
+    pub web: Option<PathBuf>,
     limiter: Limiter,
 }
 
@@ -76,6 +79,7 @@ impl State {
             port,
             nonces: auth::Nonces::default(),
             pairing: tokio::sync::Mutex::new(None),
+            web: None,
             limiter: Limiter::new(),
         })
     }
@@ -111,8 +115,9 @@ fn create_private_dir(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// `flicks serve`: listens on port 7686 on every address until Ctrl-C, called `name` if given.
-pub async fn serve(data_dir: &Path, name: Option<String>) -> Result<(), Error> {
+/// `flicks serve`: listens on port 7686 on every address until Ctrl-C, called `name` if given,
+/// serving the web app from `web` if given.
+pub async fn serve(data_dir: &Path, name: Option<String>, web: Option<PathBuf>) -> Result<(), Error> {
     if name.as_deref().is_some_and(|name| !pair::valid_name(name)) {
         return Err(Error::Usage("--name is 1 to 64 bytes, without control characters or surrounding spaces"));
     }
@@ -137,6 +142,7 @@ pub async fn serve(data_dir: &Path, name: Option<String>) -> Result<(), Error> {
     if let Some(name) = name {
         state.name = name;
     }
+    state.web = web;
     let state = Arc::new(state);
     crate::api::start(&state).await?;
     println!(
@@ -211,6 +217,15 @@ where
             return status(StatusCode::TOO_MANY_REQUESTS);
         }
         return info(state, parts.uri.query());
+    }
+    if parts.method == Method::GET
+        && !parts.headers.contains_key(AUTHORIZATION)
+        && let Some(file) = state.web.as_deref().and_then(|dir| crate::web::find(dir, path))
+    {
+        if !state.limiter.allow() {
+            return status(StatusCode::TOO_MANY_REQUESTS);
+        }
+        return crate::web::serve(&file).await;
     }
     // While no window is open the pairing route is like any other: it wants a signature.
     if parts.method == Method::POST && path == "/pair/redeem" && pairing_open(state).await {
