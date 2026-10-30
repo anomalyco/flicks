@@ -1,6 +1,6 @@
 [package]
 name = "flicks-desktop"
-description = "Flicks for macOS (Rune): the flicks-ui screens in a window, then the player and Server screens."
+description = "Flicks for macOS (Rune): the flicks-ui screens (library and Server screens) in a window, then the player."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

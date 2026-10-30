@@ -12,4 +12,6 @@ workspace = true
 
 [dependencies]
 flicks-client = { path = "../client" }
+qrcode = { version = "0.14.1", default-features = false }
 rune = { git = "https://github.com/anomalyco/rune", rev = "e450c92b26a6bf4a85304f6ee4a2fe5d55db617b", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }

@@ -7,6 +7,8 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod auth;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod download;
 pub mod keys;
 pub mod merge;
 #[cfg(not(target_arch = "wasm32"))]

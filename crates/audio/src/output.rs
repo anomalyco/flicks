@@ -41,6 +41,8 @@ struct Queue {
     /// From the last callback that handed over frames: the frame index heard at that stream time
     /// (seconds).
     clock: Option<(u64, f64)>,
+    /// Stream time at pause; the device's stream clock itself keeps ticking.
+    paused_at: Option<f64>,
     /// The latest device frame [`Queue::position`] reported. After an underrun the refilled
     /// frames are heard only a latency after their callback, and the clock must not step back.
     heard: f64,
@@ -53,6 +55,10 @@ impl Queue {
     /// `playback` is the stream time (seconds) at which `data`'s first frame is heard.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn fill(&mut self, data: &mut [f32], channels: usize, playback: f64, latency: Duration) {
+        if self.paused_at.is_some() {
+            data.fill(0.0);
+            return;
+        }
         let n = data.len().min(self.samples.len()) / channels * channels;
         let (head, tail) = data.split_at_mut(n);
         for (d, s) in head.iter_mut().zip(self.samples.drain(..n)) {
@@ -82,12 +88,25 @@ impl Queue {
     /// Source time heard at stream time `now` (seconds); never earlier than the last report.
     fn position(&mut self, now: f64, rate: u32) -> Option<f64> {
         let (frame, at) = self.clock?;
+        let now = self.paused_at.unwrap_or(now);
         // Between callbacks the device clock advances at the device rate; it stops at the last
         // frame handed over (an underrun or the end).
         let speaker = (frame as f64 + (now - at) * rate as f64).min(self.played as f64).max(self.heard);
         self.heard = speaker;
         let (start, pts) = self.segments.iter().rev().find(|s| s.0 <= speaker)?;
         Some(pts + (speaker - start) / rate as f64)
+    }
+
+    fn pause(&mut self, now: f64) {
+        self.paused_at.get_or_insert(now);
+    }
+
+    fn play(&mut self, now: f64) {
+        if let Some(paused) = self.paused_at.take()
+            && let Some((_, at)) = &mut self.clock
+        {
+            *at += now - paused;
+        }
     }
 
     /// Duration of the frames not yet handed to the device.
@@ -194,12 +213,16 @@ impl Output {
 
     /// Stops the device; queued audio and the clock hold until [`Output::play`].
     pub fn pause(&self) -> Result<(), Error> {
-        self.stream.pause()
+        self.stream.pause()?;
+        self.shared.lock().map_err(|_| Error::Format("output queue poisoned"))?.pause(self.stream.now());
+        Ok(())
     }
 
     /// Restarts the device after [`Output::pause`] (it starts playing on open).
     pub fn play(&self) -> Result<(), Error> {
-        self.stream.play()
+        self.stream.play()?;
+        self.shared.lock().map_err(|_| Error::Format("output queue poisoned"))?.play(self.stream.now());
+        Ok(())
     }
 
     /// Drops everything queued, the clock and the resampler state (for a seek); the next push
@@ -348,6 +371,38 @@ mod tests {
             t += 0.001;
         }
         assert!((last - 5.045).abs() < 1e-9, "end position {last}");
+    }
+
+    #[test]
+    fn pause_freezes_position_until_play() {
+        let mut q = Queue::default();
+        push(&mut q, 5.0, 100);
+        callback(&mut q, 0.0);
+        let paused = q.position(0.009, RATE).unwrap();
+        assert!((paused - 5.004).abs() < 1e-9);
+        q.pause(0.009);
+        for now in [0.010, 0.015, 0.1, 1.0] {
+            callback(&mut q, now); // An in-flight callback must not drain the paused queue.
+            assert_eq!(q.position(now, RATE), Some(paused));
+            q.pause(now); // Repeated pause is idempotent.
+        }
+        assert_eq!(q.queued(1, RATE), Duration::from_millis(90));
+        q.play(1.0);
+        assert_eq!(q.position(1.0, RATE), Some(paused));
+        assert!((q.position(1.002, RATE).unwrap() - (paused + 0.002)).abs() < 1e-9);
+        q.play(1.002); // Repeated play does not shift the clock.
+        callback(&mut q, 1.005);
+        assert!((q.position(1.012, RATE).unwrap() - 5.012).abs() < 1e-9);
+
+        q.pause(1.012);
+        q.clear(); // A paused seek must stay paused, including before the first callback.
+        push(&mut q, 3.0, 20);
+        callback(&mut q, 2.0);
+        assert_eq!(q.position(2.0, RATE), None);
+        assert_eq!(q.queued(1, RATE), Duration::from_millis(20));
+        q.play(2.0);
+        callback(&mut q, 2.0);
+        assert!((q.position(2.009, RATE).unwrap() - 3.004).abs() < 1e-9);
     }
 
     #[test]

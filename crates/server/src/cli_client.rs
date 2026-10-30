@@ -1,10 +1,11 @@
-//! Client commands (`flicks connect`, `ls`, `get`): this machine as a device of other servers,
+//! Client commands (`flicks connect`, `ls`, `get`, `download`, `downloads`): this machine as a device of other servers,
 //! through `flicks_client`, keeping `client.key`, `servers.json` and `catalog.json` in the Flicks
 //! data directory.
 
 use std::io::Write;
 use std::path::PathBuf;
 
+use flicks_client::download::{Download, Downloads, State};
 use flicks_client::merge::{self, Library, Source};
 use flicks_client::{Client, Connection, Item, MAX_READ, Server};
 use hyper::Method;
@@ -35,6 +36,30 @@ pub enum Command {
         #[arg(short, long)]
         out: Option<PathBuf>,
         /// The server's name or key (needed when several are paired; see `flicks ls`).
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Download a file (id from `flicks ls`) to this machine, or continue an earlier attempt from
+    /// the bytes already on disk.
+    Download {
+        id: i64,
+        /// The server's name or key (needed when several are paired; see `flicks ls`).
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// List downloads and their state.
+    Downloads {
+        #[command(subcommand)]
+        command: Option<DownloadsCommand>,
+    },
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum DownloadsCommand {
+    /// Cancel and delete a download.
+    Rm {
+        id: i64,
+        /// The server's name or key (needed when several have that id).
         #[arg(long)]
         server: Option<String>,
     },
@@ -72,18 +97,106 @@ pub async fn run(command: Command) -> Result<(), Error> {
             };
             get(&connection, id, start, end, &mut out).await?;
         }
+        Command::Download { id, server } => download(&mut client, id, server.as_deref()).await?,
+        Command::Downloads { command: None } => list_downloads(&Downloads::open(&crate::data_dir()?)?),
+        Command::Downloads { command: Some(DownloadsCommand::Rm { id, server }) } => {
+            let downloads = Downloads::open(&crate::data_dir()?)?;
+            let mut found = downloads.list();
+            found.retain(|d| d.item.id == id && server.as_ref().is_none_or(|s| d.server_name == *s || d.server == *s));
+            let [found] = found.as_slice() else {
+                return Err(Error::Usage("no download has that id, or several do (say which with --server)"));
+            };
+            downloads.remove(&found.server, id).await?;
+            println!("Deleted {}.", describe(&found.item));
+        }
     }
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct Detail {
+    item: Item,
+}
+
+/// Downloads file `id` and waits for it, showing progress. Ctrl-C leaves the partial file, which
+/// running this again continues.
+async fn download(client: &mut Client, id: i64, server: Option<&str>) -> Result<(), Error> {
+    let server = pick(&client.servers, server)?.clone();
+    let connection = client.connect(&server.key).await?;
+    let detail: Detail = connection.call(Method::GET, &format!("/items/{id}"), None::<&()>).await?;
+    let source = Source {
+        server: server.key.clone(),
+        server_name: server.name.clone(),
+        item: detail.item,
+        progress: None,
+        available: true,
+        latency: None,
+    };
+    let downloads = Downloads::open(&crate::data_dir()?)?;
+    let started = std::time::Instant::now();
+    downloads.start(&connection, &source)?;
+    loop {
+        let Some(now) = downloads.get(&server.key, id) else { return Err(Error::Usage("the download disappeared")) };
+        match now.state {
+            State::Complete => {
+                let path = downloads.local_file(&server.key, id);
+                println!(
+                    "\r{} downloaded in {:.1?}: {}",
+                    describe(&now.item),
+                    started.elapsed(),
+                    path.map_or_else(String::new, |p| p.display().to_string())
+                );
+                return Ok(());
+            }
+            State::Failed(why) => return Err(std::io::Error::other(why).into()),
+            State::Paused => return Err(Error::Usage("the download stopped")),
+            State::Downloading => {
+                print!("\r{}  {}   ", describe(&now.item), progress(&now));
+                std::io::stdout().flush()?;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+fn list_downloads(downloads: &Downloads) {
+    let list = downloads.list();
+    if list.is_empty() {
+        println!("No downloads. Start one with `flicks download <id>` (ids from `flicks ls`).");
+    }
+    for d in list {
+        let state = match &d.state {
+            State::Downloading => format!("downloading {}", progress(&d)),
+            State::Paused => format!("paused {}", progress(&d)),
+            State::Complete => "complete".to_string(),
+            State::Failed(why) => format!("failed ({why}) {}", progress(&d)),
+        };
+        println!("{:>6}  {}  {}  {state}", d.item.id, d.server_name, describe(&d.item));
+    }
+}
+
+/// `12.3 / 456.7 MB (3%)`.
+fn progress(d: &Download) -> String {
+    let percent = (d.done * 100).checked_div(d.item.size).unwrap_or(100);
+    format!("{:.1} / {:.1} MB ({percent}%)", d.done as f64 / 1e6, d.item.size as f64 / 1e6)
+}
+
+/// `Title (2020) S01E02`.
+fn describe(item: &Item) -> String {
+    let mut name = item.title.clone();
+    if let Some(year) = item.year {
+        name.push_str(&format!(" ({year})"));
+    }
+    if let (Some(season), Some(episode)) = (item.season, item.episode) {
+        name.push_str(&format!(" S{season:02}E{episode:02}"));
+    }
+    name
 }
 
 /// Writes bytes `start..=end` of file `id` to `out`, one request per [`MAX_READ`] bytes. The range
 /// is clamped to the file's size, which `/items/{id}` gives first, so a range running past the end
 /// stops there without asking for bytes that aren't there.
 pub async fn get(connection: &Connection, id: i64, start: u64, end: u64, out: &mut dyn Write) -> Result<(), Error> {
-    #[derive(serde::Deserialize)]
-    struct Detail {
-        item: Item,
-    }
     let detail: Detail = connection.call(Method::GET, &format!("/items/{id}"), None::<&()>).await?;
     let Some(end) = detail.item.size.checked_sub(1).map(|last| end.min(last)).filter(|end| start <= *end) else {
         return Err(Error::Usage("--range starts past the end of the file"));
@@ -134,6 +247,8 @@ async fn ls(client: &mut Client, server: &Server) {
 
 async fn ls_merged(mut library: Library) -> Result<(), Error> {
     library.refresh().await?;
+    // Progress made offline on downloaded titles goes to the servers that answered.
+    Downloads::open(&crate::data_dir()?)?.sync(&library).await?;
     for server in &library.client.servers {
         let header = format!("{} ({}, {})", server.name, server.user, role(server));
         match library.connection(&server.key) {

@@ -1675,7 +1675,9 @@ name = "flicks-ui"
 version = "0.0.0"
 dependencies = [
  "flicks-client",
+ "qrcode",
  "rune",
+ "serde",
 ]
 
 [[package]]

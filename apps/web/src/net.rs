@@ -67,6 +67,8 @@ impl Net {
                     };
                     app.update(move |s, _| s.artwork(&key, &name, bytes));
                 }
+                // The Server screens aren't on the web yet: no server is listed for them.
+                Request::Admin(..) => {}
             }
         });
     }

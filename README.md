@@ -48,6 +48,10 @@ The Rune app's Home and title pages, against a local server holding two test epi
 
 ![Flicks title page](docs/images/m2-detail.png)
 
+Server screens, shown on servers where this device is an admin (folders, users, devices, and Add Device with a pairing QR):
+
+![Flicks server screens](docs/images/m2-server.png)
+
 ### Milestone 3: several servers, one library
 
 Two servers holding overlapping episodes, merged into one library on a client; `*` marks the copy that would play, and a stopped server's titles stay listed from its last catalog:

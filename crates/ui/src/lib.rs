@@ -7,6 +7,7 @@
 
 mod add_server;
 pub mod library;
+pub mod server;
 mod style;
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,8 @@ pub enum Screen {
     Detail(GroupKey),
     Search,
     AddServer,
+    Servers,
+    Server(String, server::Tab),
 }
 
 #[derive(Debug, PartialEq)]
@@ -50,6 +53,8 @@ pub enum Request {
     Pair(String),
     /// A poster or backdrop: the server key and the artwork name.
     Artwork(String, String),
+    /// A change on a server's admin routes: its key and the change.
+    Admin(String, server::Op),
 }
 
 /// The most posters and backdrops kept in memory (about 1 MB each, decoded).
@@ -73,6 +78,7 @@ pub struct Flicks {
     pub pairing: bool,
     pub pair_error: Option<String>,
     pub play: Option<PlayChoice>,
+    pub servers: server::Servers,
     /// Decoded artwork by `<server key>/<name>`.
     pub artwork: HashMap<String, Image>,
     requested: HashSet<String>,
@@ -96,6 +102,7 @@ impl Flicks {
             pairing: false,
             pair_error: None,
             play: None,
+            servers: server::Servers::default(),
             artwork: HashMap::new(),
             requested: HashSet::new(),
             images: None,
@@ -254,6 +261,8 @@ fn view(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
         Screen::Detail(key) => library::detail(s, key),
         Screen::Search => library::search(s),
         Screen::AddServer => add_server::view(s),
+        Screen::Servers => server::list(s),
+        Screen::Server(key, tab) => server::view(s, key, *tab),
     };
     let mut page = col().w_full().h_full().fill(style::bg()).child(top_bar(s, cx));
     if let Some(error) = &s.error {
@@ -275,9 +284,11 @@ fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
             .radius(6.0)
             .hover(style::faint())
             .cursor(Cursor::Pointer)
+            .focusable(true)
             .on_press(move |s: &mut Flicks| s.go(screen.clone()))
     };
     let left = (cx.titlebar_inset() + 16.0).max(style::GUTTER);
+    let servers = s.servers.any_admin().then(|| nav("Servers", "nav-servers", Screen::Servers));
     row()
         .key("top-bar")
         .w_full()
@@ -291,6 +302,7 @@ fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
         .child(nav("Home", "nav-home", Screen::Home))
         .child(nav("Search", "nav-search", Screen::Search))
         .child(spacer())
+        .children(servers)
         .child(nav("Add Server", "nav-add-server", Screen::AddServer))
 }
 
