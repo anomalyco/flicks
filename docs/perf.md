@@ -312,3 +312,81 @@ Clippy with warnings denied, the dependency policy, **731 tests/doctests** (26
 existing or benchmark ignores). Linux all-target Clippy cross-check passed; Linux
 returns `Unsupported` rather than linking Apple frameworks. No Linux runtime or
 M1 hardware test was performed.
+## FLK-5 — player integration and acceptance gap (2026-10-30)
+
+Apple M5 Max, macOS, release Rust builds, generated media through `flicks-testkit`'s
+external ffmpeg. **Handed off for app integration, not a completed two-hour acceptance
+claim.** The normal `scripts/check.sh` gate passes at player commit `168736c`.
+
+### Current engine (`168736c`)
+
+Hardware frames retain their IOSurface and visible crop; no CPU crop copy is needed.
+Audio uses `Output::position()` directly because that API already accounts for device
+latency, queues about 300 ms, and preserves queued audio across pause/resume. The null
+sink decodes all audio and advances a caller-driven clock only through buffered audio.
+
+| Check | Result |
+|---|---|
+| Two independent 1080p H.264 players, 60 seconds wall-clock paced, 120 Hz caller, null sinks | 1,440 frames displayed each; **0 drops**, maximum release A/V offset **6.053 ms** |
+| Display call cost in that run | p50 **2.167 µs**, p99 **1.383 ms**, maximum **5.420 ms** |
+| Maximum caller scheduling gap in that run | **13.472 ms** |
+| Real CoreAudio output, 3-second H.264/AAC MP4, including 100 ms pause/resume | **72/72** displayed, **0 drops**, maximum release A/V offset **5.328 ms**; clock reached 3.000 s |
+| Normal player tests | **6 pass**: software codecs/audio layouts, seek/pause, track/subtitle selection (including indexed cues spanning a seek), fallback replay/drop counting, hostile/truncated files, signed TLS read-ahead/seek and verified download playback after stopping the server runtime |
+
+The 60-second run used the first minute of the generated two-hour MP4 below. The
+caller feeds owned frames into the void, not a window/GPU pass. Timing measures release
+against the audio clock, not compositor presentation latency or an acoustic loopback.
+
+### Earlier measurements (before the crop API was available)
+
+Player `71afe9c` and its test-harness follow-up `e541e7a` copied cropped hardware buffers
+to CPU planes. These numbers are retained as the baseline, not substituted for current
+long-run evidence:
+
+| Generated file, 24 fps, AAC stereo | Wall-clock paced playback | Maximum A/V offset | Local seek including first display frame, three seeks |
+|---|---|---:|---:|
+| 1080p H.264 MKV, 10 s | 240 displayed, 0 dropped | 1.392 ms | 10.5–11.7 ms |
+| 1080p H.264 MP4, 10 s | 240 displayed, 0 dropped | 1.045 ms | 11.3–12.0 ms |
+| 4K HEVC Main10 MKV, 10 s | 240 displayed, 0 dropped | 1.371 ms | 26.5–28.3 ms |
+| 4K HEVC Main10 MP4, 10 s | 240 displayed, 0 dropped | 1.068 ms | 25.8–26.6 ms |
+
+- Local Flicks server, real pairing and signed HTTPS range reads: four 1080p MP4 seeks
+  including first frame **20–24 ms**. Background read-ahead is bounded to 8 MiB, in
+  256 KiB ranges, invalidated on seek. Not a physical LAN measurement.
+- One supplied 1080p H.264/AAC episode, read-only: first ten media seconds decoded in
+  **112 ms** with a driven clock and zero dropped frames; seeks to 60/600/120 seconds
+  including first display frame **18.3 / 31.0 / 30.5 ms**. This was not paced playback.
+- 4K HEVC Main10 software path: **24 frames / 0.537 s = 44.7 fps**, including planar to
+  GPU-ready conversion and AAC decode. Only a one-second generated sample, not a claim
+  about arbitrary 4K material.
+
+### Two-hour result: failed, rerun still required
+
+Two 1080p H.264 files (MP4 and MKV), 172,800 frames each, were driven together at 120 Hz
+for **7,200.002 wall-clock seconds**, decoding video and AAC and displaying into the
+void with null audio sinks. The MP4 reported **172,800 decoded, 172,720 displayed,
+80 dropped, maximum A/V offset 37.429 ms**, zero hardware fallbacks. The harness failed
+its assertion while reporting MP4, so MKV's final counters were not printed. Both files
+were driven for the duration; no successful MKV result is inferred.
+
+The fixture loops a generated two-second H.264 video and encodes a fresh continuous
+two-hour AAC track, then remuxes to MKV (about **4.8 GiB each**). Pinning 172,800 video
+frames is necessary: ffmpeg stream-copy with `-t 7200` alone retained two reordered tail
+pictures; an early assertion caught that before playback. No media is committed.
+
+Removing CPU cropping and merging the reviewed audio/hardware fixes precede the
+successful 60-second diagnostic above. **They have not yet been shown to fix the
+two-hour failure**, whose scheduling/refill cause was not measured in the original
+run. The long harness now reports both players before asserting, maximum display-call
+cost and maximum caller gap. Rerun it before closing FLK-5's performance criterion.
+
+```sh
+scripts/check.sh
+cargo test -p flicks-player --release realtime_and_seek -- --ignored --nocapture
+cargo test -p flicks-player --release device_clock_pause_resume -- --ignored --nocapture
+cargo test -p flicks-player --release software_4k_throughput -- --ignored --nocapture
+# Existing media is read-only; the diagnostic writes no files:
+FLICKS_PLAYER_MEDIA=/absolute/path/to/video.mp4 cargo test -p flicks-player --release scheduling_diagnostic -- --ignored --nocapture
+# Generates ~10 GiB, then runs for two wall-clock hours:
+cargo test -p flicks-player --release two_hour_playback -- --ignored --nocapture
+```
