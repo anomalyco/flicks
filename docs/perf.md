@@ -42,6 +42,25 @@ MP4/MKV playback metadata, tail-moov header ranges, newest-wins progress and use
 multiple ranges), signature/Range binding, range-parser mutations, removed folders, traversal
 and file/directory symlinks repointed after scanning. The timing test is opt-in and ran separately.
 
+### Review fixes remeasurement (2026-10-30)
+
+Code `e66232b`. After replacing list-route N+1 lookups with joined rows, restricting the symlink walk to the
+library root, and making playback headers match the scanner's tolerant parsing:
+
+| File | Range first byte p50 / p95 / max (ms) | Complete `/play` p50 / p95 / max (ms) |
+|---|---:|---:|
+| Generated MP4 | 0.501 / **0.599** / 0.708 | 0.508 / 0.660 / 0.724 |
+| Real episode A | 0.525 / **0.687** / 0.867 | 0.873 / 1.118 / 1.365 |
+| Real episode B | 0.583 / **0.742** / 0.784 | 1.014 / 1.173 / 1.279 |
+
+Same fixtures, machine, method and 100 measured requests per file as above; all 300 range
+requests remain below 5 ms. Range p95 was 0.633 / 0.710 / 0.657 ms before, and is now
+0.599 / 0.687 / 0.742 ms; this small mixed movement is not a claimed speedup.
+Folder-add to visibility: 30.522 ms generated, 30.508 ms for both real files. The existing
+measurement exercises `/items` for readiness, but does not isolate large-list latency.
+Run the same reproduction commands with `CARGO_PROFILE_RELEASE_STRIP=none` to avoid the
+machine's `rust-objcopy`/`libLLVM.dylib` issue.
+
 ## FLK-29 — container open (2026-10-30)
 
 Apple M5 Max, macOS 27.2, rustc 1.99.0, release profile. Bytes are decimal.
@@ -151,3 +170,9 @@ directory. Catalog in an in-memory SQLite database, no TMDB key, one thread.
 cargo test -p flicks-library --release -- --ignored --nocapture first_scan_of_10k_files
 cargo test -p flicks-library -- --nocapture a_new_file_appears_within_two_seconds
 ```
+
+Review-fix remeasurement (same machine and fixture, one release run): replacing the MKV
+Demuxer with `matroska::open` and `cue_keyframes` gives **704 ms** for the first 10,000-file
+scan and **22.7 ms** for the unchanged rescan (241 listings, zero media opens). The earlier
+runs were 770–850 ms and 24–29 ms respectively; warm-cache run-to-run variation applies.
+Command: `CARGO_PROFILE_RELEASE_STRIP=none cargo test -p flicks-library --release -- --ignored --nocapture first_scan_of_10k_files`.

@@ -28,7 +28,7 @@ A server has one HTTPS listener. The user reaches it however they like: LAN addr
 
 - **Server key:** an ECDSA P-256 key, created on first run, stored in `server.key` (mode 0600; owner-only ACL on Windows). On every start the server mints a 365-day self-signed TLS certificate for that key in memory (nothing else on disk), and the app pins the key, not the certificate. P-256 because every TLS stack accepts it, including Apple's and Windows'.
 - **Encodings:** public keys are SEC1 compressed (33 bytes), signatures are P-256 ECDSA `r ‖ s` (64 bytes). Every signed message starts with its own label (`flicks-…-v1\0`), so a signature for one purpose, including TLS, can never be replayed as another, and every variable-length field in it is length-prefixed (u32, big-endian).
-- **Through a tunnel** the proxy terminates TLS, so the app checks the server instead with a signed probe: `GET /info?probe=<nonce>` returns the server key and `Sign(server key, "flicks-info-v1" ‖ nonce)`. A tunnel can read traffic, but it can't impersonate the server or forge requests.
+- **Through a tunnel** the proxy terminates TLS, so the app checks the server instead with a signed probe: `GET /info?probe=<nonce>` returns the server key and `Sign(server key, "flicks-info-v1\0" ‖ u32_be(len(nonce)) ‖ nonce)`. A tunnel can read traffic, but it can't impersonate the server or forge requests.
 
 ## Authentication
 
@@ -64,8 +64,10 @@ All routes below require the normal device signature, including the exact query 
 One file is one item: the positive integer ID is the same in `/items`, `/play`, `/files` and
 `/progress`. Paths on the server never appear in these responses. Currently every paired user
 can read every configured folder; per-user folder grants are not implemented yet. Removing a
-folder makes its items inaccessible immediately. Startup awaits table creation, then scans and
-watches in a per-server worker on its own SQLite connection; adding/removing folders wakes it.
+folder makes its items inaccessible immediately; the worker deletes its catalog and progress rows.
+Startup awaits table creation, then scans and watches in a per-server worker on its own SQLite
+connection. Folder edits wake a full scan; watcher events rescan only the reported directories.
+The idle worker blocks until an event or shutdown, with no polling timer.
 
 | Request | JSON response |
 |---|---|
@@ -74,6 +76,7 @@ watches in a per-server worker on its own SQLite connection; adding/removing fol
 | `GET /home` | `{continue_watching: [{item, progress}], recently_added: [{item, progress}]}` |
 | `GET /items/{id}` | `{item, streams, progress}` |
 | `GET /play/{id}` | `{item, streams, keyframes: [{time_ms, offset}], progress, url: "/files/{id}", resume_ms, ranges: {header: [{start, end}], media: {start, end}}}` |
+| `GET /artwork/{name}` | Cached JPEG bytes (not JSON) |
 | `GET /progress` | `[{item: id, progress}]`, only the caller's saved records |
 | `GET /progress/{id}`, `PUT /progress/{id}` | `{position, played, updated_at}` or `null` when not saved |
 
@@ -83,7 +86,8 @@ UTF-8 percent-encoded, with `+` also accepted for a space. Unknown query paramet
 Items contain `id`, `title`, `year`, `season`, `episode`, `episode_end`, `edition`, `tmdb_id`,
 `tmdb_media`, `poster`, `backdrop`, `added_at` (Unix seconds), `size`, `oshash`, `container`,
 `duration_ms`, `video_codec`, `width`, `height`, `hdr`; unavailable facts are `null`. Artwork
-values are TMDB image paths, not server URLs. Streams are audio/subtitle tracks in file order:
+values are local cache names (`w342-<id>.jpg` for posters, `w780-<id>.jpg` for backdrops), fetched
+through signed `/artwork/{name}` requests. Clients never contact TMDB. Streams are audio/subtitle tracks in file order:
 `{kind, codec, language, title, channels, default, forced}`; video facts are on the item.
 
 Progress PUT takes exactly `{position, played, updated_at}`: nonnegative integer milliseconds
@@ -95,14 +99,17 @@ addition first. Missing/removed items return 404.
 
 `/play` is the single **metadata** request before fetching media: header ranges cover MP4's
 actual `ftyp`/`moov` (including tail `moov`) and box headers, or MKV's prefix and SeekHead-referenced
-Info/Tracks/Cues. All byte ends are inclusive. `media` is up to 1 MiB starting at the indexed
+Info/Tracks/Cues/SeekHead/Chapters. Stale SeekHead entries are skipped; MP4 trailing padding and
+boxes extending past EOF are tolerated just as at scan time. All byte ends are inclusive.
+`media` is up to 1 MiB starting at the indexed
 keyframe at/before progress (or the first keyframe when starting over; byte 0 if no index).
 `resume_ms` is the target presentation time; played items restart at 0. Clients fetch the
 listed ranges through signed `GET /files/{id}` and continue requesting media as needed.
 No Range returns streamed 200; one closed, open-ended or suffix byte range returns 206 with
 `Content-Range`, `Content-Length` and `Accept-Ranges: bytes`. Invalid, multiple or unsatisfiable
 ranges return 416 with `Content-Range: bytes */<size>`. Files are streamed in at most 64 KiB
-frames; every open rechecks containment with `library::resolve` and refuses symlinks.
+frames; every open rechecks containment with `library::resolve` and refuses symlinks from the
+file up through its library root (not ancestors above that root). Scans skip all symlinks too.
 
 ## App
 
