@@ -403,9 +403,8 @@ async fn replayed_altered_stale_and_removed_requests_fail() {
     let key = &device.key;
     let sk = &device.server_key;
     let send = |request| http::send(server.addr, tls.clone(), request);
-    let now = flicks_server::unix_now();
 
-    let auth = sign(key, sk, "GET", "/admin/status", b"", b"", now);
+    let auth = sign(key, sk, "GET", "/admin/status", b"", b"", flicks_server::unix_now());
     let ok = send(signed_request(Method::GET, "/admin/status", &auth, None, b"")).await.unwrap();
     assert_eq!(ok.status, StatusCode::OK);
     let replay = send(signed_request(Method::GET, "/admin/status", &auth, None, b"")).await.unwrap();
@@ -422,22 +421,23 @@ async fn replayed_altered_stale_and_removed_requests_fail() {
     ];
     for (what, method, path, range, body) in cases {
         let signed_range: &[u8] = if what == "range removed" { b"bytes=0-1" } else { b"" };
-        let auth = sign(key, sk, "GET", "/admin/status", signed_range, b"", now);
+        let auth = sign(key, sk, "GET", "/admin/status", signed_range, b"", flicks_server::unix_now());
         let response = send(signed_request(method, path, &auth, range, body)).await.unwrap();
         assert_eq!(response.status, StatusCode::UNAUTHORIZED, "altered {what}");
     }
     // Signed for another server.
-    let auth = sign(key, &[2; 33], "GET", "/admin/status", b"", b"", now);
+    let auth = sign(key, &[2; 33], "GET", "/admin/status", b"", b"", flicks_server::unix_now());
     let response = send(signed_request(Method::GET, "/admin/status", &auth, None, b"")).await.unwrap();
     assert_eq!(response.status, StatusCode::UNAUTHORIZED, "another server");
     // A range is fine when it is signed.
-    let auth = sign(key, sk, "GET", "/admin/status", b"bytes=0-1", b"", now);
+    let auth = sign(key, sk, "GET", "/admin/status", b"bytes=0-1", b"", flicks_server::unix_now());
     let response = send(signed_request(Method::GET, "/admin/status", &auth, Some("bytes=0-1"), b"")).await.unwrap();
     assert_eq!(response.status, StatusCode::OK);
 
-    // Timestamps: within 60 s either way.
-    for (offset, code) in [(-61, 401), (61, 401), (-59, 200), (59, 200)] {
-        let at = now.saturating_add_signed(offset);
+    // Timestamps: within 60 s either way. Each is taken fresh, two seconds from the edge, so a
+    // slow runner crossing a second or two between signing and checking can't flip the answer.
+    for (offset, code) in [(-62, 401), (62, 401), (-58, 200), (58, 200)] {
+        let at = flicks_server::unix_now().saturating_add_signed(offset);
         let auth = sign(key, sk, "GET", "/admin/status", b"", b"", at);
         let response = send(signed_request(Method::GET, "/admin/status", &auth, None, b"")).await.unwrap();
         assert_eq!(response.status.as_u16(), code, "offset {offset}");
@@ -445,11 +445,11 @@ async fn replayed_altered_stale_and_removed_requests_fail() {
 
     // An unknown key is refused; so is a body over 64 KiB, before it is read.
     let stranger = keys::generate().unwrap();
-    let auth = sign(&stranger, sk, "GET", "/admin/status", b"", b"", now);
+    let auth = sign(&stranger, sk, "GET", "/admin/status", b"", b"", flicks_server::unix_now());
     let response = send(signed_request(Method::GET, "/admin/status", &auth, None, b"")).await.unwrap();
     assert_eq!(response.status, StatusCode::UNAUTHORIZED, "unknown key");
     let big = vec![b'x'; auth::MAX_BODY + 1];
-    let auth = sign(key, sk, "POST", "/admin/users", b"", &big, now);
+    let auth = sign(key, sk, "POST", "/admin/users", b"", &big, flicks_server::unix_now());
     let response = send(signed_request(Method::POST, "/admin/users", &auth, None, &big)).await.unwrap();
     assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
 
