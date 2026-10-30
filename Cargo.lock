@@ -1689,6 +1689,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "flicks-web"
+version = "0.0.0"
+dependencies = [
+ "flicks-client",
+ "flicks-ui",
+ "js-sys",
+ "rune",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
