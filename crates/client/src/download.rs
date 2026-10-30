@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use hyper::Method;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
@@ -27,6 +26,9 @@ pub const DIR: &str = "downloads";
 
 /// Progress made offline, waiting for its server.
 const PROGRESS_FILE: &str = "progress.json";
+
+/// The extensions a finished file may have (the containers the library scans for, and `ts`).
+const EXTENSIONS: [&str; 6] = ["mkv", "webm", "mp4", "m4v", "mov", "ts"];
 
 /// Bytes per range read. Each read is its own request, so this is also how often a pause or
 /// removal is noticed.
@@ -130,15 +132,12 @@ impl Downloads {
         if jobs.get(&base).is_some_and(|job| job.running()) {
             return Ok(());
         }
-        let old = self.read(&base);
-        if let Some(old) = &old
-            && old.state == State::Complete
-            && self.complete_file(&base, old).is_some()
-        {
+        if self.complete_copy(source).is_some() {
             return Ok(());
         }
-        // The server's file changed since the partial copy began: start over.
-        if old.is_some_and(|old| old.item.size != source.item.size || old.item.oshash != source.item.oshash) {
+        // The server's file changed since the copy began (or finished): start over.
+        if let Some(old) = self.read(&base).filter(|old| !same_file(&old.item, &source.item)) {
+            remove_file(&self.complete(&base, &old.item))?;
             remove_file(&self.part(&base))?;
         }
         let record = Record {
@@ -212,12 +211,14 @@ impl Downloads {
 
     /// The local copy of any source of the title, to play instead of reading over the network.
     pub fn local_path(&self, title: &Title) -> Option<PathBuf> {
-        title.sources.iter().find_map(|s| self.local_file(&s.server, s.item.id))
+        title.sources.iter().find_map(|s| self.complete_copy(s))
     }
 
     /// Saves progress made on this file of this server to push later, keeping the newest of what
-    /// is waiting.
+    /// is waiting. A time ahead of this clock is taken as now, so a server never refuses it for
+    /// being from the future.
     pub fn set_progress(&self, server: &str, file: i64, progress: Progress) -> Result<(), Error> {
+        let progress = Progress { updated_at: progress.updated_at.min(now_ms()), ..progress };
         self.change_pending(|pending| match pending.iter_mut().find(|p| p.server == server && p.file == file) {
             Some(p) if p.progress.updated_at > progress.updated_at => {}
             Some(p) => p.progress = progress,
@@ -238,16 +239,32 @@ impl Downloads {
     }
 
     /// Pushes progress made offline to the servers that `library` reached on its last refresh
-    /// (call this after [`Library::refresh`]); the server keeps the newest. What a server doesn't
-    /// take stays for next time. Returns how many were pushed.
-    pub async fn sync(&self, library: &Library) -> Result<usize, Error> {
+    /// (call this after [`Library::refresh`]): to every online source of the title it was made on
+    /// (the server keeps the newest), and into the library's own copy of the title. It stays
+    /// waiting when no server took it; it is dropped when the file is gone from its server (404).
+    /// Returns how many were pushed.
+    pub async fn sync(&self, library: &mut Library) -> Result<usize, Error> {
         let mut pushed = 0;
         for waiting in self.read_pending() {
-            let Some(connection) = library.connection(&waiting.server) else { continue };
-            let path = format!("/progress/{}", waiting.file);
-            if connection.call::<Option<Progress>>(Method::PUT, &path, Some(&waiting.progress)).await.is_ok() {
+            let title = library.titles().iter().find(|t| t.sources.iter().any(|s| waiting.is_for(s)));
+            let done = match title.map(|t| t.key.clone()) {
+                Some(key) => {
+                    let progress =
+                        Progress { updated_at: waiting.progress.updated_at.min(now_ms()), ..waiting.progress };
+                    match library.set_progress(&key, progress).await {
+                        Ok(()) => {
+                            pushed += 1;
+                            true
+                        }
+                        Err(Error::Status(404, _)) => true,
+                        Err(_) => false,
+                    }
+                }
+                // Its server answered and no longer lists the file.
+                None => library.connection(&waiting.server).is_some(),
+            };
+            if done {
                 self.change_pending(|pending| pending.retain(|p| *p != waiting))?;
-                pushed += 1;
             }
         }
         Ok(pushed)
@@ -262,9 +279,12 @@ impl Downloads {
     }
 
     /// Where the finished file goes: named by its container, to be recognized by what opens it.
+    /// Only a known extension is used, so a server can't pick a name that collides with the
+    /// record.
     fn complete(&self, base: &str, item: &Item) -> PathBuf {
-        let extension: String = item.container.chars().filter(char::is_ascii_alphanumeric).take(8).collect();
-        self.dir.join(format!("{base}.{}", if extension.is_empty() { "bin" } else { &extension }))
+        let container = item.container.to_ascii_lowercase();
+        let extension = EXTENSIONS.iter().find(|e| **e == container).unwrap_or(&"bin");
+        self.dir.join(format!("{base}.{extension}"))
     }
 
     fn read(&self, base: &str) -> Option<Record> {
@@ -276,6 +296,13 @@ impl Downloads {
         let path = self.complete(base, &record.item);
         let whole = std::fs::metadata(&path).is_ok_and(|m| m.len() == record.item.size);
         (record.state == State::Complete && whole).then_some(path)
+    }
+
+    /// The finished file of this source, if what was downloaded is still the file the server has.
+    fn complete_copy(&self, source: &Source) -> Option<PathBuf> {
+        let base = base(&source.server, source.item.id);
+        let record = self.read(&base).filter(|r| same_file(&r.item, &source.item))?;
+        self.complete_file(&base, &record)
     }
 
     fn download(&self, base: &str, record: Record) -> Download {
@@ -315,6 +342,23 @@ struct Pending {
     server: String,
     file: i64,
     progress: Progress,
+}
+
+impl Pending {
+    fn is_for(&self, source: &Source) -> bool {
+        self.server == source.server && self.file == source.item.id
+    }
+}
+
+/// Whether two catalog entries are the same bytes.
+fn same_file(a: &Item, b: &Item) -> bool {
+    a.size == b.size && a.oshash.eq_ignore_ascii_case(&b.oshash)
+}
+
+/// Milliseconds since the Unix epoch, as [`Progress::updated_at`] counts them.
+fn now_ms() -> i64 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    i64::try_from(now).unwrap_or(i64::MAX)
 }
 
 /// The file name stem of a download: the server (hashed, since its key is long) and the file id.
@@ -413,11 +457,8 @@ fn remove_file(path: &Path) -> Result<(), Error> {
     }
 }
 
-/// Replaces `path` with the JSON of `value`, through a temporary file.
+/// Replaces `path` with the JSON of `value`, readable by this user only.
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(), Error> {
     let bytes = serde_json::to_vec(value).map_err(|_| Error::BadResponse)?;
-    let temp = path.with_extension("tmp");
-    std::fs::write(&temp, bytes)?;
-    std::fs::rename(&temp, path)?;
-    Ok(())
+    crate::write_private(path, &bytes)
 }
