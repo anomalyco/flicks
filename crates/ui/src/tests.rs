@@ -152,3 +152,78 @@ fn a_home_row_holds_at_most_60_tiles() {
     let movies = catalog.rows.iter().find(|r| r.name == "Movies").unwrap();
     assert_eq!(movies.titles.len(), 60);
 }
+
+/// The app on Home with the launch intro, and the cues its sound got.
+fn intro(reduced: bool) -> (Runtime<Flicks>, std::rc::Rc<std::cell::RefCell<Vec<Sound>>>) {
+    let cues = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let heard = cues.clone();
+    let mut state = rune::tooling::initial_state(&spec(), Some("home"));
+    state.intro = Some(Intro::new(Some(Box::new(move |cue| heard.borrow_mut().push(cue)))));
+    let app = App::new(spec()).init(move || state);
+    let mut rt = app.headless_runtime((1180.0, 760.0), Env { system_dark: true, scale: 2.0 });
+    rt.set_system_reduced_motion(reduced);
+    rt.frame(0.0);
+    (rt, cues)
+}
+
+fn run(rt: &mut Runtime<Flicks>, seconds: f64) {
+    for _ in 0..(seconds * 120.0) as usize {
+        rt.frame(1.0 / 120.0);
+    }
+}
+
+fn opacity(rt: &Runtime<Flicks>, key: &str) -> Option<f32> {
+    rt.elements().iter().find(|e| e.key.as_deref() == Some(key)).map(|e| e.opacity)
+}
+
+#[test]
+fn the_intro_plays_its_sound_then_hands_its_logo_to_the_top_bar() {
+    let (mut rt, cues) = intro(false);
+    run(&mut rt, 1.4);
+    assert_eq!(*cues.borrow(), [Sound::Play]);
+    assert!(opacity(&rt, "intro-word").is_some_and(|o| o > 0.9), "the wordmark is out");
+    assert_eq!(opacity(&rt, "logo"), Some(0.0), "the bar's logo waits for the intro's");
+    run(&mut rt, 1.5);
+    assert!(rt.state.intro.is_none());
+    assert_eq!(opacity(&rt, "logo"), Some(1.0));
+    assert_eq!(*cues.borrow(), [Sound::Play], "it ran to the end");
+}
+
+#[test]
+fn a_key_or_a_click_skips_the_intro_and_fades_its_sound() {
+    let (mut rt, cues) = intro(false);
+    run(&mut rt, 0.5);
+    rt.key(KeyEvent { key: Key::Command('f'), mods: Mods::default() });
+    run(&mut rt, 0.3);
+    assert!(rt.state.intro.is_none());
+    assert_eq!(rt.state.screen, Screen::Home, "the key only skipped");
+    assert_eq!(*cues.borrow(), [Sound::Play, Sound::Stop]);
+
+    let (mut rt, cues) = intro(false);
+    run(&mut rt, 0.5);
+    rt.pointer_down(590.0, 380.0);
+    rt.pointer_up(590.0, 380.0);
+    run(&mut rt, 0.3);
+    assert!(rt.state.intro.is_none());
+    assert_eq!(*cues.borrow(), [Sound::Play, Sound::Stop]);
+}
+
+#[test]
+fn under_reduced_motion_the_intro_is_a_short_silent_fade() {
+    let (mut rt, cues) = intro(true);
+    run(&mut rt, 0.2);
+    let frame = rt.elements().iter().find(|e| e.key.as_deref() == Some("intro-frame-2")).map(|e| e.scale);
+    assert_eq!(frame, Some(1.0), "the frames don't fly");
+    run(&mut rt, 1.3);
+    assert!(rt.state.intro.is_none());
+    assert!(cues.borrow().is_empty());
+}
+
+#[test]
+fn a_launch_in_the_background_is_silent() {
+    let (mut rt, cues) = intro(false);
+    rt.window_focus(false);
+    run(&mut rt, 3.0);
+    assert!(rt.state.intro.is_none());
+    assert!(cues.borrow().is_empty());
+}
