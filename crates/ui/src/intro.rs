@@ -44,10 +44,12 @@ pub struct Intro {
     wordmark: Option<Image>,
 }
 
-const MARK: &str = include_str!("../../../assets/brand/mark.svg");
-const WORDMARK: &[u8] = include_bytes!("../../../assets/brand/wordmark.svg");
-/// The fills of mark.svg's frames, back to front.
-const FILLS: [&str; 3] = ["fill=\"#5A3FE0\"", "fill=\"#A44BD8\"", "fill=\"url(#g)\""];
+const FRAMES: [&[u8]; 3] = [
+    include_bytes!("../../../assets/brand/intro-back.png"),
+    include_bytes!("../../../assets/brand/intro-middle.png"),
+    include_bytes!("../../../assets/brand/intro-front.png"),
+];
+const WORDMARK: &[u8] = include_bytes!("../../../assets/brand/intro-wordmark.png");
 
 /// Lockup points per SVG unit, and the lockup's geometry (`assets/brand/lockup.svg`): the
 /// mark's box and the wordmark's box inside it.
@@ -93,21 +95,10 @@ impl Intro {
         }
     }
 
-    /// Rasterizes the logo's parts (each frame of mark.svg alone, in place) at three device
-    /// pixels a point, so they stay sharp through the overshoot.
+    /// The fixed logo parts, pre-rendered at three device pixels a point.
     pub fn load(&mut self, images: &ImageCache) {
-        let size = MARK_BOX[2].max(MARK_BOX[3]);
-        let only = |keep: usize| {
-            let mut svg = MARK.to_string();
-            for (i, f) in FILLS.iter().enumerate() {
-                if i != keep {
-                    svg = svg.replace(f, "fill=\"none\"");
-                }
-            }
-            images.svg(svg.into_bytes(), size, 3.0)
-        };
-        self.frames = (0..3).map(only).collect();
-        self.wordmark = Some(images.svg(WORDMARK, WORD_BOX[2], 3.0));
+        self.frames = FRAMES.iter().map(|bytes| images.load(bytes.to_vec())).collect();
+        self.wordmark = Some(images.load(WORDMARK.to_vec()));
     }
 
     fn end(&self) -> f64 {
