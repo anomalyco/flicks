@@ -154,7 +154,7 @@ pub struct HrdParameters {
 }
 
 fn parse_hrd(r: &mut BitReader) -> Result<HrdParameters> {
-    let cpb_cnt = r.read_ue()? + 1;
+    let cpb_cnt = r.read_ue_plus(1)?;
     ensure!(cpb_cnt <= 32, "cpb_cnt_minus1 out of range");
     let mut h = HrdParameters {
         cpb_cnt,
@@ -362,8 +362,8 @@ impl Sps {
             if chroma_format_idc == 3 {
                 separate_colour_plane = r.read_flag()?;
             }
-            bit_depth_luma = r.read_ue()? + 8;
-            bit_depth_chroma = r.read_ue()? + 8;
+            bit_depth_luma = r.read_ue_plus(8)?;
+            bit_depth_chroma = r.read_ue_plus(8)?;
             ensure!(bit_depth_luma <= 14 && bit_depth_chroma <= 14, "bit depth out of range");
             bypass = r.read_flag()?;
             seq_scaling_matrix_present = r.read_flag()?;
@@ -372,7 +372,7 @@ impl Sps {
                 scaling_lists = parse_scaling_lists(&mut r, count, None)?;
             }
         }
-        let log2_max_frame_num = r.read_ue()? + 4;
+        let log2_max_frame_num = r.read_ue_plus(4)?;
         ensure!(log2_max_frame_num <= 16, "log2_max_frame_num out of range");
         let pic_order_cnt_type = r.read_ue()?;
         ensure!(pic_order_cnt_type <= 2, "pic_order_cnt_type out of range");
@@ -382,7 +382,7 @@ impl Sps {
         let mut offset_for_top_to_bottom_field = 0;
         let mut offset_for_ref_frame = Vec::new();
         if pic_order_cnt_type == 0 {
-            log2_max_poc_lsb = r.read_ue()? + 4;
+            log2_max_poc_lsb = r.read_ue_plus(4)?;
             ensure!(log2_max_poc_lsb <= 16, "log2_max_pic_order_cnt_lsb out of range");
         } else if pic_order_cnt_type == 1 {
             delta_pic_order_always_zero = r.read_flag()?;
@@ -397,8 +397,8 @@ impl Sps {
         let max_num_ref_frames = r.read_ue()?;
         ensure!(max_num_ref_frames <= 16, "max_num_ref_frames out of range");
         let gaps_in_frame_num_allowed = r.read_flag()?;
-        let pic_width_in_mbs = r.read_ue()? + 1;
-        let pic_height_in_map_units = r.read_ue()? + 1;
+        let pic_width_in_mbs = r.read_ue_plus(1)?;
+        let pic_height_in_map_units = r.read_ue_plus(1)?;
         ensure!(pic_width_in_mbs <= 1024 && pic_height_in_map_units <= 1024, "picture too large");
         let frame_mbs_only = r.read_flag()?;
         let mb_adaptive_frame_field = if !frame_mbs_only { r.read_flag()? } else { false };
@@ -439,7 +439,11 @@ impl Sps {
         };
         if let Some((l, rr, t, b)) = sps.frame_crop {
             let (cx, cy) = sps.crop_unit();
-            ensure!((l + rr) * cx < sps.width() && (t + b) * cy < sps.height(), "frame cropping exceeds picture size");
+            ensure!(
+                l.saturating_add(rr).saturating_mul(cx) < sps.width()
+                    && t.saturating_add(b).saturating_mul(cy) < sps.height(),
+                "frame cropping exceeds picture size"
+            );
         }
         Ok(sps)
     }
@@ -449,14 +453,14 @@ impl Sps {
         if self.separate_colour_plane { 0 } else { self.chroma_format_idc }
     }
     pub fn frame_height_in_mbs(&self) -> u32 {
-        (2 - self.frame_mbs_only as u32) * self.pic_height_in_map_units
+        (2 - self.frame_mbs_only as u32).saturating_mul(self.pic_height_in_map_units)
     }
     /// Decoded (uncropped) luma width.
     pub fn width(&self) -> u32 {
-        self.pic_width_in_mbs * 16
+        self.pic_width_in_mbs.saturating_mul(16)
     }
     pub fn height(&self) -> u32 {
-        self.frame_height_in_mbs() * 16
+        self.frame_height_in_mbs().saturating_mul(16)
     }
     pub fn max_frame_num(&self) -> u32 {
         1 << self.log2_max_frame_num
@@ -480,7 +484,12 @@ impl Sps {
             None => (0, 0, self.width(), self.height()),
             Some((l, r, t, b)) => {
                 let (cx, cy) = self.crop_unit();
-                (l * cx, t * cy, self.width() - (l + r) * cx, self.height() - (t + b) * cy)
+                (
+                    l.saturating_mul(cx),
+                    t.saturating_mul(cy),
+                    self.width().saturating_sub(l.saturating_add(r).saturating_mul(cx)),
+                    self.height().saturating_sub(t.saturating_add(b).saturating_mul(cy)),
+                )
             }
         }
     }
@@ -509,7 +518,7 @@ impl Sps {
             60..=62 => 696320,
             _ => 184320,
         };
-        let frame_mbs = self.pic_width_in_mbs * self.frame_height_in_mbs();
+        let frame_mbs = self.pic_width_in_mbs.saturating_mul(self.frame_height_in_mbs());
         let mut n = (max_dpb_mbs / frame_mbs.max(1)).clamp(1, 16) as usize;
         if let Some(br) = self.vui.as_ref().and_then(|v| v.bitstream_restriction.as_ref()) {
             n = (br.max_dec_frame_buffering as usize).min(16);
@@ -727,6 +736,37 @@ mod tests {
         let mut r = BitReader::new(&b);
         let l = parse_scaling_list::<16>(&mut r).unwrap().unwrap();
         assert_eq!(l, [10; 16]);
+    }
+
+    #[test]
+    fn hostile_sps_sizes_and_crops_return_errors() {
+        // A baseline SPS with ue(v) size and crop fields replaced one at a time.
+        for value in [1 << 30, i32::MAX as u32, 1 << 31, u32::MAX - 1, u32::MAX] {
+            for field in 0..7 {
+                let mut values = [0, 10, 8, 0, 0, 0, 0];
+                values[field] = value;
+                let mut w = BitWriter::new();
+                w.write_bits(66, 8);
+                w.write_bits(0, 8);
+                w.write_bits(30, 8);
+                w.write_ue(0); // SPS ID
+                w.write_ue(values[0]); // log2_max_frame_num_minus4
+                w.write_ue(2); // POC type
+                w.write_ue(1); // refs
+                w.write_bit(false);
+                w.write_ue(values[1]);
+                w.write_ue(values[2]);
+                w.write_bit(true);
+                w.write_bit(true);
+                w.write_bit(true); // crop
+                for crop in &values[3..] {
+                    w.write_ue(*crop);
+                }
+                w.write_bit(false);
+                w.rbsp_trailing();
+                assert!(Sps::parse(&w.finish()).is_err(), "field {field}, value {value}");
+            }
+        }
     }
 
     #[test]
