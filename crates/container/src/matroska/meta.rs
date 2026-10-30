@@ -4,7 +4,9 @@
 use crate::matroska::codec::map_codec;
 use crate::matroska::ebml::{Children, float, int, string, uint};
 use crate::matroska::ids::*;
-use crate::matroska::track::{AudioInfo, Color, ContentEncoding, MasteringMetadata, Projection, Track, TrackKind, VideoInfo, gcd};
+use crate::matroska::track::{
+    AudioInfo, Color, ContentEncoding, MasteringMetadata, Projection, Track, TrackKind, VideoInfo, gcd,
+};
 
 // A malformed Matroska file may contain arbitrarily deep ChapterAtom and SimpleTag chains.
 const MAX_META_DEPTH: usize = 64;
@@ -227,7 +229,13 @@ pub(crate) fn parse_cues(d: &[u8], out: &mut Vec<CuePoint>) {
             match e.id {
                 CUE_TIME => time = Some(uint(e.data)),
                 CUE_TRACK_POSITIONS => {
-                    let mut p = CuePosition { track: 0, cluster_position: u64::MAX, relative_position: None, block_number: None, duration: None };
+                    let mut p = CuePosition {
+                        track: 0,
+                        cluster_position: u64::MAX,
+                        relative_position: None,
+                        block_number: None,
+                        duration: None,
+                    };
                     for c in Children::new(e.data) {
                         match c.id {
                             CUE_TRACK => p.track = uint(c.data),
@@ -254,8 +262,16 @@ pub(crate) fn parse_cues(d: &[u8], out: &mut Vec<CuePoint>) {
 }
 
 fn parse_chapter(d: &[u8], depth: usize) -> Chapter {
-    let mut c =
-        Chapter { uid: 0, string_uid: None, start_ns: 0, end_ns: None, hidden: false, enabled: true, displays: Vec::new(), children: Vec::new() };
+    let mut c = Chapter {
+        uid: 0,
+        string_uid: None,
+        start_ns: 0,
+        end_ns: None,
+        hidden: false,
+        enabled: true,
+        displays: Vec::new(),
+        children: Vec::new(),
+    };
     for e in Children::new(d) {
         match e.id {
             CHAPTER_UID => c.uid = uint(e.data),
@@ -305,7 +321,14 @@ pub(crate) fn parse_chapters(d: &[u8], out: &mut Vec<Edition>) {
 }
 
 fn parse_simple_tag(d: &[u8], depth: usize) -> SimpleTag {
-    let mut t = SimpleTag { name: String::new(), language: "und".into(), default: true, string: None, binary: None, children: Vec::new() };
+    let mut t = SimpleTag {
+        name: String::new(),
+        language: "und".into(),
+        default: true,
+        string: None,
+        binary: None,
+        children: Vec::new(),
+    };
     for e in Children::new(d) {
         match e.id {
             TAG_NAME => t.name = string(e.data),
@@ -585,7 +608,9 @@ mod metadata_depth_tests {
     #[test]
     fn a_long_stripped_header_is_not_put_in_front_of_frames() {
         let kept = header_stripping(&[7; MAX_STRIPPED_HEADER]);
-        assert!(matches!(&kept[..], [ContentEncoding::HeaderStripping { bytes, .. }] if bytes.len() == MAX_STRIPPED_HEADER));
+        assert!(
+            matches!(&kept[..], [ContentEncoding::HeaderStripping { bytes, .. }] if bytes.len() == MAX_STRIPPED_HEADER)
+        );
         let refused = header_stripping(&[7; MAX_STRIPPED_HEADER + 1]);
         assert!(matches!(&refused[..], [ContentEncoding::Compression { algo: 3, .. }]), "{refused:?}");
     }

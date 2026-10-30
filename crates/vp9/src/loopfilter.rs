@@ -3,8 +3,8 @@
 use crate::frame::{MiGrid, MiInfo};
 use crate::header::{LoopFilterParams, Segmentation};
 use crate::tables::{
-    BLOCK_8X8, BLOCK_16X16, INTRA_FRAME, MAX_LOOP_FILTER, MAX_TXSIZE, NEARESTMV, NEARMV, NEWMV, NUM_8X8_HIGH, NUM_8X8_WIDE, SEG_LVL_ALT_L, SS_SIZE_LOOKUP,
-    TX_4X4, TX_8X8, TX_16X16,
+    BLOCK_8X8, BLOCK_16X16, INTRA_FRAME, MAX_LOOP_FILTER, MAX_TXSIZE, NEARESTMV, NEARMV, NEWMV, NUM_8X8_HIGH,
+    NUM_8X8_WIDE, SEG_LVL_ALT_L, SS_SIZE_LOOKUP, TX_4X4, TX_8X8, TX_16X16,
 };
 
 /// Frame-level loop filter setup (8.8.1) plus the per-level limits of 8.8.4.
@@ -21,7 +21,15 @@ pub struct LfFrame {
 }
 
 impl LfFrame {
-    pub fn new(lf: &LoopFilterParams, seg: &Segmentation, mi_rows: usize, mi_cols: usize, ss_x: bool, ss_y: bool, bit_depth: u8) -> LfFrame {
+    pub fn new(
+        lf: &LoopFilterParams,
+        seg: &Segmentation,
+        mi_rows: usize,
+        mi_cols: usize,
+        ss_x: bool,
+        ss_y: bool,
+        bit_depth: u8,
+    ) -> LfFrame {
         let mut lvl = [[[0u8; 2]; 4]; 8];
         let n_shift = lf.level >> 5;
         for (seg_id, l) in lvl.iter_mut().enumerate() {
@@ -39,7 +47,9 @@ impl LfFrame {
                 l[0][1] = l[0][0];
                 for rf in 1..4 {
                     for mode in 0..2 {
-                        let v = lvl_seg + ((lf.ref_deltas[rf] as i32) << n_shift) + ((lf.mode_deltas[mode] as i32) << n_shift);
+                        let v = lvl_seg
+                            + ((lf.ref_deltas[rf] as i32) << n_shift)
+                            + ((lf.mode_deltas[mode] as i32) << n_shift);
                         l[rf][mode] = v.clamp(0, MAX_LOOP_FILTER) as u8;
                     }
                 }
@@ -96,8 +106,11 @@ fn filter_sb_plane(v: &mut PlaneView, mi: &MiGrid, f: &LfFrame, plane: usize, pa
         let mut i = 0;
         while i < edge_len {
             // Group of 8 samples sharing loopRow / loopCol.
-            let (x, y) =
-                if pass == 0 { (col * 8 + edge * (4 << sub_x), row * 8 + (i << sub_y)) } else { (col * 8 + (i << sub_x), row * 8 + edge * (4 << sub_y)) };
+            let (x, y) = if pass == 0 {
+                (col * 8 + edge * (4 << sub_x), row * 8 + (i << sub_y))
+            } else {
+                (col * 8 + (i << sub_x), row * 8 + edge * (4 << sub_y))
+            };
             // Skip groups entirely off screen (the varying coordinate is re-checked per sample).
             if x >= 8 * mi_cols || y >= 8 * mi_rows || (pass == 0 && x == 0) || (pass == 1 && y == 0) {
                 i += 8;
@@ -107,14 +120,22 @@ fn filter_sb_plane(v: &mut PlaneView, mi: &MiGrid, f: &LfFrame, plane: usize, pa
             let loop_row = ((y >> 3) >> sub_y) << sub_y;
             let m = mi.at(loop_row, loop_col);
             let tx_sz = if plane > 0 {
-                if m.sb_size < BLOCK_8X8 { 0 } else { m.tx_size.min(MAX_TXSIZE[SS_SIZE_LOOKUP[m.sb_size as usize][f.ss_x][f.ss_y].min(12) as usize]) }
+                if m.sb_size < BLOCK_8X8 {
+                    0
+                } else {
+                    m.tx_size.min(MAX_TXSIZE[SS_SIZE_LOOKUP[m.sb_size as usize][f.ss_x][f.ss_y].min(12) as usize])
+                }
             } else {
                 m.tx_size
             };
             let sb_size = if sub == 0 { m.sb_size } else { m.sb_size.max(BLOCK_16X16) } as usize;
             let is_intra = m.ref_frame[0] <= INTRA_FRAME;
             // Block sizes are powers of two, so the modulo is a mask.
-            let is_block_edge = if pass == 0 { x & (8 * NUM_8X8_WIDE[sb_size] as usize - 1) == 0 } else { y & (8 * NUM_8X8_HIGH[sb_size] as usize - 1) == 0 };
+            let is_block_edge = if pass == 0 {
+                x & (8 * NUM_8X8_WIDE[sb_size] as usize - 1) == 0
+            } else {
+                y & (8 * NUM_8X8_HIGH[sb_size] as usize - 1) == 0
+            };
             let tx_ok = edge & ((1 << tx_sz) - 1) == 0 && (is_intra || !m.skip);
             if !is_block_edge && !tx_ok {
                 i += 8;
@@ -127,15 +148,20 @@ fn filter_sb_plane(v: &mut PlaneView, mi: &MiGrid, f: &LfFrame, plane: usize, pa
             }
             let is32 = edge % 8 == 0;
             let base_size = if tx_sz == TX_4X4 && is32 { TX_8X8 } else { tx_sz.min(TX_16X16) };
-            let filter_size =
-                if base_size == TX_16X16 && ((pass == 0 && sub_x == 1 && (x >> 3) == mi_cols - 1) || (pass == 1 && sub_y == 1 && (y >> 3) == mi_rows - 1)) {
-                    TX_8X8
-                } else {
-                    base_size
-                };
+            let filter_size = if base_size == TX_16X16
+                && ((pass == 0 && sub_x == 1 && (x >> 3) == mi_cols - 1)
+                    || (pass == 1 && sub_y == 1 && (y >> 3) == mi_rows - 1))
+            {
+                TX_8X8
+            } else {
+                base_size
+            };
             let (limit, blimit, thresh) = f.limits[lvl as usize];
             // Lanes of the group (the 8 samples along the edge) inside the MI grid.
-            let n = if pass == 0 { (8 * mi_rows - y).div_ceil(1 << sub_y) } else { (8 * mi_cols - x).div_ceil(1 << sub_x) }.min(LANES).min(edge_len - i);
+            let n =
+                if pass == 0 { (8 * mi_rows - y).div_ceil(1 << sub_y) } else { (8 * mi_cols - x).div_ceil(1 << sub_x) }
+                    .min(LANES)
+                    .min(edge_len - i);
             // A transform edge is not filtered in the last odd chroma column (8.8.2).
             let odd_last = pass == 1 && sub_x == 1 && mi_cols & 1 == 1 && edge & 1 == 1;
             let mut apply = [false; LANES];
@@ -195,7 +221,13 @@ macro_rules! group_filter {
             /// lane (8.8.5.1 decides which), so the arithmetic is branch-free and vectorizes; unmodified
             /// samples are written back unchanged.
             #[inline(always)]
-            pub(super) fn filter_group<const R: usize, const ROWS: bool>(d: &mut [u16], pos: usize, along: usize, step: usize, g: &Limits) {
+            pub(super) fn filter_group<const R: usize, const ROWS: bool>(
+                d: &mut [u16],
+                pos: usize,
+                along: usize,
+                step: usize,
+                g: &Limits,
+            ) {
                 let Limits { apply, limit, blimit, thresh, filter_size, bit_depth } = *g;
                 let (limit, blimit, thresh) = (limit as T, blimit as T, thresh as T);
                 // v[8 + k][l] = sample at offset k across the edge in lane l.
@@ -203,7 +235,8 @@ macro_rules! group_filter {
                 let start = pos - R * step;
                 if ROWS {
                     for k in 0..2 * R {
-                        let row: &[u16; LANES] = d[start + k * step..start + k * step + LANES].try_into().expect("lanes");
+                        let row: &[u16; LANES] =
+                            d[start + k * step..start + k * step + LANES].try_into().expect("lanes");
                         v[8 - R + k] = std::array::from_fn(|l| row[l] as T);
                     }
                 } else {

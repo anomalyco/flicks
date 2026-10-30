@@ -229,15 +229,16 @@ impl StreamDecoder {
         let mut decoded = 0;
         while decoded < frame_size {
             let first = decoded == 0;
-            let count = match self.silk.decode(dec.as_deref_mut(), lost, first, payload_ms, &mut pcm[decoded * channels..]) {
-                Ok(count) => count,
-                Err(_error) if lost != LostFlag::Normal => {
-                    let remaining = frame_size - decoded;
-                    pcm[decoded * channels..(decoded + remaining) * channels].fill(0.0);
-                    remaining
-                }
-                Err(error) => return Err(error),
-            };
+            let count =
+                match self.silk.decode(dec.as_deref_mut(), lost, first, payload_ms, &mut pcm[decoded * channels..]) {
+                    Ok(count) => count,
+                    Err(_error) if lost != LostFlag::Normal => {
+                        let remaining = frame_size - decoded;
+                        pcm[decoded * channels..(decoded + remaining) * channels].fill(0.0);
+                        remaining
+                    }
+                    Err(error) => return Err(error),
+                };
             if count == 0 {
                 break;
             }
@@ -246,7 +247,13 @@ impl StreamDecoder {
         Ok(pcm)
     }
 
-    fn read_redundancy(&self, mode: Mode, fec: bool, packet_len: usize, dec: &mut Option<&mut RangeDecoder>) -> Redundancy {
+    fn read_redundancy(
+        &self,
+        mode: Mode,
+        fec: bool,
+        packet_len: usize,
+        dec: &mut Option<&mut RangeDecoder>,
+    ) -> Redundancy {
         let mut state = Redundancy { present: false, celt_to_silk: false, bytes: 0, packet_len };
         let Some(decoder) = dec.as_deref_mut() else { return state };
         let hybrid = self.mode == Some(Mode::Hybrid);
@@ -258,7 +265,11 @@ impl StreamDecoder {
             return state;
         }
         state.celt_to_silk = decoder.bit_logp(1);
-        state.bytes = if mode == Mode::Hybrid { decoder.uint(256) as usize + 2 } else { state.packet_len - ((decoder.tell() as usize + 7) >> 3) };
+        state.bytes = if mode == Mode::Hybrid {
+            decoder.uint(256) as usize + 2
+        } else {
+            state.packet_len - ((decoder.tell() as usize + 7) >> 3)
+        };
         if state.bytes > state.packet_len || (state.packet_len - state.bytes) * 8 < decoder.tell() as usize {
             state.packet_len = 0;
             state.bytes = 0;
@@ -349,11 +360,21 @@ impl StreamDecoder {
 
         // SILK.
         let pcm_silk = self.decode_silk_frame(
-            SilkFrame { mode, bandwidth, has_packet: data.is_some(), fec, frame_size, audio_size: audiosize, rate: fs, channels: ch },
+            SilkFrame {
+                mode,
+                bandwidth,
+                has_packet: data.is_some(),
+                fec,
+                frame_size,
+                audio_size: audiosize,
+                rate: fs,
+                channels: ch,
+            },
             &mut dec,
         )?;
 
-        let Redundancy { present: redundancy, celt_to_silk, bytes: redundancy_bytes, packet_len: len } = self.read_redundancy(mode, fec, data_len, &mut dec);
+        let Redundancy { present: redundancy, celt_to_silk, bytes: redundancy_bytes, packet_len: len } =
+            self.read_redundancy(mode, fec, data_len, &mut dec);
         let mut start_band = 0;
         if mode != Mode::CeltOnly {
             start_band = 17;
@@ -437,7 +458,15 @@ impl StreamDecoder {
     }
 }
 
-fn smooth_fade(in1: &[f32], in2: &[f32], out: &mut [f32], overlap: usize, ch: usize, window: &[f32; OVERLAP], rate: u32) {
+fn smooth_fade(
+    in1: &[f32],
+    in2: &[f32],
+    out: &mut [f32],
+    overlap: usize,
+    ch: usize,
+    window: &[f32; OVERLAP],
+    rate: u32,
+) {
     let inc = (48000 / rate) as usize;
     for c in 0..ch {
         for i in 0..overlap {

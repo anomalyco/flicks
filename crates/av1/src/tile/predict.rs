@@ -1,8 +1,9 @@
 use super::tx_size::find_tx_size;
 use super::{
-    BLOCK_64X64, DC_PRED, H_PRED, II_DC_PRED, II_H_PRED, II_V_PRED, INTRA_FRAME, IntraParams, MAX_TX_SIZE_RECT, MI_HEIGHT_LOG2, MI_WIDTH_LOG2,
-    NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, Result, SMOOTH_H_PRED, SMOOTH_PRED, SMOOTH_V_PRED, TX_4X4, TX_16X32, TX_32X16, TX_32X32, TX_HEIGHT,
-    TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2, TileDecoder, UV_CFL_PRED, V_PRED, block_height, block_width, is_directional_mode, predict_intra, round2_signed,
+    BLOCK_64X64, DC_PRED, H_PRED, II_DC_PRED, II_H_PRED, II_V_PRED, INTRA_FRAME, IntraParams, MAX_TX_SIZE_RECT,
+    MI_HEIGHT_LOG2, MI_WIDTH_LOG2, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, Result, SMOOTH_H_PRED, SMOOTH_PRED,
+    SMOOTH_V_PRED, TX_4X4, TX_16X32, TX_32X16, TX_32X32, TX_HEIGHT, TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2,
+    TileDecoder, UV_CFL_PRED, V_PRED, block_height, block_width, is_directional_mode, predict_intra, round2_signed,
 };
 use crate::inter::PredBlock;
 
@@ -60,7 +61,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                     use_filter_intra: false,
                     filter_intra_mode: 0,
                     enable_intra_edge_filter: self.fs.seq.enable_intra_edge_filter,
-                    filter_type: if is_directional_mode(mode) && self.fs.seq.enable_intra_edge_filter { self.get_filter_type(plane) } else { false },
+                    filter_type: if is_directional_mode(mode) && self.fs.seq.enable_intra_edge_filter {
+                        self.get_filter_type(plane)
+                    } else {
+                        false
+                    },
                 };
                 predict_intra(&mut self.t.cur.planes[plane], &params);
             }
@@ -70,7 +75,10 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             for r in 0..(n4h << sub_y) {
                 for c in 0..(n4w << sub_x) {
                     let (rr, cc) = (cand_row + r, cand_col + c);
-                    if rr < self.t.mi.rows && cc < self.t.mi.cols && self.t.mi.ref_frame[self.t.mi.idx(rr, cc)][0] == INTRA_FRAME as i8 {
+                    if rr < self.t.mi.rows
+                        && cc < self.t.mi.cols
+                        && self.t.mi.ref_frame[self.t.mi.idx(rr, cc)][0] == INTRA_FRAME as i8
+                    {
                         some_use_intra = true;
                     }
                 }
@@ -87,7 +95,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 let mut c = 0;
                 let mut x = 0;
                 while x < n4w * 4 {
-                    self.predict_inter(PredBlock { plane, x: base_x + x, y: base_y + y, w: pred_w, h: pred_h }, cand_row + r, cand_col + c);
+                    self.predict_inter(
+                        PredBlock { plane, x: base_x + x, y: base_y + y, w: pred_w, h: pred_h },
+                        cand_row + r,
+                        cand_col + c,
+                    );
                     x += pred_w;
                     c += 1;
                 }
@@ -147,7 +159,14 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                         while y < num4x4_h {
                             let mut x = 0;
                             while x < num4x4_w {
-                                self.transform_block(plane, base_x_block, base_y_block, tx_sz, x + ((chunk_x << 4) >> sub_x), y + ((chunk_y << 4) >> sub_y))?;
+                                self.transform_block(
+                                    plane,
+                                    base_x_block,
+                                    base_y_block,
+                                    tx_sz,
+                                    x + ((chunk_x << 4) >> sub_x),
+                                    y + ((chunk_y << 4) >> sub_y),
+                                )?;
                                 x += step_x;
                             }
                             y += step_y;
@@ -189,7 +208,15 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         Ok(())
     }
 
-    fn transform_block(&mut self, plane: usize, base_x: usize, base_y: usize, tx_sz: usize, x: usize, y: usize) -> Result<()> {
+    fn transform_block(
+        &mut self,
+        plane: usize,
+        base_x: usize,
+        base_y: usize,
+        tx_sz: usize,
+        x: usize,
+        y: usize,
+    ) -> Result<()> {
         let start_x = base_x + 4 * x;
         let start_y = base_y + 4 * y;
         let (ssx, ssy) = (self.fs.ssx, self.fs.ssy);
@@ -228,7 +255,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 let sbc = (sub_block_mi_col >> sub_x) as isize;
                 let have_above_right = self.block_decoded_at(plane, sbr - 1, sbc + step_x as isize);
                 let have_below_left = self.block_decoded_at(plane, sbr + step_y as isize, sbc - 1);
-                let filter_type = if is_directional_mode(mode) && self.fs.seq.enable_intra_edge_filter { self.get_filter_type(plane) } else { false };
+                let filter_type = if is_directional_mode(mode) && self.fs.seq.enable_intra_edge_filter {
+                    self.get_filter_type(plane)
+                } else {
+                    false
+                };
                 let params = IntraParams {
                     plane,
                     x: start_x,

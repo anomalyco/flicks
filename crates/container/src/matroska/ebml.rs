@@ -193,7 +193,8 @@ impl<'a> Iterator for Children<'a> {
             Size::Known(_) => (avail as usize, false, true),
             Size::Unknown => (avail as usize, true, false),
         };
-        let e = Elem { id, offset: self.pos, header_len: hl, data: &rest[hl..hl + len], unknown_size: unknown, truncated };
+        let e =
+            Elem { id, offset: self.pos, header_len: hl, data: &rest[hl..hl + len], unknown_size: unknown, truncated };
         self.pos += hl + len;
         Some(e)
     }

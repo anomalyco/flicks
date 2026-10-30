@@ -357,7 +357,10 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
                         let mut c = Cur::labeled(m.payload, "trex");
                         c.full_header()?;
                         let id = c.u32()?;
-                        trex.insert(id, Trex { description_index: c.u32()?, duration: c.u32()?, size: c.u32()?, flags: c.u32()? });
+                        trex.insert(
+                            id,
+                            Trex { description_index: c.u32()?, duration: c.u32()?, size: c.u32()?, flags: c.u32()? },
+                        );
                     }
                 }
             }
@@ -372,8 +375,11 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
         file.tracks.push(t);
     }
     // Movie fragments.
-    let mut next_dts: Vec<i64> =
-        file.tracks.iter().map(|t| t.samples.last().map(|s| s.dts.saturating_add(i64::from(s.duration))).unwrap_or(0)).collect();
+    let mut next_dts: Vec<i64> = file
+        .tracks
+        .iter()
+        .map(|t| t.samples.last().map(|s| s.dts.saturating_add(i64::from(s.duration))).unwrap_or(0))
+        .collect();
     // A duplicate track ID resolves to its first track.
     let mut track_index = HashMap::new();
     for (i, t) in file.tracks.iter().enumerate() {
@@ -494,14 +500,21 @@ fn parse_trak(p: &[u8], file: &Mp4File, file_len: u64, budget: &mut SampleBudget
                     let (v, _) = c.full_header()?;
                     let n = c.count(if v == 1 { 20 } else { 12 })?;
                     for _ in 0..n {
-                        let (segment_duration, media_time) = if v == 1 { (c.u64()?, c.i64()?) } else { (c.u32()? as u64, c.i32()? as i64) };
+                        let (segment_duration, media_time) =
+                            if v == 1 { (c.u64()?, c.i64()?) } else { (c.u32()? as u64, c.i32()? as i64) };
                         t.edits.push(Edit { segment_duration, media_time, media_rate: c.i32()? });
                     }
                 }
             }
             b"tref" => {
                 for r in boxes(b.payload).map_while(|b| b.ok()) {
-                    let ids = r.payload.as_chunks::<4>().0.iter().map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    let ids = r
+                        .payload
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect();
                     t.references.push((r.kind, ids));
                 }
             }
@@ -730,8 +743,10 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, budget: &m
             _ => {}
         }
     }
-    t.sample_groups =
-        sbgp.into_iter().map(|(gt, runs)| SampleGroup { grouping_type: gt, runs, descriptions: sgpd.remove(&gt).unwrap_or_default() }).collect();
+    t.sample_groups = sbgp
+        .into_iter()
+        .map(|(gt, runs)| SampleGroup { grouping_type: gt, runs, descriptions: sgpd.remove(&gt).unwrap_or_default() })
+        .collect();
     if sample_count == 0 || chunks.is_empty() || stsc.is_empty() {
         return Ok(());
     }
@@ -787,7 +802,8 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, budget: &m
                 if split {
                     // Each piece is at least half of PCM_MAX_SAMPLE_BYTES, so the file's size
                     // bounds how many a hostile chunk size can make.
-                    budget.implied_bytes = budget.implied_bytes.checked_sub(size).ok_or(Error::TooLarge("PCM chunk size"))?;
+                    budget.implied_bytes =
+                        budget.implied_bytes.checked_sub(size).ok_or(Error::TooLarge("PCM chunk size"))?;
                 }
                 samples.push(Sample {
                     offset: pos,
@@ -851,7 +867,15 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, budget: &m
                         stss_i < v.len() && v[stss_i] as usize == sidx + 1
                     }
                 };
-                samples.push(Sample { offset: pos, size, dts, pts: dts.saturating_add(cts), duration, is_sync, description_index: sdi });
+                samples.push(Sample {
+                    offset: pos,
+                    size,
+                    dts,
+                    pts: dts.saturating_add(cts),
+                    duration,
+                    is_sync,
+                    description_index: sdi,
+                });
                 pos = pos.saturating_add(size as u64);
                 dts = dts.saturating_add(duration as i64);
                 sidx += 1;
@@ -927,7 +951,8 @@ fn parse_moof(
                 c.check_count(n, per)?;
             } else {
                 let implied = (n as u64).saturating_mul(def_size.max(1) as u64);
-                budget.implied_bytes = budget.implied_bytes.checked_sub(implied).ok_or(Error::TooLarge("trun sample count"))?;
+                budget.implied_bytes =
+                    budget.implied_bytes.checked_sub(implied).ok_or(Error::TooLarge("trun sample count"))?;
             }
             budget.take(n)?;
             if tf & 1 != 0 {
@@ -1418,7 +1443,8 @@ mod tests {
     #[test]
     fn a_pcm_chunk_past_4_gib_reads_as_bounded_samples() {
         use crate::isobmff::{Brand, Mp4Writer, PcmConfig, TrackConfig, WriteSample, WriterOptions};
-        let pcm = PcmConfig { bits: 8, float: false, big_endian: false, signed: false, channels: 1, sample_rate: 48000.0 };
+        let pcm =
+            PcmConfig { bits: 8, float: false, big_endian: false, signed: false, channels: 1, sample_rate: 48000.0 };
         let mut w = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
         let t = w.add_track(TrackConfig::new(SampleEntry::pcm(pcm), 48000)).unwrap();
         w.write_sample(t, WriteSample { data: &[0; 4], duration: 0, composition_offset: 0, is_sync: true }).unwrap();
@@ -1440,6 +1466,9 @@ mod tests {
         assert!(s.iter().all(|s| u64::from(s.size) <= PCM_MAX_SAMPLE_BYTES));
         assert_eq!(s.iter().map(|s| u64::from(s.size)).sum::<u64>(), u64::from(u32::MAX));
         assert_eq!(s.iter().map(|s| u64::from(s.duration)).sum::<u64>(), u64::from(u32::MAX));
-        assert!(s.windows(2).all(|w| w[1].offset == w[0].offset + u64::from(w[0].size) && w[1].dts == w[0].dts + i64::from(w[0].duration)));
+        assert!(
+            s.windows(2).all(|w| w[1].offset == w[0].offset + u64::from(w[0].size)
+                && w[1].dts == w[0].dts + i64::from(w[0].duration))
+        );
     }
 }

@@ -65,7 +65,10 @@ pub const CODEC_STATE: u32 = 0xA4;
 pub const DISCARD_PADDING: u32 = 0x75A2;
 
 pub fn is_cluster_child(id: u32) -> bool {
-    matches!(id, TIMESTAMP | POSITION | PREV_SIZE | SIMPLE_BLOCK | BLOCK_GROUP | ENCRYPTED_BLOCK | SILENT_TRACKS | CRC32 | VOID)
+    matches!(
+        id,
+        TIMESTAMP | POSITION | PREV_SIZE | SIMPLE_BLOCK | BLOCK_GROUP | ENCRYPTED_BLOCK | SILENT_TRACKS | CRC32 | VOID
+    )
 }
 
 // Tracks

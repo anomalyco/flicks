@@ -113,7 +113,11 @@ pub fn clicks(rate: u32, n: usize) -> Vec<f32> {
         .map(|i| {
             let t = i as f32 / fs;
             let k = i % period;
-            let click = if k < 256 { 0.8 * (-(k as f32) / 24.0).exp() * (2.0 * PI * 1500.0 * k as f32 / fs).cos() } else { 0.0 };
+            let click = if k < 256 {
+                0.8 * (-(k as f32) / 24.0).exp() * (2.0 * PI * 1500.0 * k as f32 / fs).cos()
+            } else {
+                0.0
+            };
             0.02 * (2.0 * PI * 330.0 * t).sin() + click
         })
         .collect()
@@ -148,7 +152,14 @@ pub fn encode(cfg: EncoderConfig, planar: &[Vec<f32>]) -> Encoded {
         adts.extend(au);
     }
     let stats = enc.stats();
-    Encoded { raw_bytes: stats.bytes as usize, frames: stats.frames as usize, stats, asc: enc.audio_specific_config(), bandwidth: enc.bandwidth(), adts }
+    Encoded {
+        raw_bytes: stats.bytes as usize,
+        frames: stats.frames as usize,
+        stats,
+        asc: enc.audio_specific_config(),
+        bandwidth: enc.bandwidth(),
+        adts,
+    }
 }
 
 /// Decode with ffmpeg → planar f32 (ffmpeg's own channel order), plus stderr.

@@ -216,7 +216,13 @@ mod tests {
 
     fn direct(x: &[f32]) -> Vec<f64> {
         let m = x.len() / 2;
-        (0..m).map(|k| (0..2 * m).map(|n| x[n] as f64 * (PI / m as f64 * (n as f64 + 0.5 + m as f64 / 2.0) * (k as f64 + 0.5)).cos()).sum()).collect()
+        (0..m)
+            .map(|k| {
+                (0..2 * m)
+                    .map(|n| x[n] as f64 * (PI / m as f64 * (n as f64 + 0.5 + m as f64 / 2.0) * (k as f64 + 0.5)).cos())
+                    .sum()
+            })
+            .collect()
     }
 
     #[test]
@@ -239,7 +245,9 @@ mod tests {
         let mut y = vec![0f32; 2 * m];
         Mdct::new(m).inverse(&spec, &mut y);
         for n in 0..2 * m {
-            let d: f64 = (0..m).map(|k| spec[k] as f64 * (PI / m as f64 * (n as f64 + 0.5 + m as f64 / 2.0) * (k as f64 + 0.5)).cos()).sum();
+            let d: f64 = (0..m)
+                .map(|k| spec[k] as f64 * (PI / m as f64 * (n as f64 + 0.5 + m as f64 / 2.0) * (k as f64 + 0.5)).cos())
+                .sum();
             assert!((y[n] as f64 - d).abs() < 1e-3, "n={n}");
         }
     }

@@ -83,7 +83,8 @@ fn motion_bs<S: Sample>(pic: &PicState<S>, ps: u32, p: &MvField, qs: u32, q: &Mv
     if np != nq {
         return 1;
     }
-    let far = |a: [i16; 2], b: [i16; 2]| (a[0] as i32 - b[0] as i32).abs() >= 4 || (a[1] as i32 - b[1] as i32).abs() >= 4;
+    let far =
+        |a: [i16; 2], b: [i16; 2]| (a[0] as i32 - b[0] as i32).abs() >= 4 || (a[1] as i32 - b[1] as i32).abs() >= 4;
     if np == 1 {
         let lp = if p.pred(0) { 0 } else { 1 };
         let lq = if q.pred(0) { 0 } else { 1 };
@@ -98,7 +99,11 @@ fn motion_bs<S: Sample>(pic: &PicState<S>, ps: u32, p: &MvField, qs: u32, q: &Mv
         return 1;
     }
     if p0 != p1 {
-        if p0 == q0 { (far(p.mv[0], q.mv[0]) || far(p.mv[1], q.mv[1])) as i32 } else { (far(p.mv[0], q.mv[1]) || far(p.mv[1], q.mv[0])) as i32 }
+        if p0 == q0 {
+            (far(p.mv[0], q.mv[0]) || far(p.mv[1], q.mv[1])) as i32
+        } else {
+            (far(p.mv[0], q.mv[1]) || far(p.mv[1], q.mv[0])) as i32
+        }
     } else {
         ((far(p.mv[0], q.mv[0]) || far(p.mv[1], q.mv[1])) && (far(p.mv[0], q.mv[1]) || far(p.mv[1], q.mv[0]))) as i32
     }
@@ -106,7 +111,13 @@ fn motion_bs<S: Sample>(pic: &PicState<S>, ps: u32, p: &MvField, qs: u32, q: &Mv
 
 /// Whether the edge between blocks p and q (q = current block, owning the edge) is filtered, and the
 /// slice-level parameters (tc offset, beta offset) of q's slice, then the slices of p and q.
-fn edge_params<S: Sample>(pic: &PicState<S>, px: usize, py: usize, qx: usize, qy: usize) -> Option<(i32, i32, u32, u32)> {
+fn edge_params<S: Sample>(
+    pic: &PicState<S>,
+    px: usize,
+    py: usize,
+    qx: usize,
+    qy: usize,
+) -> Option<(i32, i32, u32, u32)> {
     let s = pic.log2_ctb;
     let pc = (py >> s) * pic.wctb + (px >> s);
     let qc = (qy >> s) * pic.wctb + (qx >> s);
@@ -161,7 +172,12 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let qpl = (p.qp as i32 + q.qp as i32 + 1) >> 1;
             let (tc, beta) = tc_beta(qpl, bs, tc_off, beta_off, bd);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
-            filter_luma(&mut pic.planes[0], EdgeSeg { o: y * w + x, step: 1, along: w }, beta, EdgeFilter { tc, nfp, nfq, bd });
+            filter_luma(
+                &mut pic.planes[0],
+                EdgeSeg { o: y * w + x, step: 1, along: w },
+                beta,
+                EdgeFilter { tc, nfp, nfq, bd },
+            );
         }
     }
     // chroma vertical edges (8x8 chroma grid = 16 luma samples), bS == 2 only
@@ -180,7 +196,11 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
                 let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], EdgeSeg { o: (y / 2) * cw + x / 2, step: 1, along: cw }, EdgeFilter { tc, nfp, nfq, bd: bdc });
+                filter_chroma(
+                    &mut pic.planes[c],
+                    EdgeSeg { o: (y / 2) * cw + x / 2, step: 1, along: cw },
+                    EdgeFilter { tc, nfp, nfq, bd: bdc },
+                );
             }
         }
     }
@@ -205,7 +225,12 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let qpl = (p.qp as i32 + q.qp as i32 + 1) >> 1;
             let (tc, beta) = tc_beta(qpl, bs, tc_off, beta_off, bd);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
-            filter_luma(&mut pic.planes[0], EdgeSeg { o: y * w + x, step: w, along: 1 }, beta, EdgeFilter { tc, nfp, nfq, bd });
+            filter_luma(
+                &mut pic.planes[0],
+                EdgeSeg { o: y * w + x, step: w, along: 1 },
+                beta,
+                EdgeFilter { tc, nfp, nfq, bd },
+            );
         }
     }
     for by in (y0 / 4..y1 / 4).filter(|b| b % 4 == 0 && *b > 0) {
@@ -222,7 +247,11 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
                 let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], EdgeSeg { o: (y / 2) * cw + x / 2, step: cw, along: 1 }, EdgeFilter { tc, nfp, nfq, bd: bdc });
+                filter_chroma(
+                    &mut pic.planes[c],
+                    EdgeSeg { o: (y / 2) * cw + x / 2, step: cw, along: 1 },
+                    EdgeFilter { tc, nfp, nfq, bd: bdc },
+                );
             }
         }
     }
@@ -428,7 +457,9 @@ fn sao_ctb<S: Sample>(pic: &PicState<S>, blk: &SaoBlock, p: &crate::slicedec::Sa
     let sc = if c == 0 { 0 } else { 1 };
     let offs = p.offsets[c].map(|v| v as i32);
     // samples of CUs that must not be modified
-    let nofilter = |pic: &PicState<S>, x: usize, y: usize| pic.blk[((y << sc) >> 2) * pic.w4 + ((x << sc) >> 2)].flags & F_NOFILTER != 0;
+    let nofilter = |pic: &PicState<S>, x: usize, y: usize| {
+        pic.blk[((y << sc) >> 2) * pic.w4 + ((x << sc) >> 2)].flags & F_NOFILTER != 0
+    };
     let any_nofilter = {
         let mut a = false;
         for by in ((y0 << sc) >> 2)..(((y1 << sc) + 3) >> 2).min(pic.h4) {
@@ -447,7 +478,13 @@ fn sao_ctb<S: Sample>(pic: &PicState<S>, blk: &SaoBlock, p: &crate::slicedec::Sa
         for y in y0..y1 {
             if !any_nofilter {
                 let band = (p.band_pos[c] as i32, offs);
-                sao_band_run(&pic.planes[c][y * w + x0..y * w + x1], &mut dst[(y - y0) * w + x0..(y - y0) * w + x1], shift, band, max);
+                sao_band_run(
+                    &pic.planes[c][y * w + x0..y * w + x1],
+                    &mut dst[(y - y0) * w + x0..(y - y0) * w + x1],
+                    shift,
+                    band,
+                    max,
+                );
                 continue;
             }
             for x in x0..x1 {
@@ -491,7 +528,9 @@ fn sao_ctb<S: Sample>(pic: &PicState<S>, blk: &SaoBlock, p: &crate::slicedec::Sa
                 return false;
             }
         }
-        if !pic.pps.loop_filter_across_tiles && pic.layout.tile_id[pic.layout.rs_to_ts[nrs] as usize] != pic.layout.tile_id[cur_ts as usize] {
+        if !pic.pps.loop_filter_across_tiles
+            && pic.layout.tile_id[pic.layout.rs_to_ts[nrs] as usize] != pic.layout.tile_id[cur_ts as usize]
+        {
             return false;
         }
         true
@@ -569,7 +608,8 @@ fn sao_edge_run<S: Sample>(cur: &[S], na: &[S], nb: &[S], out: &mut [S], by_sum:
     let n = cur.len();
     let full = n - n % SAO_LANES;
     for i in (0..full).step_by(SAO_LANES) {
-        let (Some(c), Some(a), Some(b), Some(d)) = (lanes(cur, i), lanes(na, i), lanes(nb, i), lanes_mut(out, i)) else {
+        let (Some(c), Some(a), Some(b), Some(d)) = (lanes(cur, i), lanes(na, i), lanes(nb, i), lanes_mut(out, i))
+        else {
             return;
         };
         for l in 0..SAO_LANES {

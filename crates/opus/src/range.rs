@@ -280,7 +280,17 @@ pub(crate) mod enc {
 
     impl RangeEncoder {
         pub fn new(size: usize) -> Self {
-            RangeEncoder { out: Vec::new(), end: Vec::new(), end_window: 0, nend_bits: 0, rng: CODE_TOP, low: 0, rem: -1, ext: 0, size }
+            RangeEncoder {
+                out: Vec::new(),
+                end: Vec::new(),
+                end_window: 0,
+                nend_bits: 0,
+                rng: CODE_TOP,
+                low: 0,
+                rem: -1,
+                ext: 0,
+                size,
+            }
         }
         fn carry_out(&mut self, c: u32) {
             if c != SYM_MAX {

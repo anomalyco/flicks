@@ -301,12 +301,30 @@ mod tests {
         let r = RefPlane { frame: &frame, plane: 0, last_x: w as i32 - 1, last_y: h as i32 - 1 };
         let mut tmp = vec![0u16; 80 * 80];
         for filter in 0..4u8 {
-            for &(x, y) in &[(0, 0), (5, 3), (16 * 7 + 5, 16 * 9 + 11), (-40, -3), (16 * 36 + 1, 16 * 25 + 15), (16 * 10, 16 * 10 + 8)] {
+            for &(x, y) in &[
+                (0, 0),
+                (5, 3),
+                (16 * 7 + 5, 16 * 9 + 11),
+                (-40, -3),
+                (16 * 36 + 1, 16 * 25 + 15),
+                (16 * 10, 16 * 10 + 8),
+            ] {
                 for &(bw, bh) in &[(4usize, 4usize), (8, 8), (16, 8)] {
                     let mut a = vec![0u16; bw * bh];
                     let mut b = vec![0u16; bw * bh];
-                    predict_unscaled(&r, &McBlock { x, y, step_x: 16, step_y: 16, w: bw, h: bh, filter, bit_depth: 8 }, &mut a, &mut tmp, &mut [0u16; 71 * 71]);
-                    predict_scaled(&r, &McBlock { x, y, step_x: 16, step_y: 16, w: bw, h: bh, filter, bit_depth: 8 }, &mut b, &mut tmp);
+                    predict_unscaled(
+                        &r,
+                        &McBlock { x, y, step_x: 16, step_y: 16, w: bw, h: bh, filter, bit_depth: 8 },
+                        &mut a,
+                        &mut tmp,
+                        &mut [0u16; 71 * 71],
+                    );
+                    predict_scaled(
+                        &r,
+                        &McBlock { x, y, step_x: 16, step_y: 16, w: bw, h: bh, filter, bit_depth: 8 },
+                        &mut b,
+                        &mut tmp,
+                    );
                     assert_eq!(a, b, "filter {filter} pos ({x},{y}) {bw}x{bh}");
                 }
             }

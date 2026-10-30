@@ -24,7 +24,12 @@ impl Rng {
 
 /// (name, encoder, extra encoder args, pix_fmt)
 const SEEDS: &[(&str, &str, &str, &str)] = &[
-    ("hevc_fz_main_b", "libx265", "-x265-params log-level=error:bframes=2:keyint=8:min-keyint=8:sao=1:amp=1", "yuv420p"),
+    (
+        "hevc_fz_main_b",
+        "libx265",
+        "-x265-params log-level=error:bframes=2:keyint=8:min-keyint=8:sao=1:amp=1",
+        "yuv420p",
+    ),
     ("hevc_fz_main10", "libx265", "-x265-params log-level=error:bframes=1:keyint=6:min-keyint=6", "yuv420p10le"),
     ("hevc_fz_wpp_slices", "libx265", "-x265-params log-level=error:keyint=6:min-keyint=6:wpp=1:slices=3", "yuv420p"),
     // x265 cannot encode tiles; kvazaar can, at 256 x 64 luma per tile at least (Main profile)
@@ -172,7 +177,9 @@ impl Depth {
             Some(rounds) => Depth { full: true, truncations: 300, rounds, rotation: 0 },
             None => {
                 let rotation = rotation();
-                eprintln!("fuzz subset rotation {rotation} (FLICKS_FUZZ_SEED={rotation} replays it; FLICKS_FUZZ_ITERS=400 runs everything)");
+                eprintln!(
+                    "fuzz subset rotation {rotation} (FLICKS_FUZZ_SEED={rotation} replays it; FLICKS_FUZZ_ITERS=400 runs everything)"
+                );
                 Depth { full: false, truncations: 300, rounds: 400, rotation }
             }
         }

@@ -269,7 +269,14 @@ impl<W: Write + Seek> MkvWriter<W> {
     /// Add one frame. `pts_ns` is the presentation time (codec delay is added back for storage);
     /// frames must be supplied in the desired file order. `duration_ns` forces a BlockGroup with a
     /// BlockDuration when it differs from the track's DefaultDuration.
-    pub fn write_frame(&mut self, track: usize, pts_ns: i64, keyframe: bool, data: &[u8], duration_ns: Option<u64>) -> Result<()> {
+    pub fn write_frame(
+        &mut self,
+        track: usize,
+        pts_ns: i64,
+        keyframe: bool,
+        data: &[u8],
+        duration_ns: Option<u64>,
+    ) -> Result<()> {
         let spec = self.tracks.get(track).ok_or(Error::NoSuchTrack(track))?;
         // the Matroska ProRes mapping stores frames without the 8-byte `size`+`icpf` header
         let data = if spec.codec_id == "V_PRORES" && data.get(4..8) == Some(b"icpf") { &data[8..] } else { data };
@@ -315,7 +322,8 @@ impl<W: Write + Seek> MkvWriter<W> {
             let max = self.opts.max_lace_frames;
             let joins = self.pending.as_ref().is_some_and(|p| {
                 let n = p.frames.len();
-                let implied = ((cts + p.ts) as i128 * scale as i128 + n as i128 * dd as i128 + scale as i128 / 2) / scale as i128;
+                let implied =
+                    ((cts + p.ts) as i128 * scale as i128 + n as i128 * dd as i128 + scale as i128 / 2) / scale as i128;
                 p.track == track && n < max && implied == ts as i128
             });
             if !joins {
@@ -572,7 +580,8 @@ mod tests {
             m.write_frame(1, ms * 1_000_000, true, &[ms as u8; 64], None).unwrap();
         }
         let bytes = m.finish().unwrap().into_inner();
-        let got: Vec<_> = Demuxer::from_slice(&bytes).unwrap().map(|p| p.unwrap()).map(|p| (p.track, p.pts, p.lace)).collect();
+        let got: Vec<_> =
+            Demuxer::from_slice(&bytes).unwrap().map(|p| p.unwrap()).map(|p| (p.track, p.pts, p.lace)).collect();
         assert_eq!(got, [(0, 0, 0), (0, 100, 0), (0, 110, 1), (0, 120, 2), (0, 200, 0), (1, 300, 0), (1, 310, 0)]);
     }
 

@@ -22,11 +22,7 @@ pub struct KdfParams {
 impl KdfParams {
     /// 64 MiB, 3 passes, 1 lane: RFC 9106's second recommended profile,
     /// with one lane since the derivation runs single-threaded.
-    pub const DEFAULT: Self = Self {
-        m_cost_kib: 64 * 1024,
-        t_cost: 3,
-        p_cost: 1,
-    };
+    pub const DEFAULT: Self = Self { m_cost_kib: 64 * 1024, t_cost: 3, p_cost: 1 };
 
     // Upper bounds applied to parameters read from disk so a tampered header
     // cannot make unlock allocate unbounded memory or spin forever.
@@ -35,13 +31,8 @@ impl KdfParams {
     const MAX_P_COST: u32 = 64;
 
     fn argon2_params(&self) -> Result<Params> {
-        if self.m_cost_kib > Self::MAX_M_COST_KIB
-            || self.t_cost > Self::MAX_T_COST
-            || self.p_cost > Self::MAX_P_COST
-        {
-            return Err(Error::InvalidKdfParams(format!(
-                "{self:?} exceeds the supported maximum"
-            )));
+        if self.m_cost_kib > Self::MAX_M_COST_KIB || self.t_cost > Self::MAX_T_COST || self.p_cost > Self::MAX_P_COST {
+            return Err(Error::InvalidKdfParams(format!("{self:?} exceeds the supported maximum")));
         }
         Params::new(self.m_cost_kib, self.t_cost, self.p_cost, Some(KEY_LEN))
             .map_err(|e| Error::InvalidKdfParams(e.to_string()))
@@ -75,10 +66,7 @@ pub(crate) struct KdfHeader {
 impl KdfHeader {
     pub(crate) fn generate(params: KdfParams) -> Result<Self> {
         params.validate()?;
-        Ok(Self {
-            params,
-            salt: crypto::random()?,
-        })
+        Ok(Self { params, salt: crypto::random()? })
     }
 
     pub(crate) fn encode(&self) -> [u8; ENCODED_LEN] {
@@ -92,25 +80,14 @@ impl KdfHeader {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
-        let bytes: &[u8; ENCODED_LEN] = bytes
-            .try_into()
-            .map_err(|_| Error::corrupt("KDF header has the wrong length"))?;
+        let bytes: &[u8; ENCODED_LEN] =
+            bytes.try_into().map_err(|_| Error::corrupt("KDF header has the wrong length"))?;
         if bytes[0] != ALG_ARGON2ID_V13 {
-            return Err(Error::corrupt(format!(
-                "unknown KDF algorithm {}",
-                bytes[0]
-            )));
+            return Err(Error::corrupt(format!("unknown KDF algorithm {}", bytes[0])));
         }
-        let u32_at =
-            |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
-        let params = KdfParams {
-            m_cost_kib: u32_at(1),
-            t_cost: u32_at(5),
-            p_cost: u32_at(9),
-        };
-        params
-            .validate()
-            .map_err(|e| Error::corrupt(format!("stored KDF parameters rejected: {e}")))?;
+        let u32_at = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+        let params = KdfParams { m_cost_kib: u32_at(1), t_cost: u32_at(5), p_cost: u32_at(9) };
+        params.validate().map_err(|e| Error::corrupt(format!("stored KDF parameters rejected: {e}")))?;
         let mut salt = [0u8; SALT_LEN];
         salt.copy_from_slice(&bytes[13..]);
         Ok(Self { params, salt })
@@ -125,12 +102,7 @@ impl KdfHeader {
         let mut memory = Zeroizing::new(vec![Block::new(); params.block_count()]);
         let mut key = Zeroizing::new([0u8; KEY_LEN]);
         argon2
-            .hash_password_into_with_memory(
-                passphrase,
-                &self.salt,
-                key.as_mut_slice(),
-                memory.as_mut_slice(),
-            )
+            .hash_password_into_with_memory(passphrase, &self.salt, key.as_mut_slice(), memory.as_mut_slice())
             .map_err(|e| Error::InvalidKdfParams(e.to_string()))?;
         Ok(key)
     }

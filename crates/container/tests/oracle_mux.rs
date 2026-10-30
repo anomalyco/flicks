@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 /// All samples of all tracks in decode order interleaved by decode time: (track, sample index).
 fn interleave(f: &Mp4File, tracks: &[usize]) -> Vec<(usize, usize)> {
-    let mut v: Vec<(usize, usize)> = tracks.iter().flat_map(|&t| (0..f.tracks[t].samples.len()).map(move |i| (t, i))).collect();
+    let mut v: Vec<(usize, usize)> =
+        tracks.iter().flat_map(|&t| (0..f.tracks[t].samples.len()).map(move |i| (t, i))).collect();
     v.sort_by(|a, b| {
         let ta = &f.tracks[a.0];
         let tb = &f.tracks[b.0];
@@ -36,14 +37,21 @@ enum Finish {
     Faststart,
 }
 
-fn remux(input: &Path, out_name: &str, brand: Brand, finish: Finish, timecode: Option<(TimecodeConfig, u32)>) -> Option<(Mp4File, PathBuf)> {
+fn remux(
+    input: &Path,
+    out_name: &str,
+    brand: Brand,
+    finish: Finish,
+    timecode: Option<(TimecodeConfig, u32)>,
+) -> Option<(Mp4File, PathBuf)> {
     let data = std::fs::read(input).ok()?;
     let f = open(data.as_slice()).unwrap();
     let mut opts = WriterOptions::new(brand);
     opts.movie_timescale = f.timescale;
     opts.metadata.push(("©nam".into(), "Flicks test".into()));
     let mut w = Mp4Writer::new(Cursor::new(Vec::new()), opts).unwrap();
-    let av: Vec<usize> = (0..f.tracks.len()).filter(|&i| matches!(f.tracks[i].kind, TrackKind::Video | TrackKind::Audio)).collect();
+    let av: Vec<usize> =
+        (0..f.tracks.len()).filter(|&i| matches!(f.tracks[i].kind, TrackKind::Video | TrackKind::Audio)).collect();
     let mut map = vec![usize::MAX; f.tracks.len()];
     for &i in &av {
         map[i] = w.add_track(track_config(&f, &f.tracks[i], true)).unwrap();
@@ -55,8 +63,16 @@ fn remux(input: &Path, out_name: &str, brand: Brand, finish: Finish, timecode: O
     for (t, i) in interleave(&f, &av) {
         let s = f.tracks[t].samples[i];
         let bytes = f.read_sample(data.as_slice(), t, i).unwrap();
-        w.write_sample(map[t], WriteSample { data: &bytes, duration: s.duration, composition_offset: (s.pts - s.dts) as i32, is_sync: s.is_sync })
-            .unwrap();
+        w.write_sample(
+            map[t],
+            WriteSample {
+                data: &bytes,
+                duration: s.duration,
+                composition_offset: (s.pts - s.dts) as i32,
+                is_sync: s.is_sync,
+            },
+        )
+        .unwrap();
     }
     let out = match finish {
         Finish::Normal => w.finish(),
@@ -74,7 +90,11 @@ fn remux(input: &Path, out_name: &str, brand: Brand, finish: Finish, timecode: O
         assert_eq!(a.edit_offset, b.edit_offset, "{out_name}: edit offset");
         assert_eq!(a.codec(), b.codec(), "{out_name}: codec");
         for (j, (x, y)) in a.samples.iter().zip(&b.samples).enumerate() {
-            assert_eq!((x.size, x.dts, x.pts, x.duration, x.is_sync), (y.size, y.dts, y.pts, y.duration, y.is_sync), "{out_name}: sample {j}");
+            assert_eq!(
+                (x.size, x.dts, x.pts, x.duration, x.is_sync),
+                (y.size, y.dts, y.pts, y.duration, y.is_sync),
+                "{out_name}: sample {j}"
+            );
         }
         for j in 0..a.samples.len() {
             assert_eq!(f.read_sample(data.as_slice(), i, j).unwrap(), g.read_sample(out.as_slice(), k, j).unwrap());
@@ -95,7 +115,9 @@ fn assert_same_packets(a: &Path, b: &Path) {
     let (Some(pa), Some(pb)) = (stream_packets(a), stream_packets(b)) else { return };
     assert_eq!(pa.len(), pb.len(), "stream count {} vs {}", a.display(), b.display());
     for (i, (x, y)) in pa.iter().zip(&pb).enumerate() {
-        let key = |p: &Value| (int(&p["pts"]), int(&p["dts"]), int(&p["size"]), p["flags"].as_str().map(|f| f.starts_with('K')));
+        let key = |p: &Value| {
+            (int(&p["pts"]), int(&p["dts"]), int(&p["size"]), p["flags"].as_str().map(|f| f.starts_with('K')))
+        };
         let kx: Vec<_> = x.iter().map(key).collect();
         let ky: Vec<_> = y.iter().map(key).collect();
         assert_eq!(kx.len(), ky.len(), "stream {i}: packet count {} vs {}", a.display(), b.display());
@@ -112,7 +134,18 @@ fn assert_same_streams(a: &Path, b: &Path) {
     let (sa, sb) = (media(sa), media(sb));
     assert_eq!(sa.len(), sb.len(), "stream count {} vs {}", a.display(), b.display());
     for (x, y) in sa.iter().zip(&sb) {
-        for k in ["codec_name", "width", "height", "sample_rate", "channels", "nb_frames", "duration_ts", "time_base", "profile", "pix_fmt"] {
+        for k in [
+            "codec_name",
+            "width",
+            "height",
+            "sample_rate",
+            "channels",
+            "nb_frames",
+            "duration_ts",
+            "time_base",
+            "profile",
+            "pix_fmt",
+        ] {
             assert_eq!(x[k], y[k], "stream field {k}");
         }
     }
@@ -181,7 +214,14 @@ fn remux_other_codecs() {
 #[test]
 fn remux_prores_pcm24_with_timecode() {
     let (Some(src), Some(_)) = (fixture("prores.mov"), ffprobe()) else { return };
-    let tc = TimecodeConfig { flags: 0, timescale: 25, frame_duration: 1, frames_per_second: 25, start_frame: None, name: None };
+    let tc = TimecodeConfig {
+        flags: 0,
+        timescale: 25,
+        frame_duration: 1,
+        frames_per_second: 25,
+        start_frame: None,
+        name: None,
+    };
     let (f, out) = remux(&src, "remux_prores_tc.mov", Brand::Mov, Finish::Normal, Some((tc, 25 * 3600))).unwrap();
     decode_clean(&out);
     assert_same_streams(&src, &out);
@@ -219,7 +259,8 @@ fn aac_priming_edit() {
     let k = w.add_track(cfg).unwrap();
     for (i, s) in t.samples.iter().enumerate() {
         let d = f.read_sample(data.as_slice(), 0, i).unwrap();
-        w.write_sample(k, WriteSample { data: &d, duration: s.duration, composition_offset: 0, is_sync: true }).unwrap();
+        w.write_sample(k, WriteSample { data: &d, duration: s.duration, composition_offset: 0, is_sync: true })
+            .unwrap();
     }
     let out = out_dir().join("aac_priming.mp4");
     std::fs::write(&out, w.finish().unwrap().into_inner()).unwrap();
@@ -246,7 +287,16 @@ fn fragmented_writer_ffmpeg() {
             w.flush_fragment().unwrap();
         }
         let d = f.read_sample(data.as_slice(), t, i).unwrap();
-        w.write_sample(t, WriteSample { data: &d, duration: s.duration, composition_offset: (s.pts - s.dts) as i32, is_sync: s.is_sync }).unwrap();
+        w.write_sample(
+            t,
+            WriteSample {
+                data: &d,
+                duration: s.duration,
+                composition_offset: (s.pts - s.dts) as i32,
+                is_sync: s.is_sync,
+            },
+        )
+        .unwrap();
     }
     let bytes = w.finish().unwrap();
     let out = out_dir().join("our_frag.mp4");

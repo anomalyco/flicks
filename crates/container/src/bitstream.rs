@@ -43,7 +43,10 @@ pub struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        let rbsp_stop = data.iter().rposition(|&b| b != 0).map(|i| i.saturating_mul(8).saturating_add(7 - data[i].trailing_zeros() as usize));
+        let rbsp_stop = data
+            .iter()
+            .rposition(|&b| b != 0)
+            .map(|i| i.saturating_mul(8).saturating_add(7 - data[i].trailing_zeros() as usize));
         Self { data, pos: 0, rbsp_stop }
     }
     pub fn data(&self) -> &'a [u8] {

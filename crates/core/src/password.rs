@@ -26,31 +26,18 @@ pub fn generate(length: usize, symbols: bool) -> Result<Zeroizing<String>, Lengt
     if !LENGTHS.contains(&length) {
         return Err(LengthError);
     }
-    let classes: &[&[u8]] = if symbols {
-        &[LOWER, UPPER, DIGITS, SYMBOLS]
-    } else {
-        &[LOWER, UPPER, DIGITS]
-    };
+    let classes: &[&[u8]] = if symbols { &[LOWER, UPPER, DIGITS, SYMBOLS] } else { &[LOWER, UPPER, DIGITS] };
     let alphabet = Zeroizing::new(classes.concat());
     loop {
-        let password: Zeroizing<String> = Zeroizing::new(
-            (0..length)
-                .map(|_| alphabet[random_index(alphabet.len())] as char)
-                .collect(),
-        );
-        if classes
-            .iter()
-            .all(|class| password.bytes().any(|b| class.contains(&b)))
-        {
+        let password: Zeroizing<String> =
+            Zeroizing::new((0..length).map(|_| alphabet[random_index(alphabet.len())] as char).collect());
+        if classes.iter().all(|class| password.bytes().any(|b| class.contains(&b))) {
             return Ok(password);
         }
     }
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "OS CSPRNG failure is unrecoverable; never substitute weak randomness"
-)]
+#[expect(clippy::expect_used, reason = "OS CSPRNG failure is unrecoverable; never substitute weak randomness")]
 fn random_index(n: usize) -> usize {
     // Rejection sampling keeps every index equally likely.
     let limit = 256 - 256 % n;
@@ -98,9 +85,6 @@ mod tests {
         assert_eq!(generate(257, false), Err(LengthError));
         assert_eq!(generate(8, true).unwrap().len(), 8);
         assert_eq!(generate(256, false).unwrap().len(), 256);
-        assert_eq!(
-            LengthError.to_string(),
-            "a generated password must be 8 to 256 characters"
-        );
+        assert_eq!(LengthError.to_string(), "a generated password must be 8 to 256 characters");
     }
 }

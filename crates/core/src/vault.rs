@@ -28,10 +28,7 @@ impl Node {
     /// Whether `other` is in this entry's strict causal past.
     pub(crate) fn saw(&self, other: &Node) -> bool {
         self.entry.hash() != other.entry.hash()
-            && self
-                .clock
-                .get(&other.entry.log_id())
-                .is_some_and(|&seq| seq >= other.entry.seq())
+            && self.clock.get(&other.entry.log_id()).is_some_and(|&seq| seq >= other.entry.seq())
     }
 }
 
@@ -119,11 +116,7 @@ pub struct Vault {
 type Frontier = Vec<(DeviceId, u64)>;
 
 fn frontier(clock: &Clock) -> Frontier {
-    clock
-        .iter()
-        .filter(|(log, _)| log.log == Log::Membership)
-        .map(|(log, seq)| (log.author, *seq))
-        .collect()
+    clock.iter().filter(|(log, _)| log.log == Log::Membership).map(|(log, seq)| (log.author, *seq)).collect()
 }
 
 impl Vault {
@@ -137,11 +130,7 @@ impl Vault {
         let nonce = crate::id::random();
         let device = secret.device_id();
         let vault = VaultId::derive(&device, &nonce);
-        let op = MembershipOp::Create {
-            device,
-            nonce,
-            name,
-        };
+        let op = MembershipOp::Create { device, nonce, name };
         let genesis = Entry::sign(secret, vault, 0, [], Payload::Membership(op));
         let vault = Self::from_genesis(genesis.clone())?;
         Ok((vault, genesis))
@@ -149,12 +138,7 @@ impl Vault {
 
     /// Starts a vault from its genesis entry.
     pub fn from_genesis(genesis: Entry) -> Result<Self, Error> {
-        let Payload::Membership(MembershipOp::Create {
-            device,
-            nonce,
-            name,
-        }) = genesis.payload()
-        else {
+        let Payload::Membership(MembershipOp::Create { device, nonce, name }) = genesis.payload() else {
             return Err(Error::InvalidGenesis);
         };
         if !valid_name(name) {
@@ -181,11 +165,7 @@ impl Vault {
             items: BTreeMap::new(),
         };
         let clock = Clock::from([(genesis.log_id(), 0)]);
-        vault.insert(Node {
-            entry: genesis,
-            depth: 0,
-            clock,
-        });
+        vault.insert(Node { entry: genesis, depth: 0, clock });
         Ok(vault)
     }
 
@@ -233,10 +213,7 @@ impl Vault {
     /// device's writes past its cutoff) are stored but have no effect.
     pub fn apply(&mut self, entry: Entry) -> Result<bool, Error> {
         if entry.vault() != self.id {
-            return Err(Error::WrongVault {
-                expected: self.id,
-                found: entry.vault(),
-            });
+            return Err(Error::WrongVault { expected: self.id, found: entry.vault() });
         }
         if self.nodes.contains_key(&entry.hash()) {
             return Ok(false);
@@ -244,27 +221,17 @@ impl Vault {
         let log_id = entry.log_id();
         let next = self.next_seq(log_id);
         if entry.seq() > next {
-            return Err(Error::SeqGap {
-                expected: next,
-                got: entry.seq(),
-            });
+            return Err(Error::SeqGap { expected: next, got: entry.seq() });
         }
         if entry.seq() < next {
             return Err(Error::Fork { seq: entry.seq() });
         }
-        let missing: Vec<Hash> = entry
-            .deps()
-            .iter()
-            .filter(|dep| !self.nodes.contains_key(dep))
-            .copied()
-            .collect();
+        let missing: Vec<Hash> = entry.deps().iter().filter(|dep| !self.nodes.contains_key(dep)).copied().collect();
         if !missing.is_empty() {
             return Err(Error::MissingDeps(missing));
         }
         let deps: Vec<&Node> = entry.deps().iter().map(|dep| &self.nodes[dep]).collect();
-        if entry.log() == Log::Membership
-            && deps.iter().any(|dep| dep.entry.log() != Log::Membership)
-        {
+        if entry.log() == Log::Membership && deps.iter().any(|dep| dep.entry.log() != Log::Membership) {
             return Err(Error::InvalidDeps);
         }
         if let Some(prev) = entry.seq().checked_sub(1) {
@@ -309,11 +276,7 @@ impl Vault {
             _ => {}
         }
         clock.insert(log_id, entry.seq());
-        self.insert(Node {
-            entry,
-            depth,
-            clock,
-        });
+        self.insert(Node { entry, depth, clock });
         Ok(true)
     }
 
@@ -324,10 +287,7 @@ impl Vault {
         if !self.is_member(&author) {
             return Err(Error::NotMember);
         }
-        let log_id = LogId {
-            author,
-            log: payload.log(),
-        };
+        let log_id = LogId { author, log: payload.log() };
         if let Payload::Data(ops) = &payload {
             for op in ops {
                 data::check(&self.items, op)?;
@@ -346,44 +306,21 @@ impl Vault {
 
     /// Adds `device`, given its [`DeviceSecret::join_consent`] for this vault and
     /// `secret`'s device.
-    pub fn add(
-        &mut self,
-        secret: &DeviceSecret,
-        device: DeviceId,
-        consent: Signature,
-    ) -> Result<Entry, Error> {
+    pub fn add(&mut self, secret: &DeviceSecret, device: DeviceId, consent: Signature) -> Result<Entry, Error> {
         if self.was_removed(&device) {
             return Err(Error::AddRemovedDevice);
         }
-        self.commit(
-            secret,
-            Payload::Membership(MembershipOp::Add { device, consent }),
-        )
+        self.commit(secret, Payload::Membership(MembershipOp::Add { device, consent }))
     }
 
     /// Removes `device`. Its data entries this vault already holds keep counting.
     pub fn remove(&mut self, secret: &DeviceSecret, device: DeviceId) -> Result<Entry, Error> {
-        let last_seen_seq = self
-            .next_seq(LogId {
-                author: device,
-                log: Log::Data,
-            })
-            .checked_sub(1);
-        self.commit(
-            secret,
-            Payload::Membership(MembershipOp::Remove {
-                device,
-                last_seen_seq,
-            }),
-        )
+        let last_seen_seq = self.next_seq(LogId { author: device, log: Log::Data }).checked_sub(1);
+        self.commit(secret, Payload::Membership(MembershipOp::Remove { device, last_seen_seq }))
     }
 
     /// Renames the vault.
-    pub fn rename(
-        &mut self,
-        secret: &DeviceSecret,
-        name: impl Into<String>,
-    ) -> Result<Entry, Error> {
+    pub fn rename(&mut self, secret: &DeviceSecret, name: impl Into<String>) -> Result<Entry, Error> {
         let name = name.into();
         if !valid_name(&name) {
             return Err(Error::InvalidName);
@@ -425,22 +362,13 @@ impl Vault {
         let mut batches: Vec<Vec<DataOp>> = Vec::new();
         let mut size = 0;
         for op in items {
-            let DataOp::Create {
-                kind,
-                name,
-                fields,
-                source,
-            } = &op
-            else {
+            let DataOp::Create { kind, name, fields, source } = &op else {
                 return Err(ItemError::NoSuchItem.into());
             };
             let bytes = kind.len()
                 + name.as_ref().map_or(0, String::len)
                 + source.as_ref().map_or(0, |s| s.id.len() + s.version.len())
-                + fields
-                    .iter()
-                    .map(|(n, f)| n.len() + f.kind.as_str().len() + f.value.len() + 16)
-                    .sum::<usize>();
+                + fields.iter().map(|(n, f)| n.len() + f.kind.as_str().len() + f.value.len() + 16).sum::<usize>();
             data::check(&self.items, &op)?;
             match batches.last_mut() {
                 Some(batch) if size + bytes <= CREATE_BATCH_BYTES => batch.push(op),
@@ -469,27 +397,17 @@ impl Vault {
 
     /// All items that are not deleted, ordered by id.
     pub fn items(&self) -> Vec<Item> {
-        self.items
-            .iter()
-            .map(|(id, state)| state.item(*id))
-            .filter(|item| !item.deleted)
-            .collect()
+        self.items.iter().map(|(id, state)| state.item(*id)).filter(|item| !item.deleted).collect()
     }
 
     /// Every change to an item in causal order, with whether it is current.
     pub fn history(&self, id: &ItemId) -> Vec<Version> {
-        self.items
-            .get(id)
-            .map(ItemState::history)
-            .unwrap_or_default()
+        self.items.get(id).map(ItemState::history).unwrap_or_default()
     }
 
     /// The latest seq held per log.
     pub fn heads(&self) -> Heads {
-        self.logs
-            .iter()
-            .map(|(log, hashes)| (*log, hashes.len() as u64 - 1))
-            .collect()
+        self.logs.iter().map(|(log, hashes)| (*log, hashes.len() as u64 - 1)).collect()
     }
 
     /// Entries a peer holding `peer` heads lacks, in an order it can apply:
@@ -499,10 +417,7 @@ impl Vault {
             .iter()
             .chain(&self.data_order)
             .map(|hash| &self.nodes[hash].entry)
-            .filter(|entry| {
-                peer.get(&entry.log_id())
-                    .is_none_or(|seq| entry.seq() > seq)
-            })
+            .filter(|entry| peer.get(&entry.log_id()).is_none_or(|seq| entry.seq() > seq))
             .collect()
     }
 
@@ -530,21 +445,15 @@ impl Vault {
         let nodes = &self.nodes;
         let ops = &self.membership_order;
         let id = &self.id;
-        self.past_memberships
-            .entry(frontier)
-            .or_insert_with_key(|frontier| {
-                let covered: BTreeMap<_, _> = frontier.iter().copied().collect();
-                let past = ops
-                    .iter()
-                    .map(|hash| &nodes[hash])
-                    .filter(|node| {
-                        covered
-                            .get(&node.entry.author())
-                            .is_some_and(|&seq| seq >= node.entry.seq())
-                    })
-                    .collect();
-                membership::resolve(id, past)
-            })
+        self.past_memberships.entry(frontier).or_insert_with_key(|frontier| {
+            let covered: BTreeMap<_, _> = frontier.iter().copied().collect();
+            let past = ops
+                .iter()
+                .map(|hash| &nodes[hash])
+                .filter(|node| covered.get(&node.entry.author()).is_some_and(|&seq| seq >= node.entry.seq()))
+                .collect();
+            membership::resolve(id, past)
+        })
     }
 
     fn insert(&mut self, node: Node) {
@@ -568,11 +477,7 @@ impl Vault {
         self.nodes.insert(hash, node);
         match log {
             Log::Membership => {
-                let ops = self
-                    .membership_order
-                    .iter()
-                    .map(|hash| &self.nodes[hash])
-                    .collect();
+                let ops = self.membership_order.iter().map(|hash| &self.nodes[hash]).collect();
                 let membership = membership::resolve(&self.id, ops);
                 self.past_memberships.clear();
                 let rebuild = !membership.counts_like(&self.membership);
@@ -583,10 +488,7 @@ impl Vault {
             }
             Log::Data => {
                 let node = &self.nodes[&hash];
-                if self
-                    .membership
-                    .counts(&node.entry.author(), node.entry.seq())
-                {
+                if self.membership.counts(&node.entry.author(), node.entry.seq()) {
                     data::apply(&mut self.items, node);
                 }
             }
@@ -597,10 +499,7 @@ impl Vault {
         let mut items = BTreeMap::new();
         for hash in &self.data_order {
             let node = &self.nodes[hash];
-            if self
-                .membership
-                .counts(&node.entry.author(), node.entry.seq())
-            {
+            if self.membership.counts(&node.entry.author(), node.entry.seq()) {
                 data::apply(&mut items, node);
             }
         }

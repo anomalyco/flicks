@@ -92,7 +92,11 @@ pub struct EncoderStats {
 impl EncoderStats {
     /// Average bitrate of the raw access units.
     pub fn bitrate(&self, sample_rate: u32) -> f64 {
-        if self.frames == 0 { 0.0 } else { self.bytes as f64 * 8.0 * sample_rate as f64 / (self.frames as f64 * FRAME_LEN as f64) }
+        if self.frames == 0 {
+            0.0
+        } else {
+            self.bytes as f64 * 8.0 * sample_rate as f64 / (self.frames as f64 * FRAME_LEN as f64)
+        }
     }
 }
 
@@ -141,7 +145,8 @@ pub struct Encoder {
 
 impl Encoder {
     pub fn new(cfg: EncoderConfig) -> Result<Encoder> {
-        let sf_index = sample_rate_index(cfg.sample_rate).ok_or(Error::InvalidConfig("sample rate must be one of the 13 AAC rates (7350–96000 Hz)"))?;
+        let sf_index = sample_rate_index(cfg.sample_rate)
+            .ok_or(Error::InvalidConfig("sample rate must be one of the 13 AAC rates (7350–96000 Hz)"))?;
         if !(1..=8).contains(&cfg.channels) {
             return Err(Error::InvalidConfig("channels must be 1..=8"));
         }
@@ -196,7 +201,9 @@ impl Encoder {
                 ];
                 interp(&pts, per) as u32
             }
-            BitrateMode::Vbr(q) => interp(&[(1.0, 13000.0), (2.0, 15000.0), (3.0, 17000.0), (4.0, 19000.0), (5.0, 20000.0)], q) as u32,
+            BitrateMode::Vbr(q) => {
+                interp(&[(1.0, 13000.0), (2.0, 15000.0), (3.0, 17000.0), (4.0, 19000.0), (5.0, 20000.0)], q) as u32
+            }
         };
         let bandwidth = cfg.bandwidth.unwrap_or(auto_bw).clamp(1000, nyq.saturating_sub(nyq / 50).max(1000));
         let max_frame_bits = 6144 * cfg.channels as i64;
@@ -266,7 +273,9 @@ impl Encoder {
         let n = planar.iter().take(self.cfg.channels).map(|p| p.len()).min().unwrap_or(0);
         for c in 0..self.cfg.channels {
             match planar.get(c) {
-                Some(p) => self.hist[c].extend(p[..n].iter().map(|v| if v.is_finite() { v.clamp(-8.0, 8.0) } else { 0.0 })),
+                Some(p) => {
+                    self.hist[c].extend(p[..n].iter().map(|v| if v.is_finite() { v.clamp(-8.0, 8.0) } else { 0.0 }))
+                }
                 None => self.hist[c].extend(std::iter::repeat_n(0.0, n)),
             }
         }
@@ -348,7 +357,8 @@ impl Encoder {
 
     fn max_sfb(&self, short: bool, lfe: bool) -> usize {
         let bw = if lfe { 240.min(self.bandwidth) } else { self.bandwidth };
-        let (swb, m) = if short { (swb_offsets_short(self.sf_index), 128f64) } else { (swb_offsets_long(self.sf_index), 1024f64) };
+        let (swb, m) =
+            if short { (swb_offsets_short(self.sf_index), 128f64) } else { (swb_offsets_long(self.sf_index), 1024f64) };
         let bin = (bw as f64 / (self.cfg.sample_rate as f64 / 2.0) * m).ceil() as u16;
         swb.iter().take(swb.len() - 1).filter(|&&o| o < bin).count().max(1)
     }
@@ -449,7 +459,13 @@ impl Encoder {
         let mut t = TnsData::default();
         t.windows[0].n_filt = 1;
         t.windows[0].coef_res = true;
-        t.windows[0].filt[0] = TnsFilter { length: (swb.len() - 1 - start) as u8, order: order as u8, direction: false, coef_compress: false, coef };
+        t.windows[0].filt[0] = TnsFilter {
+            length: (swb.len() - 1 - start) as u8,
+            order: order as u8,
+            direction: false,
+            coef_compress: false,
+            coef,
+        };
         tns::apply_encoder(spec, info, self.sf_index, &t);
         Some(t)
     }
@@ -460,8 +476,11 @@ impl Encoder {
             (e.ty, e.first_ch, e.ty.channels(), e.prev_seq, e.short_next)
         };
         let lfe = ty == ElementType::Lfe;
-        let (short_now, short_next) =
-            if lfe { (false, false) } else { (cached.unwrap_or_else(|| self.transient(first, nch, t)), self.transient(first, nch, t + 1)) };
+        let (short_now, short_next) = if lfe {
+            (false, false)
+        } else {
+            (cached.unwrap_or_else(|| self.transient(first, nch, t)), self.transient(first, nch, t + 1))
+        };
         use WindowSequence::*;
         let seq = if short_now {
             EightShort
@@ -474,10 +493,20 @@ impl Encoder {
         };
         let specs: Vec<Vec<f32>> = (first..first + nch).map(|c| self.mdct(c, seq)).collect();
         let short = seq == EightShort;
-        let mut info = IcsInfo { window_sequence: seq, window_shape: self.cfg.window_shape, max_sfb: self.max_sfb(short, lfe), ..Default::default() };
+        let mut info = IcsInfo {
+            window_sequence: seq,
+            window_shape: self.cfg.window_shape,
+            max_sfb: self.max_sfb(short, lfe),
+            ..Default::default()
+        };
         if short {
             // group windows of similar energy; an attack starts a new group
-            let en: Vec<f32> = (0..8).map(|w| specs.iter().map(|s| s[w * 128..(w + 1) * 128].iter().map(|v| v * v).sum::<f32>()).sum::<f32>() + 1.0).collect();
+            let en: Vec<f32> = (0..8)
+                .map(|w| {
+                    specs.iter().map(|s| s[w * 128..(w + 1) * 128].iter().map(|v| v * v).sum::<f32>()).sum::<f32>()
+                        + 1.0
+                })
+                .collect();
             info.num_groups = 1;
             info.group_len = [1, 0, 0, 0, 0, 0, 0, 0];
             for w in 1..8 {
@@ -575,7 +604,12 @@ impl Encoder {
             };
             ms_mask = Some((present, used));
         }
-        let chans = specs.iter().zip(thrs.iter()).zip(tnss).map(|((s, th), tn)| ChannelInput::new(info, swb, s, th, tn)).collect();
+        let chans = specs
+            .iter()
+            .zip(thrs.iter())
+            .zip(tnss)
+            .map(|((s, th), tn)| ChannelInput::new(info, swb, s, th, tn))
+            .collect();
         let e = &mut self.elements[ei];
         e.prev_seq = seq;
         e.short_next = Some(short_next);
@@ -631,7 +665,8 @@ impl Encoder {
         } else {
             0
         };
-        let overhead: u32 = (0..frames.len()).map(|i| self.element_overhead(i, &frames[i])).sum::<u32>() + 3 + 7 + pce_bits;
+        let overhead: u32 =
+            (0..frames.len()).map(|i| self.element_overhead(i, &frames[i])).sum::<u32>() + 3 + 7 + pce_bits;
         let total_bits = |q: &Vec<Vec<QuantChannel>>| overhead + q.iter().flatten().map(|c| c.bits).sum::<u32>();
 
         let any_short = frames.iter().any(|f| f.info.is_short());

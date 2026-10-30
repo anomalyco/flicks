@@ -1,8 +1,9 @@
 //! Inverse transforms (spec 7.13), implemented step by step as specified.
 
 use crate::spec_tables::{
-    ADST_ADST, ADST_DCT, ADST_FLIPADST, COS128_LOOKUP, DCT_ADST, DCT_DCT, DCT_FLIPADST, FLIPADST_ADST, FLIPADST_DCT, FLIPADST_FLIPADST, H_ADST, H_DCT,
-    H_FLIPADST, TRANSFORM_ROW_SHIFT, TX_HEIGHT_LOG2, TX_WIDTH_LOG2, V_ADST, V_DCT, V_FLIPADST,
+    ADST_ADST, ADST_DCT, ADST_FLIPADST, COS128_LOOKUP, DCT_ADST, DCT_DCT, DCT_FLIPADST, FLIPADST_ADST, FLIPADST_DCT,
+    FLIPADST_FLIPADST, H_ADST, H_DCT, H_FLIPADST, TRANSFORM_ROW_SHIFT, TX_HEIGHT_LOG2, TX_WIDTH_LOG2, V_ADST, V_DCT,
+    V_FLIPADST,
 };
 
 #[inline(always)]
@@ -529,7 +530,8 @@ enum Kind1d {
 fn row_kind(tx_type: usize) -> Kind1d {
     match tx_type {
         DCT_DCT | ADST_DCT | FLIPADST_DCT | H_DCT => Kind1d::Dct,
-        DCT_ADST | ADST_ADST | DCT_FLIPADST | FLIPADST_FLIPADST | ADST_FLIPADST | FLIPADST_ADST | H_ADST | H_FLIPADST => Kind1d::Adst,
+        DCT_ADST | ADST_ADST | DCT_FLIPADST | FLIPADST_FLIPADST | ADST_FLIPADST | FLIPADST_ADST | H_ADST
+        | H_FLIPADST => Kind1d::Adst,
         _ => Kind1d::Identity,
     }
 }
@@ -537,14 +539,22 @@ fn row_kind(tx_type: usize) -> Kind1d {
 fn col_kind(tx_type: usize) -> Kind1d {
     match tx_type {
         DCT_DCT | DCT_ADST | DCT_FLIPADST | V_DCT => Kind1d::Dct,
-        ADST_DCT | ADST_ADST | FLIPADST_DCT | FLIPADST_FLIPADST | ADST_FLIPADST | FLIPADST_ADST | V_ADST | V_FLIPADST => Kind1d::Adst,
+        ADST_DCT | ADST_ADST | FLIPADST_DCT | FLIPADST_FLIPADST | ADST_FLIPADST | FLIPADST_ADST | V_ADST
+        | V_FLIPADST => Kind1d::Adst,
         _ => Kind1d::Identity,
     }
 }
 
 /// 2D inverse transform (7.13.3). `dequant` is 64x64 (row stride 64, only the top-left 32x32
 /// may be non-zero); the residual is written to `residual` with row stride `w`.
-pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz: usize, tx_type: usize, lossless: bool, bit_depth: u32) {
+pub(crate) fn inverse_transform_2d(
+    dequant: &[i32],
+    residual: &mut [i32],
+    tx_sz: usize,
+    tx_type: usize,
+    lossless: bool,
+    bit_depth: u32,
+) {
     let log2w = TX_WIDTH_LOG2[tx_sz] as u32;
     let log2h = TX_HEIGHT_LOG2[tx_sz] as u32;
     let w = 1usize << log2w;
@@ -719,7 +729,8 @@ mod tests {
                 inverse_dct(&mut t, n, 24);
                 for x in 0..len {
                     let c = if k == 0 { std::f64::consts::FRAC_1_SQRT_2 } else { 1.0 };
-                    let want = 4096.0 * c * ((2 * x + 1) as f64 * k as f64 * std::f64::consts::PI / (2 * len) as f64).cos();
+                    let want =
+                        4096.0 * c * ((2 * x + 1) as f64 * k as f64 * std::f64::consts::PI / (2 * len) as f64).cos();
                     assert!((t[x] as f64 - want).abs() < 4.0 + 0.5 * n as f64, "n={n} k={k} x={x}: {} vs {want}", t[x]);
                 }
             }
@@ -736,7 +747,8 @@ mod tests {
                 t[k] = 1 << 12;
                 inverse_adst(&mut t, n, 24);
                 for i in 0..len {
-                    let want = 4096.0 * ((std::f64::consts::PI * (2 * i + 1) as f64 * (2 * k + 1) as f64) / (4 * len) as f64).sin();
+                    let want = 4096.0
+                        * ((std::f64::consts::PI * (2 * i + 1) as f64 * (2 * k + 1) as f64) / (4 * len) as f64).sin();
                     assert!((t[i] as f64 - want).abs() < 8.0, "n={n} k={k} i={i}: {} vs {want:.1}", t[i]);
                 }
             }

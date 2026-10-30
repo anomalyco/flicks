@@ -82,7 +82,11 @@ impl Codec {
                 } else {
                     's'
                 };
-                if *bits == 8 { format!("pcm_{k}8") } else { format!("pcm_{k}{bits}{}", if *big_endian { "be" } else { "le" }) }
+                if *bits == 8 {
+                    format!("pcm_{k}8")
+                } else {
+                    format!("pcm_{k}{bits}{}", if *big_endian { "be" } else { "le" })
+                }
             }
             Codec::Ac3 => "ac3".into(),
             Codec::Eac3 => "eac3".into(),
@@ -178,14 +182,19 @@ pub(crate) fn map_codec(id: &str, private: &[u8], audio: Option<&crate::matroska
         "A_MPEG/L2" => Codec::Mp2,
         "A_MPEG/L1" => Codec::Mp1,
         "S_TEXT/UTF8" => Codec::SubRip,
-        "S_TEXT/WEBVTT" | "D_WEBVTT/SUBTITLES" | "D_WEBVTT/CAPTIONS" | "D_WEBVTT/DESCRIPTIONS" | "D_WEBVTT/METADATA" => Codec::WebVtt,
+        "S_TEXT/WEBVTT"
+        | "D_WEBVTT/SUBTITLES"
+        | "D_WEBVTT/CAPTIONS"
+        | "D_WEBVTT/DESCRIPTIONS"
+        | "D_WEBVTT/METADATA" => Codec::WebVtt,
         "S_TEXT/ASS" | "S_ASS" => Codec::Ass { header: p, ssa: false },
         "S_TEXT/SSA" | "S_SSA" => Codec::Ass { header: p, ssa: true },
         _ if id.starts_with("A_AAC/") => {
             if !private.is_empty() {
                 return Codec::Aac { asc: p };
             }
-            let (rate, out_rate, ch) = audio.map_or((48000.0, None, 2), |a| (a.sampling_frequency, a.output_sampling_frequency, a.channels));
+            let (rate, out_rate, ch) =
+                audio.map_or((48000.0, None, 2), |a| (a.sampling_frequency, a.output_sampling_frequency, a.channels));
             let object_type = if id.ends_with("/MAIN") {
                 1
             } else if id.ends_with("/SSR") {
@@ -216,10 +225,20 @@ mod tests {
         bih[16..20].copy_from_slice(b"MJPG");
         assert_eq!(map_codec("V_MS/VFW/FOURCC", &bih, None), Codec::Mjpeg);
         bih[16..20].copy_from_slice(b"FFV1");
-        assert!(matches!(map_codec("V_MS/VFW/FOURCC", &bih, None), Codec::VfwFourcc { fourcc, .. } if &fourcc == b"FFV1"));
-        let a = crate::matroska::AudioInfo { sampling_frequency: 44100.0, channels: 2, bit_depth: Some(24), output_sampling_frequency: None };
+        assert!(
+            matches!(map_codec("V_MS/VFW/FOURCC", &bih, None), Codec::VfwFourcc { fourcc, .. } if &fourcc == b"FFV1")
+        );
+        let a = crate::matroska::AudioInfo {
+            sampling_frequency: 44100.0,
+            channels: 2,
+            bit_depth: Some(24),
+            output_sampling_frequency: None,
+        };
         assert_eq!(map_codec("A_PCM/INT/LIT", &[], Some(&a)).name(), "pcm_s24le");
-        assert_eq!(map_codec("A_PCM/FLOAT/IEEE", &[], Some(&a)), Codec::Pcm { float: true, big_endian: false, bits: 24 });
+        assert_eq!(
+            map_codec("A_PCM/FLOAT/IEEE", &[], Some(&a)),
+            Codec::Pcm { float: true, big_endian: false, bits: 24 }
+        );
         // legacy AAC LC 44.1k stereo → 0x12 0x10
         assert_eq!(map_codec("A_AAC/MPEG4/LC", &[], Some(&a)), Codec::Aac { asc: vec![0x12, 0x10] });
         assert_eq!(map_codec("S_TEXT/UTF8", &[], None).name(), "subrip");

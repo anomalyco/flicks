@@ -73,12 +73,7 @@ struct Write<T> {
 
 impl<T> Write<T> {
     fn new(node: &Node, at: OpRef, value: T) -> Self {
-        Self {
-            at,
-            log: node.entry.log_id(),
-            seq: node.entry.seq(),
-            value,
-        }
+        Self { at, log: node.entry.log_id(), seq: node.entry.seq(), value }
     }
 
     /// Whether op `at` of `node` was based on this write.
@@ -86,9 +81,7 @@ impl<T> Write<T> {
         if self.at.entry == at.entry {
             self.at.index < at.index
         } else {
-            node.clock
-                .get(&self.log)
-                .is_some_and(|&seq| seq >= self.seq)
+            node.clock.get(&self.log).is_some_and(|&seq| seq >= self.seq)
         }
     }
 }
@@ -152,12 +145,7 @@ impl ItemState {
         records.sort_by_key(|r| (r.depth, r.at));
         records
             .into_iter()
-            .map(|r| Version {
-                entry: r.at.entry,
-                author: r.author,
-                change: r.change.clone(),
-                status: self.status(r),
-            })
+            .map(|r| Version { entry: r.at.entry, author: r.author, change: r.change.clone(), status: self.status(r) })
             .collect()
     }
 
@@ -167,9 +155,7 @@ impl ItemState {
             (live, winner(frontier).is_some_and(|w| w.at == at))
         }
         let (live, current) = match &record.change {
-            Change::Set { field, .. } | Change::Remove { field } => {
-                of(&self.fields[field], record.at)
-            }
+            Change::Set { field, .. } | Change::Remove { field } => of(&self.fields[field], record.at),
             Change::Name(_) => of(&self.name, record.at),
             Change::Source(_) => of(&self.source, record.at),
             Change::Delete => {
@@ -185,24 +171,14 @@ impl ItemState {
     }
 
     fn change(&mut self, node: &Node, at: OpRef, change: &Change) {
-        self.history.push(Record {
-            depth: node.depth,
-            at,
-            author: node.entry.author(),
-            change: change.clone(),
-        });
+        self.history.push(Record { depth: node.depth, at, author: node.entry.author(), change: change.clone() });
         match change {
             Change::Set { field, value } => {
                 let frontier = self.fields.entry(field.clone()).or_default();
                 write(frontier, node, at, Some(value.clone()));
             }
             Change::Remove { field } => {
-                write(
-                    self.fields.entry(field.clone()).or_default(),
-                    node,
-                    at,
-                    None,
-                );
+                write(self.fields.entry(field.clone()).or_default(), node, at, None);
             }
             Change::Name(name) => write(&mut self.name, node, at, name.clone()),
             Change::Source(source) => write(&mut self.source, node, at, source.clone()),
@@ -216,12 +192,9 @@ impl ItemState {
 /// Checks a data op against the current items, as of a new local entry.
 pub(crate) fn check(items: &BTreeMap<ItemId, ItemState>, op: &DataOp) -> Result<(), ItemError> {
     match op {
-        DataOp::Create {
-            kind,
-            name,
-            fields,
-            source,
-        } => item::check_create(kind, name.as_deref(), fields, source.as_ref()),
+        DataOp::Create { kind, name, fields, source } => {
+            item::check_create(kind, name.as_deref(), fields, source.as_ref())
+        }
         DataOp::Edit { item, change } => {
             let state = items.get(item).ok_or(ItemError::NoSuchItem)?;
             item::check_change(&state.kind, change)
@@ -236,17 +209,9 @@ pub(crate) fn apply(items: &mut BTreeMap<ItemId, ItemState>, node: &Node) {
         return;
     };
     for (index, op) in ops.iter().enumerate() {
-        let at = OpRef {
-            entry: node.entry.hash(),
-            index,
-        };
+        let at = OpRef { entry: node.entry.hash(), index };
         match op {
-            DataOp::Create {
-                kind,
-                name,
-                fields,
-                source,
-            } => {
+            DataOp::Create { kind, name, fields, source } => {
                 if item::check_create(kind, name.as_deref(), fields, source.as_ref()).is_err() {
                     continue;
                 }
@@ -277,9 +242,7 @@ pub(crate) fn apply(items: &mut BTreeMap<ItemId, ItemState>, node: &Node) {
                 let Some(state) = items.get_mut(item) else {
                     continue;
                 };
-                if !state.created.superseded_by(node, at)
-                    || item::check_change(&state.kind, change).is_err()
-                {
+                if !state.created.superseded_by(node, at) || item::check_change(&state.kind, change).is_err() {
                     continue;
                 }
                 state.change(node, at, change);

@@ -35,11 +35,7 @@ impl Membership {
     }
 
     pub(crate) fn counts(&self, author: &DeviceId, seq: u64) -> bool {
-        self.is_member(author)
-            || self
-                .removed
-                .get(author)
-                .is_some_and(|cutoff| cutoff.is_some_and(|c| seq <= c))
+        self.is_member(author) || self.removed.get(author).is_some_and(|cutoff| cutoff.is_some_and(|c| seq <= c))
     }
 
     /// Whether [`Membership::counts`] agrees with `other` for every entry.
@@ -56,11 +52,7 @@ pub(crate) fn resolve(vault: &VaultId, mut ops: Vec<&Node>) -> Membership {
     let mut members: BTreeSet<_> = authority.admissions.into_keys().collect();
     let mut removed: BTreeMap<DeviceId, Option<u64>> = BTreeMap::new();
     for node in chosen {
-        let Payload::Membership(MembershipOp::Remove {
-            device,
-            last_seen_seq,
-        }) = node.entry.payload()
-        else {
+        let Payload::Membership(MembershipOp::Remove { device, last_seen_seq }) = node.entry.payload() else {
             unreachable!("only removals are chosen")
         };
         // A removed key's Adds never readmit it.
@@ -73,17 +65,13 @@ pub(crate) fn resolve(vault: &VaultId, mut ops: Vec<&Node>) -> Membership {
         .iter()
         .max_by_key(|node| node.entry.hash())
         .and_then(|node| match node.entry.payload() {
-            Payload::Membership(
-                MembershipOp::Create { name, .. } | MembershipOp::Rename { name },
-            ) => Some(name.clone()),
+            Payload::Membership(MembershipOp::Create { name, .. } | MembershipOp::Rename { name }) => {
+                Some(name.clone())
+            }
             _ => None,
         })
         .unwrap_or_default();
-    Membership {
-        name,
-        members,
-        removed,
-    }
+    Membership { name, members, removed }
 }
 
 /// Chooses the winning removals, the lexicographically greatest valid set in
@@ -103,43 +91,28 @@ fn choose_removals<'a>(vault: &VaultId, ops: &[&'a Node]) -> (Vec<&'a Node>, Aut
     // Seniority comes from authority with no cuts at all, so no choice of
     // removals can reorder the candidates.
     let structural = authorize(vault, ops, &[]);
-    let mut candidates: Vec<_> = ops
-        .iter()
-        .copied()
-        .filter(|node| structural.removals.contains(&node.entry.hash()))
-        .collect();
+    let mut candidates: Vec<_> =
+        ops.iter().copied().filter(|node| structural.removals.contains(&node.entry.hash())).collect();
     candidates.sort_by_key(|node| {
         let first = structural.admissions[&node.entry.author()][0];
-        (
-            first.depth,
-            first.entry.hash(),
-            node.depth,
-            node.entry.hash(),
-        )
+        (first.depth, first.entry.hash(), node.depth, node.entry.hash())
     });
     let mut chosen: Vec<&Node> = Vec::new();
     // Authority under `chosen`.
     let mut current = structural;
     for candidate in candidates {
         let victim = target(candidate);
-        if chosen
-            .iter()
-            .any(|winner| removes(winner, victim) && candidate.saw(winner))
-        {
+        if chosen.iter().any(|winner| removes(winner, victim) && candidate.saw(winner)) {
             continue;
         }
         // A removal that saw everything its target wrote cuts nothing, so it
         // changes no authority: only its own conditions need checking.
-        let cuts_nothing = ops.iter().all(|op| {
-            op.entry.author() != *victim
-                || op.entry.hash() == candidate.entry.hash()
-                || candidate.saw(op)
-        });
+        let cuts_nothing = ops
+            .iter()
+            .all(|op| op.entry.author() != *victim || op.entry.hash() == candidate.entry.hash() || candidate.saw(op));
         if cuts_nothing {
             if current.removals.contains(&candidate.entry.hash())
-                && !chosen
-                    .iter()
-                    .any(|winner| removes(winner, victim) && winner.saw(candidate))
+                && !chosen.iter().any(|winner| removes(winner, victim) && winner.saw(candidate))
             {
                 chosen.push(candidate);
             }
@@ -149,9 +122,7 @@ fn choose_removals<'a>(vault: &VaultId, ops: &[&'a Node]) -> (Vec<&'a Node>, Aut
         let trial = authorize(vault, ops, &chosen);
         let valid = chosen.iter().all(|winner| {
             trial.removals.contains(&winner.entry.hash())
-                && !chosen
-                    .iter()
-                    .any(|other| removes(other, target(winner)) && winner.saw(other))
+                && !chosen.iter().any(|other| removes(other, target(winner)) && winner.saw(other))
         });
         if valid {
             current = trial;
@@ -174,9 +145,7 @@ struct Authority<'a> {
 
 impl Authority<'_> {
     fn admitted_before(&self, device: &DeviceId, node: &Node) -> bool {
-        self.admissions
-            .get(device)
-            .is_some_and(|adds| adds.iter().any(|add| node.saw(add)))
+        self.admissions.get(device).is_some_and(|adds| adds.iter().any(|add| node.saw(add)))
     }
 }
 
@@ -194,9 +163,7 @@ fn authorize<'a>(vault: &VaultId, ops: &[&'a Node], chosen: &[&Node]) -> Authori
     let Some(genesis) = ops.iter().copied().find(|node| is_genesis(vault, node)) else {
         return state;
     };
-    state
-        .admissions
-        .insert(genesis.entry.author(), vec![genesis]);
+    state.admissions.insert(genesis.entry.author(), vec![genesis]);
     state.names.push(genesis);
     for &node in ops {
         if node.entry.hash() == genesis.entry.hash() {
@@ -207,9 +174,7 @@ fn authorize<'a>(vault: &VaultId, ops: &[&'a Node], chosen: &[&Node]) -> Authori
             continue;
         };
         let cut = cuts.get(&author).is_some_and(|removals| {
-            removals
-                .iter()
-                .any(|removal| removal.entry.hash() != node.entry.hash() && !removal.saw(node))
+            removals.iter().any(|removal| removal.entry.hash() != node.entry.hash() && !removal.saw(node))
         });
         if cut || !state.admitted_before(&author, node) {
             continue;

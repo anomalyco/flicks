@@ -4,8 +4,13 @@ use crate::common;
 use common::*;
 
 /// Vectors the decoder handles today (more are added as stages land).
-const VECTORS: &[&str] =
-    &["av1-1-b8-02-allintra.ivf", "av1-1-b8-05-mv.ivf", "av1-1-b8-06-mfmv.ivf", "av1-1-b8-24-monochrome.ivf", "av1-1-b10-23-film_grain-50.ivf"];
+const VECTORS: &[&str] = &[
+    "av1-1-b8-02-allintra.ivf",
+    "av1-1-b8-05-mv.ivf",
+    "av1-1-b8-06-mfmv.ivf",
+    "av1-1-b8-24-monochrome.ivf",
+    "av1-1-b10-23-film_grain-50.ivf",
+];
 
 #[test]
 fn conformance_vectors() {

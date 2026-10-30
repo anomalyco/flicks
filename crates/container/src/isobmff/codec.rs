@@ -250,7 +250,8 @@ pub struct AvcConfig {
 impl AvcConfig {
     /// Build from parameter sets (NAL units without start codes); profile/level taken from the first SPS.
     pub fn new(sps: Vec<Vec<u8>>, pps: Vec<Vec<u8>>, length_size: u8) -> Self {
-        let (profile, compatibility, level) = sps.first().filter(|s| s.len() >= 4).map(|s| (s[1], s[2], s[3])).unwrap_or((0, 0, 0));
+        let (profile, compatibility, level) =
+            sps.first().filter(|s| s.len() >= 4).map(|s| (s[1], s[2], s[3])).unwrap_or((0, 0, 0));
         AvcConfig { profile, compatibility, level, length_size, sps, pps, ext: Vec::new() }
     }
 
@@ -382,7 +383,9 @@ impl HevcConfig {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut b = BoxBuf::new();
         b.u8(1);
-        b.u8((self.general_profile_space << 6) | ((self.general_tier_flag as u8) << 5) | (self.general_profile_idc & 0x1F));
+        b.u8((self.general_profile_space << 6)
+            | ((self.general_tier_flag as u8) << 5)
+            | (self.general_profile_idc & 0x1F));
         b.u32(self.general_profile_compatibility_flags);
         b.u16((self.general_constraint_indicator_flags >> 32) as u16);
         b.u32(self.general_constraint_indicator_flags as u32);
@@ -507,7 +510,14 @@ impl VpcConfig {
             let level = c.u8()?;
             let a = c.u8()?;
             let b = c.u8()?;
-            return Ok(VpcConfig { profile, level, bit_depth: a >> 4, chroma_subsampling: b >> 4, full_range: b & 1 != 0, ..Default::default() });
+            return Ok(VpcConfig {
+                profile,
+                level,
+                bit_depth: a >> 4,
+                chroma_subsampling: b >> 4,
+                full_range: b & 1 != 0,
+                ..Default::default()
+            });
         }
         let profile = c.u8()?;
         let level = c.u8()?;
@@ -818,7 +828,8 @@ impl ApvConfig {
         b.u8(1); // number_of_configuration_entry = 1
         b.u8(1); // pbu_type = 1 (primary frame)
         b.u8(1); // number_of_frame_info = 1
-        let flags = (if self.color_description_present { 0x02 } else { 0 }) | (if self.capture_time_distance_ignored { 0x01 } else { 0 });
+        let flags = (if self.color_description_present { 0x02 } else { 0 })
+            | (if self.capture_time_distance_ignored { 0x01 } else { 0 });
         b.u8(flags);
         b.u8(self.profile_idc);
         b.u8(self.level_idc);
@@ -920,7 +931,14 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
                 tc.name = Some(String::from_utf8_lossy(s).into_owned());
             }
         }
-        return Ok(SampleEntry { format, data_reference_index, codec: CodecConfig::Timecode(tc), video: None, audio: None, bitrate: None });
+        return Ok(SampleEntry {
+            format,
+            data_reference_index,
+            codec: CodecConfig::Timecode(tc),
+            video: None,
+            audio: None,
+            bitrate: None,
+        });
     }
     // `raw ` names both uncompressed video and 8-bit unsigned PCM; the handler decides.
     let raw_audio = f == b"raw " && handler == b"soun";
@@ -956,7 +974,9 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
                 b"apvC" if f == b"apv1" => codec = Some(CodecConfig::Apv(ApvConfig::parse(p)?)),
                 b"colr" => v.color = parse_colr(p).ok(),
                 b"mdcv" => v.mastering_display = MasteringDisplay::parse(p),
-                b"clli" if p.len() >= 4 => v.content_light = Some((u16::from_be_bytes([p[0], p[1]]), u16::from_be_bytes([p[2], p[3]]))),
+                b"clli" if p.len() >= 4 => {
+                    v.content_light = Some((u16::from_be_bytes([p[0], p[1]]), u16::from_be_bytes([p[2], p[3]])))
+                }
                 b"pasp" => {
                     let mut c = Cur::labeled(p, "pasp");
                     v.pixel_aspect = Some((c.u32()?, c.u32()?));
@@ -1031,7 +1051,8 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
         }
         let get = |k: &[u8; 4]| ext.iter().find(|(kk, _)| kk == k).map(|(_, p)| *p);
         if let Some(p) = get(b"enda") {
-            let v = if p.len() >= 2 { u16::from_be_bytes([p[0], p[1]]) } else { p.first().copied().unwrap_or(0) as u16 };
+            let v =
+                if p.len() >= 2 { u16::from_be_bytes([p[0], p[1]]) } else { p.first().copied().unwrap_or(0) as u16 };
             a.little_endian = Some(v != 0);
         }
         let bitrate = get(b"btrt").and_then(|p| parse_btrt(p).ok());
@@ -1055,7 +1076,9 @@ pub(crate) fn parse_sample_entry(format: FourCc, payload: &[u8], handler: FourCc
             },
             b"ac-3" => CodecConfig::Ac3 { dac3: get(b"dac3").unwrap_or(&[]).to_vec() },
             b"ec-3" => CodecConfig::Eac3 { dec3: get(b"dec3").unwrap_or(&[]).to_vec() },
-            b"lpcm" | b"sowt" | b"twos" | b"in24" | b"in32" | b"fl32" | b"fl64" | b"raw " | b"NONE" => CodecConfig::Pcm(qt_pcm(f, &a)?),
+            b"lpcm" | b"sowt" | b"twos" | b"in24" | b"in32" | b"fl32" | b"fl64" | b"raw " | b"NONE" => {
+                CodecConfig::Pcm(qt_pcm(f, &a)?)
+            }
             b"ipcm" | b"fpcm" => {
                 let mut pcm = PcmConfig {
                     bits: a.sample_size,
@@ -1129,9 +1152,12 @@ fn parse_colr(p: &[u8]) -> Result<ColorInfo> {
     let mut c = Cur::labeled(p, "colr");
     let kind = c.fourcc()?;
     Ok(match &kind.0 {
-        b"nclx" => {
-            ColorInfo::Nclx { primaries: c.u16()?, transfer: c.u16()?, matrix: c.u16()?, full_range: c.u8().map(|v| v & 0x80 != 0).unwrap_or(false) }
-        }
+        b"nclx" => ColorInfo::Nclx {
+            primaries: c.u16()?,
+            transfer: c.u16()?,
+            matrix: c.u16()?,
+            full_range: c.u8().map(|v| v & 0x80 != 0).unwrap_or(false),
+        },
         b"nclc" => ColorInfo::Nclc { primaries: c.u16()?, transfer: c.u16()?, matrix: c.u16()? },
         _ => ColorInfo::Icc { kind, profile: c.rest().to_vec() },
     })
@@ -1342,7 +1368,8 @@ impl SampleEntry {
         let mut full = vec![0; 4];
         full.extend_from_slice(&blocks);
         let cfg = FlacConfig::parse(&full).unwrap_or(FlacConfig { metadata_blocks: blocks, ..Default::default() });
-        let (channels, rate, bits) = (u32::from(cfg.channels), f64::from(cfg.sample_rate), u16::from(cfg.bits_per_sample));
+        let (channels, rate, bits) =
+            (u32::from(cfg.channels), f64::from(cfg.sample_rate), u16::from(cfg.bits_per_sample));
         Self::audio(FourCc(*b"fLaC"), CodecConfig::Flac(cfg), channels, rate, bits)
     }
     /// PCM entry. The muxer picks the on-disk format (`sowt`/`twos`/`lpcm` for MOV, `ipcm`/`fpcm` for MP4).
@@ -1470,7 +1497,8 @@ impl SampleEntry {
             b.end(m);
             return Ok(());
         }
-        let a = self.audio.clone().ok_or_else(|| Error::Mux("sample entry has neither video nor audio params".into()))?;
+        let a =
+            self.audio.clone().ok_or_else(|| Error::Mux("sample entry has neither video nor audio params".into()))?;
         // Choose the on-disk format and sound description version.
         let (format, version, pcm) = match &self.codec {
             CodecConfig::Pcm(p) => {
@@ -1608,7 +1636,8 @@ mod tests {
         assert_eq!(cfg.profile, 0x64);
         assert_eq!(AvcConfig::parse(&cfg.to_bytes()).unwrap(), cfg);
         let mut e = SampleEntry::avc(cfg, 1920, 1080);
-        e.video.as_mut().unwrap().color = Some(ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false });
+        e.video.as_mut().unwrap().color =
+            Some(ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false });
         e.video.as_mut().unwrap().pixel_aspect = Some((4, 3));
         e.video.as_mut().unwrap().field_info = Some(FieldInfo { fields: 2, detail: 9 });
         e.video.as_mut().unwrap().clean_aperture =
@@ -1647,7 +1676,13 @@ mod tests {
 
     #[test]
     fn av1_vp9_opus_roundtrip() {
-        let a = Av1Config { seq_profile: 1, seq_level_idx_0: 8, high_bitdepth: true, config_obus: vec![1, 2], ..Default::default() };
+        let a = Av1Config {
+            seq_profile: 1,
+            seq_level_idx_0: 8,
+            high_bitdepth: true,
+            config_obus: vec![1, 2],
+            ..Default::default()
+        };
         assert_eq!(Av1Config::parse(&a.to_bytes()).unwrap(), a);
         let v = VpcConfig {
             profile: 2,
@@ -1675,7 +1710,8 @@ mod tests {
     #[test]
     fn aac_channel_configuration_is_an_index() {
         // 48 kHz AAC LC: configuration → channels (Table 1.19 with Amd 4; #922)
-        let channels = |c: u16| AacConfig::from_asc(((2 << 11) | (3 << 7) | (c << 3)).to_be_bytes().to_vec()).channels();
+        let channels =
+            |c: u16| AacConfig::from_asc(((2 << 11) | (3 << 7) | (c << 3)).to_be_bytes().to_vec()).channels();
         assert_eq!([0, 1, 6, 7, 8, 11, 12, 13, 14, 15].map(channels), [0, 1, 6, 8, 0, 7, 8, 24, 8, 0]);
     }
 
@@ -1701,7 +1737,11 @@ mod tests {
             for handler in [b"soun", b"\0\0\0\0"] {
                 let back = roundtrip(&e, true, handler);
                 assert_eq!(back.codec, CodecConfig::Mp3, "{fourcc:?} {handler:?}");
-                assert_eq!(back.audio.map(|a| (a.channels, a.sample_rate)), Some((2, 48000.0)), "{fourcc:?} {handler:?}");
+                assert_eq!(
+                    back.audio.map(|a| (a.channels, a.sample_rate)),
+                    Some((2, 48000.0)),
+                    "{fourcc:?} {handler:?}"
+                );
             }
         }
     }
@@ -1732,7 +1772,10 @@ mod tests {
 
     #[test]
     fn pcm_frame_size_saturates_on_a_hostile_channel_count() {
-        assert_eq!(PcmConfig { bits: 16, channels: 2, sample_rate: 48000.0, ..Default::default() }.bytes_per_frame(), 4);
+        assert_eq!(
+            PcmConfig { bits: 16, channels: 2, sample_rate: 48000.0, ..Default::default() }.bytes_per_frame(),
+            4
+        );
         assert_eq!(PcmConfig { bits: 24, channels: 0, ..Default::default() }.bytes_per_frame(), 3);
         assert_eq!(PcmConfig { bits: 16, channels: u32::MAX, ..Default::default() }.bytes_per_frame(), u32::MAX);
         let ok = parse_sample_entry(FourCc(*b"lpcm"), &qt_v2_lpcm(2, 16), FourCc(*b"soun"), true).unwrap();
@@ -1741,7 +1784,8 @@ mod tests {
 
     #[test]
     fn qt_v2_pcm_rejects_channels_and_bits_past_16_bits() {
-        let entry = |channels, bits| parse_sample_entry(FourCc(*b"lpcm"), &qt_v2_lpcm(channels, bits), FourCc(*b"soun"), true);
+        let entry =
+            |channels, bits| parse_sample_entry(FourCc(*b"lpcm"), &qt_v2_lpcm(channels, bits), FourCc(*b"soun"), true);
         assert!(matches!(entry(u32::MAX, 16), Err(Error::Invalid(_))));
         assert!(matches!(entry(65_536, 16), Err(Error::Invalid(_))));
         assert!(entry(65_535, 16).is_ok());
@@ -1771,7 +1815,14 @@ mod tests {
 
     #[test]
     fn mov_pcm_keeps_high_rates_and_signedness() {
-        let pcm = |bits, signed, sample_rate| PcmConfig { bits, float: false, big_endian: true, signed, channels: 2, sample_rate };
+        let pcm = |bits, signed, sample_rate| PcmConfig {
+            bits,
+            float: false,
+            big_endian: true,
+            signed,
+            channels: 2,
+            sample_rate,
+        };
         for (p, format) in [
             (pcm(16, true, 48000.0), b"twos"),
             (pcm(16, true, 96000.0), b"lpcm"),
@@ -1792,8 +1843,14 @@ mod tests {
 
     #[test]
     fn timecode_and_prores() {
-        let tc =
-            TimecodeConfig { flags: 1, timescale: 30000, frame_duration: 1001, frames_per_second: 30, start_frame: None, name: Some("reel".into()) };
+        let tc = TimecodeConfig {
+            flags: 1,
+            timescale: 30000,
+            frame_duration: 1001,
+            frames_per_second: 30,
+            start_frame: None,
+            name: Some("reel".into()),
+        };
         let e = SampleEntry {
             format: FourCc(*b"tmcd"),
             data_reference_index: 1,

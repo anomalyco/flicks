@@ -56,7 +56,10 @@ fn headers_and_gains() {
     // 48 kHz, 448 kb/s, 3/2 + LFE: bsid 8, bsmod 0, acmod 7 (cmixlev, surmixlev), lfeon
     let b = [0x0B, 0x77, 0, 0, 30, 8 << 3, 0b1110_0001, 0b0100_0000];
     let h = parse_header(&b).unwrap();
-    assert_eq!((h.sample_rate, h.bitrate_kbps, h.frame_bytes, h.acmod, h.lfeon, h.channels()), (48_000, 448, 1792, 7, true, 6));
+    assert_eq!(
+        (h.sample_rate, h.bitrate_kbps, h.frame_bytes, h.acmod, h.lfeon, h.channels()),
+        (48_000, 448, 1792, 7, true, 6)
+    );
     assert_eq!(parse_header(&[0x0B, 0x77, 0, 0, 0, 17 << 3, 0, 0]), Err(Error::Unsupported("bsid 17".into())));
     assert_eq!(dynrng_gain(0), 1.0);
     assert!((dynrng_gain(0b1110_0000) - 0.5).abs() < 1e-7);
@@ -120,7 +123,14 @@ impl W {
 
 /// An E-AC-3 syncframe of `words` 16-bit words: syncinfo and a bsi with no optional metadata
 /// (fscod < 3 with `numblkscod`), then `audio` writes the rest; zero padded.
-fn eac3_frame(strmtyp: u32, substreamid: u32, words: u32, numblkscod: u32, acmod: u32, audio: impl FnOnce(&mut W)) -> Vec<u8> {
+fn eac3_frame(
+    strmtyp: u32,
+    substreamid: u32,
+    words: u32,
+    numblkscod: u32,
+    acmod: u32,
+    audio: impl FnOnce(&mut W),
+) -> Vec<u8> {
     let mut w = W::default();
     w.put(16, 0x0B77);
     w.put(2, strmtyp);
@@ -151,7 +161,10 @@ fn eac3_frame(strmtyp: u32, substreamid: u32, words: u32, numblkscod: u32, acmod
 fn eac3_headers() {
     let f = eac3_frame(0, 0, 384, 3, 2, |_| {});
     let h = parse_header(&f).unwrap();
-    assert_eq!((h.sample_rate, h.blocks, h.samples(), h.frame_bytes, h.bitrate_kbps, h.channels()), (48_000, 6, 1536, 768, 192, 2));
+    assert_eq!(
+        (h.sample_rate, h.blocks, h.samples(), h.frame_bytes, h.bitrate_kbps, h.channels()),
+        (48_000, 6, 1536, 768, 192, 2)
+    );
     assert!(h.is_eac3() && h.is_primary());
     // one block per syncframe: 256 samples
     let h = parse_header(&eac3_frame(0, 0, 100, 0, 7, |_| {})).unwrap();
@@ -170,7 +183,10 @@ fn eac3_headers() {
         let out = d.decode(&f).unwrap();
         assert!(!out.header.is_primary() && out.channels.is_empty());
     }
-    assert_eq!(parse_header(&eac3_frame(3, 0, 64, 3, 2, |_| {})), Err(Error::Unsupported("reserved E-AC-3 stream type 3".into())));
+    assert_eq!(
+        parse_header(&eac3_frame(3, 0, 64, 3, 2, |_| {})),
+        Err(Error::Unsupported("reserved E-AC-3 stream type 3".into()))
+    );
 }
 
 #[test]

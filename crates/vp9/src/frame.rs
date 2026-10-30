@@ -125,7 +125,11 @@ impl Frame {
 
     /// A band buffer for this frame's geometry (recycled memory, contents unspecified).
     pub fn new_band(&self) -> Band {
-        Band { planes: std::array::from_fn(|p| self.pools.bands.take_any((self.band_h[p] + BAND_PAD) * self.strides[p], 0)) }
+        Band {
+            planes: std::array::from_fn(|p| {
+                self.pools.bands.take_any((self.band_h[p] + BAND_PAD) * self.strides[p], 0)
+            }),
+        }
     }
 
     /// Publish band `r` (ignored if already published).

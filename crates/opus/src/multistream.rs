@@ -40,7 +40,14 @@ impl Decoder {
             d.set_gain_q8(head.output_gain);
             streams.push(d);
         }
-        Ok(Decoder { rate: sample_rate, streams, trim_pre_skip: false, skip_remaining: 0, scratch: vec![Vec::new(); head.streams], head })
+        Ok(Decoder {
+            rate: sample_rate,
+            streams,
+            trim_pre_skip: false,
+            skip_remaining: 0,
+            scratch: vec![Vec::new(); head.streams],
+            head,
+        })
     }
 
     pub fn head(&self) -> &OpusHead {
@@ -134,7 +141,11 @@ impl Decoder {
             if m == 255 {
                 continue;
             }
-            let (s, ch, nch) = if m < 2 * self.head.coupled_streams { (m / 2, m % 2, 2) } else { (m - self.head.coupled_streams, 0, 1) };
+            let (s, ch, nch) = if m < 2 * self.head.coupled_streams {
+                (m / 2, m % 2, 2)
+            } else {
+                (m - self.head.coupled_streams, 0, 1)
+            };
             let src = &self.scratch[s];
             for (i, v) in o.iter_mut().enumerate() {
                 *v = src[i * nch + ch];

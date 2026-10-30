@@ -2,11 +2,13 @@
 //! processes of section 8.4.
 
 use crate::tables::{
-    BINARY_TREE, COUNT_SAT, DEFAULT_COEF_PROBS, DEFAULT_COMP_MODE_PROB, DEFAULT_COMP_REF_PROB, DEFAULT_INTER_MODE_PROBS, DEFAULT_INTERP_FILTER_PROBS,
-    DEFAULT_IS_INTER_PROB, DEFAULT_MV_BITS_PROB, DEFAULT_MV_CLASS_PROBS, DEFAULT_MV_CLASS0_BIT_PROB, DEFAULT_MV_CLASS0_FR_PROBS, DEFAULT_MV_CLASS0_HP_PROB,
-    DEFAULT_MV_FR_PROBS, DEFAULT_MV_HP_PROB, DEFAULT_MV_JOINT_PROBS, DEFAULT_MV_SIGN_PROB, DEFAULT_PARTITION_PROBS, DEFAULT_SINGLE_REF_PROB, DEFAULT_SKIP_PROB,
-    DEFAULT_TX_PROBS, DEFAULT_UV_MODE_PROBS, DEFAULT_Y_MODE_PROBS, INTER_MODE_TREE, INTERP_FILTER_TREE, INTRA_MODE_TREE, MAX_UPDATE_FACTOR, MV_CLASS_TREE,
-    MV_FR_TREE, MV_JOINT_TREE, PARTITION_TREE, SMALL_TOKEN_TREE, TX_SIZE_8_TREE, TX_SIZE_16_TREE, TX_SIZE_32_TREE,
+    BINARY_TREE, COUNT_SAT, DEFAULT_COEF_PROBS, DEFAULT_COMP_MODE_PROB, DEFAULT_COMP_REF_PROB,
+    DEFAULT_INTER_MODE_PROBS, DEFAULT_INTERP_FILTER_PROBS, DEFAULT_IS_INTER_PROB, DEFAULT_MV_BITS_PROB,
+    DEFAULT_MV_CLASS_PROBS, DEFAULT_MV_CLASS0_BIT_PROB, DEFAULT_MV_CLASS0_FR_PROBS, DEFAULT_MV_CLASS0_HP_PROB,
+    DEFAULT_MV_FR_PROBS, DEFAULT_MV_HP_PROB, DEFAULT_MV_JOINT_PROBS, DEFAULT_MV_SIGN_PROB, DEFAULT_PARTITION_PROBS,
+    DEFAULT_SINGLE_REF_PROB, DEFAULT_SKIP_PROB, DEFAULT_TX_PROBS, DEFAULT_UV_MODE_PROBS, DEFAULT_Y_MODE_PROBS,
+    INTER_MODE_TREE, INTERP_FILTER_TREE, INTRA_MODE_TREE, MAX_UPDATE_FACTOR, MV_CLASS_TREE, MV_FR_TREE, MV_JOINT_TREE,
+    PARTITION_TREE, SMALL_TOKEN_TREE, TX_SIZE_8_TREE, TX_SIZE_16_TREE, TX_SIZE_32_TREE,
 };
 
 /// coef_probs[txSz][plane > 0][is_inter][band][ctx][node].
@@ -83,7 +85,9 @@ impl Default for FrameContext {
             mv_class: std::array::from_fn(|i| arr(&DEFAULT_MV_CLASS_PROBS[i * 10..i * 10 + 10])),
             mv_class0_bit: DEFAULT_MV_CLASS0_BIT_PROB,
             mv_bits: std::array::from_fn(|i| arr(&DEFAULT_MV_BITS_PROB[i * 10..i * 10 + 10])),
-            mv_class0_fr: std::array::from_fn(|i| std::array::from_fn(|j| arr(&DEFAULT_MV_CLASS0_FR_PROBS[(i * 2 + j) * 3..(i * 2 + j) * 3 + 3]))),
+            mv_class0_fr: std::array::from_fn(|i| {
+                std::array::from_fn(|j| arr(&DEFAULT_MV_CLASS0_FR_PROBS[(i * 2 + j) * 3..(i * 2 + j) * 3 + 3]))
+            }),
             mv_fr: std::array::from_fn(|i| arr(&DEFAULT_MV_FR_PROBS[i * 3..i * 3 + 3])),
             mv_class0_hp: DEFAULT_MV_CLASS0_HP_PROB,
             mv_hp: DEFAULT_MV_HP_PROB,
@@ -199,9 +203,17 @@ fn merge_prob(pre: u8, ct0: u32, ct1: u32, count_sat: u32, max_update_factor: u3
 /// merge_probs (8.4.2).
 fn merge_probs(tree: &[i8], i: usize, probs: &mut [u8], counts: &[u32], count_sat: u32, max_update_factor: u32) -> u32 {
     let s = tree[i];
-    let left = if s <= 0 { counts[(-s) as usize] } else { merge_probs(tree, s as usize, probs, counts, count_sat, max_update_factor) };
+    let left = if s <= 0 {
+        counts[(-s) as usize]
+    } else {
+        merge_probs(tree, s as usize, probs, counts, count_sat, max_update_factor)
+    };
     let r = tree[i + 1];
-    let right = if r <= 0 { counts[(-r) as usize] } else { merge_probs(tree, r as usize, probs, counts, count_sat, max_update_factor) };
+    let right = if r <= 0 {
+        counts[(-r) as usize]
+    } else {
+        merge_probs(tree, r as usize, probs, counts, count_sat, max_update_factor)
+    };
     probs[i >> 1] = merge_prob(probs[i >> 1], left, right, count_sat, max_update_factor);
     left + right
 }
@@ -241,7 +253,13 @@ pub fn adapt_coef_probs(fc: &mut FrameContext, counts: &Counts, frame_is_intra: 
 }
 
 /// Non-coefficient probability adaptation (8.4.4).
-pub fn adapt_noncoef_probs(fc: &mut FrameContext, c: &Counts, interp_switchable: bool, tx_select: bool, allow_hp: bool) {
+pub fn adapt_noncoef_probs(
+    fc: &mut FrameContext,
+    c: &Counts,
+    interp_switchable: bool,
+    tx_select: bool,
+    allow_hp: bool,
+) {
     for i in 0..4 {
         adapt_prob(&mut fc.is_inter[i], &c.is_inter[i]);
     }

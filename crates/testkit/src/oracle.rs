@@ -29,7 +29,11 @@ const KNOWN_DIRS: &[&str] = &[
 ];
 
 fn exe_names(name: &str) -> Vec<String> {
-    if cfg!(windows) { vec![format!("{name}.exe"), name.to_string()] } else { vec![name.to_string(), format!("{name}.exe")] }
+    if cfg!(windows) {
+        vec![format!("{name}.exe"), name.to_string()]
+    } else {
+        vec![name.to_string(), format!("{name}.exe")]
+    }
 }
 
 fn is_file(p: &Path) -> bool {
@@ -38,10 +42,19 @@ fn is_file(p: &Path) -> bool {
 
 /// Find `name` given an explicit override, a `PATH`-style list and extra directories.
 /// (Pure function of its inputs; [`find_tool`] supplies the process environment.)
-pub fn find_tool_in(name: &str, explicit: Option<&std::ffi::OsStr>, path: Option<&std::ffi::OsStr>, extra: &[&str]) -> Result<Option<PathBuf>, String> {
+pub fn find_tool_in(
+    name: &str,
+    explicit: Option<&std::ffi::OsStr>,
+    path: Option<&std::ffi::OsStr>,
+    extra: &[&str],
+) -> Result<Option<PathBuf>, String> {
     if let Some(e) = explicit.filter(|e| !e.is_empty()) {
         let p = PathBuf::from(e);
-        return if is_file(&p) { Ok(Some(p)) } else { Err(format!("{} is set but `{}` is not a file", env_var(name), p.display())) };
+        return if is_file(&p) {
+            Ok(Some(p))
+        } else {
+            Err(format!("{} is set but `{}` is not a file", env_var(name), p.display()))
+        };
     }
     let names = exe_names(name);
     if let Some(path) = path {
@@ -93,7 +106,8 @@ pub fn ffprobe() -> Option<PathBuf> {
 
 /// Whether `FLICKS_REQUIRE_ORACLES` is set to a true value.
 pub fn oracles_required() -> bool {
-    std::env::var(REQUIRE_ENV).is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+    std::env::var(REQUIRE_ENV)
+        .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
 /// Report a skipped test: prints `SKIPPED (<context>): <reason>`. With
@@ -120,7 +134,9 @@ pub fn ffmpeg_or_skip(context: &str) -> Option<PathBuf> {
 /// Whether `ffmpeg -encoders` lists `encoder` (e.g. `libx265`): lets a test tell "this ffmpeg lacks the encoder"
 /// (skip) from "the encoder is there but failed" (a real failure).
 pub fn ffmpeg_has_encoder(ffmpeg: &Path, encoder: &str) -> bool {
-    let Ok(out) = Command::new(ffmpeg).args(["-hide_banner", "-encoders"]).stdin(Stdio::null()).output() else { return false };
+    let Ok(out) = Command::new(ffmpeg).args(["-hide_banner", "-encoders"]).stdin(Stdio::null()).output() else {
+        return false;
+    };
     encoders_output_lists(&String::from_utf8_lossy(&out.stdout), encoder)
 }
 
@@ -242,10 +258,8 @@ mod tests {
         assert_eq!(find_tool_in("ffmpeg-does-not-exist", None, None, &[ds.as_str()]).unwrap(), None);
     }
 
-    const FORMATS_WITH_APV: &str =
-        "File formats:\n D  mov             QuickTime / MOV\n DE apv             APV raw bitstream\n D  mp4             MP4 (MPEG-4 Part 14)\n";
-    const FORMATS_WITHOUT_APV: &str =
-        "File formats:\n D  mov             QuickTime / MOV\n D  mp4             MP4 (MPEG-4 Part 14)\n D  oapv            Obsolete APV alias\n";
+    const FORMATS_WITH_APV: &str = "File formats:\n D  mov             QuickTime / MOV\n DE apv             APV raw bitstream\n D  mp4             MP4 (MPEG-4 Part 14)\n";
+    const FORMATS_WITHOUT_APV: &str = "File formats:\n D  mov             QuickTime / MOV\n D  mp4             MP4 (MPEG-4 Part 14)\n D  oapv            Obsolete APV alias\n";
 
     #[test]
     fn formats_listing_detects_a_supported_format() {
@@ -258,8 +272,14 @@ mod tests {
 
     #[test]
     fn version_string_parses_ffmpeg_banner() {
-        assert_eq!(ffmpeg_version_in("ffmpeg version 7:6.1.1-3ubuntu5 Copyright (c) 2000-2023"), Some("7:6.1.1-3ubuntu5".to_string()));
-        assert_eq!(ffmpeg_version_in("ffmpeg version 8.0.1-full_build-www.gyan.dev xxx"), Some("8.0.1-full_build-www.gyan.dev".to_string()));
+        assert_eq!(
+            ffmpeg_version_in("ffmpeg version 7:6.1.1-3ubuntu5 Copyright (c) 2000-2023"),
+            Some("7:6.1.1-3ubuntu5".to_string())
+        );
+        assert_eq!(
+            ffmpeg_version_in("ffmpeg version 8.0.1-full_build-www.gyan.dev xxx"),
+            Some("8.0.1-full_build-www.gyan.dev".to_string())
+        );
         assert_eq!(ffmpeg_version_in(""), None);
         assert_eq!(ffmpeg_version_in("ffprobe version 6.1"), None);
         assert_eq!(ffmpeg_version_in("ffmpeg version "), None);
@@ -271,7 +291,12 @@ mod tests {
         let supported = ffmpeg_supports_format(&ff, "apv");
         assert_eq!(
             supported,
-            formats_output_lists(&String::from_utf8_lossy(&std::process::Command::new(&ff).args(["-hide_banner", "-formats"]).output().unwrap().stdout), "apv")
+            formats_output_lists(
+                &String::from_utf8_lossy(
+                    &std::process::Command::new(&ff).args(["-hide_banner", "-formats"]).output().unwrap().stdout
+                ),
+                "apv"
+            )
         );
         assert!(ffmpeg_version(&ff).is_some_and(|v| !v.is_empty()));
     }

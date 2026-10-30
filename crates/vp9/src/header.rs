@@ -5,8 +5,9 @@ use crate::boolcoder::BoolDecoder;
 use crate::error::{Error, Result, ensure};
 use crate::probs::FrameContext;
 use crate::tables::{
-    ALTREF_FRAME, GOLDEN_FRAME, INV_MAP_TABLE, LAST_FRAME, LITERAL_TO_TYPE, MAX_SEGMENTS, MAX_TILE_WIDTH_B64, MIN_TILE_WIDTH_B64, SEGMENTATION_FEATURE_BITS,
-    SEGMENTATION_FEATURE_SIGNED, SWITCHABLE, TX_MODE_SELECT, TX_MODE_TO_BIGGEST_TX_SIZE,
+    ALTREF_FRAME, GOLDEN_FRAME, INV_MAP_TABLE, LAST_FRAME, LITERAL_TO_TYPE, MAX_SEGMENTS, MAX_TILE_WIDTH_B64,
+    MIN_TILE_WIDTH_B64, SEGMENTATION_FEATURE_BITS, SEGMENTATION_FEATURE_SIGNED, SWITCHABLE, TX_MODE_SELECT,
+    TX_MODE_TO_BIGGEST_TX_SIZE,
 };
 use flicks_container::bitstream::BitReader;
 
@@ -255,7 +256,12 @@ fn frame_size_with_refs(r: &mut BitReader, h: &mut FrameHeader, refs: &[Option<R
 }
 
 /// Inter frame header tail (6.2): reference selection, sizes, motion vector precision and filter.
-fn inter_frame_header(r: &mut BitReader, h: &mut FrameHeader, st: &HeaderState, refs: &[Option<RefInfo>; 8]) -> Result<()> {
+fn inter_frame_header(
+    r: &mut BitReader,
+    h: &mut FrameHeader,
+    st: &HeaderState,
+    refs: &[Option<RefInfo>; 8],
+) -> Result<()> {
     h.color = st.color;
     h.refresh_frame_flags = r.read_bits(8)? as u8;
     for i in 0..3 {

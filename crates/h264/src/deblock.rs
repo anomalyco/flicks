@@ -68,7 +68,8 @@ fn motion_bs(p: &Motion, q: &Motion) -> u8 {
         }
     } else {
         // both mvs refer to the same picture
-        ((mv_far(p.mv[0], q.mv[0]) || mv_far(p.mv[1], q.mv[1])) && (mv_far(p.mv[0], q.mv[1]) || mv_far(p.mv[1], q.mv[0]))) as u8
+        ((mv_far(p.mv[0], q.mv[0]) || mv_far(p.mv[1], q.mv[1]))
+            && (mv_far(p.mv[0], q.mv[1]) || mv_far(p.mv[1], q.mv[0]))) as u8
     }
 }
 
@@ -167,7 +168,10 @@ fn filter_lanes<const N: usize>(s: &mut [[i16; N]; 8], ep: &EdgeParams, chroma: 
     let mut on = [0i16; N];
     let mut any = 0i16;
     for i in 0..N {
-        on[i] = -(bs_on[i] as i16) & lt((p0[i] - q0[i]).abs(), alpha) & lt((p1[i] - p0[i]).abs(), beta) & lt((q1[i] - q0[i]).abs(), beta);
+        on[i] = -(bs_on[i] as i16)
+            & lt((p0[i] - q0[i]).abs(), alpha)
+            & lt((p1[i] - p0[i]).abs(), beta)
+            & lt((q1[i] - q0[i]).abs(), beta);
         any |= on[i];
     }
     if any == 0 {
@@ -306,7 +310,11 @@ fn inter_outer_edge_bs(pic: &PicState, p: &MbState, q: &MbState, qm: &[Motion; 1
     let mut out = [0u8; 4];
     for (k, o) in out.iter_mut().enumerate() {
         let (rq, rp) = if dir == 0 { (k * 4, k * 4 + 3) } else { (k, 12 + k) };
-        *o = if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&block_motion(p, &pids, rp), &qm[rq]) };
+        *o = if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 {
+            2
+        } else {
+            motion_bs(&block_motion(p, &pids, rp), &qm[rq])
+        };
     }
     out
 }
@@ -361,7 +369,12 @@ fn edge_params(qpp: i32, qpq: i32, b: [u8; 4], off: FilterOffsets) -> EdgeParams
     let index_a = (qpav + off.alpha).clamp(0, 51) as usize;
     let index_b = (qpav + off.beta).clamp(0, 51) as usize;
     let tc = |b: u8| if (1..4).contains(&b) { TC0[index_a][b as usize - 1] as i32 } else { 0 };
-    EdgeParams { bs: b, tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])], alpha: ALPHA[index_a] as i32, beta: BETA[index_b] as i32 }
+    EdgeParams {
+        bs: b,
+        tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])],
+        alpha: ALPHA[index_a] as i32,
+        beta: BETA[index_b] as i32,
+    }
 }
 
 /// Everything the per-plane edge filters need to know about one macroblock.
@@ -448,7 +461,8 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
     };
     let left = usable(if mx > 0 { Some(addr - 1) } else { None });
     let top = usable(if my > 0 { Some(addr - mb_w) } else { None });
-    let bs = if q.kind.is_intra() { intra_mb_bs(q.transform_8x8, left, top) } else { inter_mb_bs(pic, q, sq, left, top) };
+    let bs =
+        if q.kind.is_intra() { intra_mb_bs(q.transform_8x8, left, top) } else { inter_mb_bs(pic, q, sq, left, top) };
     let qp_of = |st: &MbState| if st.kind == MbKind::IPcm { 0 } else { st.qp as i32 };
     let neighbor_qp = |n: Option<usize>| n.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc));
     let edges = MbEdges {
@@ -579,7 +593,8 @@ mod speed {
                                 }
                                 let mut v = [0u8; 8];
                                 for k in 0..8 {
-                                    v[k] = if vert { pix[(y + i) * w + x - 4 + k] } else { pix[(y - 4 + k) * w + x + i] };
+                                    v[k] =
+                                        if vert { pix[(y + i) * w + x - 4 + k] } else { pix[(y - 4 + k) * w + x + i] };
                                 }
                                 filter8(&mut v, b, ep.alpha, ep.beta, ep.tc0[i / 4], false);
                                 for k in 1..7 {

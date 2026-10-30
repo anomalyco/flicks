@@ -50,7 +50,14 @@ pub struct TrackConfig {
 
 impl TrackConfig {
     pub fn new(entry: SampleEntry, timescale: u32) -> Self {
-        TrackConfig { entry, timescale, language: "und".into(), edits: Vec::new(), media_start: None, handler_name: None }
+        TrackConfig {
+            entry,
+            timescale,
+            language: "und".into(),
+            edits: Vec::new(),
+            media_start: None,
+            handler_name: None,
+        }
     }
 }
 
@@ -229,14 +236,22 @@ fn effective_edits(t: &WTrack, movie_ts: u32) -> Vec<Edit> {
         // presentation runs from `start` to the end of the last sample in composition order (with
         // B-frame reordering that is past the end of the decode timeline)
         let rest = t.t.comp_end.max(t.t.media_duration).saturating_sub(start.max(0) as u64);
-        return vec![Edit { segment_duration: rescale(rest, t.cfg.timescale, movie_ts), media_time: start, media_rate: 0x10000 }];
+        return vec![Edit {
+            segment_duration: rescale(rest, t.cfg.timescale, movie_ts),
+            media_time: start,
+            media_rate: 0x10000,
+        }];
     }
     Vec::new()
 }
 
 fn presentation_duration(t: &WTrack, movie_ts: u32) -> u64 {
     let e = effective_edits(t, movie_ts);
-    if e.is_empty() { rescale(t.t.media_duration, t.cfg.timescale, movie_ts) } else { e.iter().map(|e| e.segment_duration).sum() }
+    if e.is_empty() {
+        rescale(t.t.media_duration, t.cfg.timescale, movie_ts)
+    } else {
+        e.iter().map(|e| e.segment_duration).sum()
+    }
 }
 
 fn write_mvhd(b: &mut BoxBuf, timescale: u32, duration: u64, next_id: u32) {
@@ -306,7 +321,9 @@ fn write_trak(b: &mut BoxBuf, t: &WTrack, movie_ts: u32, qt: bool, shift: u64, f
     let edits = effective_edits(t, movie_ts);
     if !edits.is_empty() {
         let e = b.start(b"edts");
-        let v1 = edits.iter().any(|e| e.segment_duration > u32::MAX as u64 || e.media_time > i32::MAX as i64 || e.media_time < i32::MIN as i64);
+        let v1 = edits.iter().any(|e| {
+            e.segment_duration > u32::MAX as u64 || e.media_time > i32::MAX as i64 || e.media_time < i32::MIN as i64
+        });
         let l = b.start_full(b"elst", v1 as u8, 0);
         b.u32(edits.len() as u32);
         for ed in &edits {
@@ -585,7 +602,15 @@ impl<W: Write + Seek> Mp4Writer<W> {
         let handler = handler_of(&cfg.entry);
         let mut t = Tables::new();
         t.const_size = pcm;
-        self.tracks.push(WTrack { id: self.tracks.len() as u32 + 1, handler, pcm_frame_bytes: pcm, t, cfg, tmcd_ref: None, tmcd_source: None });
+        self.tracks.push(WTrack {
+            id: self.tracks.len() as u32 + 1,
+            handler,
+            pcm_frame_bytes: pcm,
+            t,
+            cfg,
+            tmcd_ref: None,
+            tmcd_source: None,
+        });
         Ok(self.tracks.len() - 1)
     }
 
@@ -804,7 +829,15 @@ pub struct FragmentedWriter<W: Write> {
 
 impl<W: Write> FragmentedWriter<W> {
     pub fn new(w: W, opts: WriterOptions) -> Self {
-        FragmentedWriter { w, opts, tracks: Vec::new(), pending: Vec::new(), next_dts: Vec::new(), seq: 0, init_written: false }
+        FragmentedWriter {
+            w,
+            opts,
+            tracks: Vec::new(),
+            pending: Vec::new(),
+            next_dts: Vec::new(),
+            seq: 0,
+            init_written: false,
+        }
     }
 
     /// Add a track (before the first fragment). PCM is not supported in fragments.
@@ -971,16 +1004,29 @@ mod tests {
         for fast in [false, true] {
             let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
             let v = w.add_track(TrackConfig::new(avc_entry(), 12800)).unwrap();
-            let pcm = PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 2, sample_rate: 48000.0 };
+            let pcm = PcmConfig {
+                bits: 16,
+                float: false,
+                big_endian: false,
+                signed: true,
+                channels: 2,
+                sample_rate: 48000.0,
+            };
             let a = w.add_track(TrackConfig::new(SampleEntry::pcm(pcm), 48000)).unwrap();
             for i in 0..10u8 {
                 let data = vec![i; 100 + i as usize];
                 w.write_sample(
                     v,
-                    WriteSample { data: &data, duration: 512, composition_offset: if i % 2 == 0 { 1024 } else { 0 }, is_sync: i % 5 == 0 },
+                    WriteSample {
+                        data: &data,
+                        duration: 512,
+                        composition_offset: if i % 2 == 0 { 1024 } else { 0 },
+                        is_sync: i % 5 == 0,
+                    },
                 )
                 .unwrap();
-                w.write_sample(a, WriteSample { data: &[i; 400], duration: 0, composition_offset: 0, is_sync: true }).unwrap();
+                w.write_sample(a, WriteSample { data: &[i; 400], duration: 0, composition_offset: 0, is_sync: true })
+                    .unwrap();
             }
             let out = if fast { w.finish_faststart() } else { w.finish() }.unwrap().into_inner();
             let f = crate::isobmff::open(out.as_slice()).unwrap();
@@ -1008,7 +1054,8 @@ mod tests {
     #[test]
     fn set_sample_entry_keeps_track_layout() {
         let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
-        let pcm = PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 2, sample_rate: 48000.0 };
+        let pcm =
+            PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 2, sample_rate: 48000.0 };
         let a = w.add_track(TrackConfig::new(SampleEntry::pcm(pcm), 48000)).unwrap();
         let f = w.add_track(TrackConfig::new(SampleEntry::flac(&[0; 34]), 48000)).unwrap();
         assert!(w.set_sample_entry(a, SampleEntry::pcm(PcmConfig { big_endian: true, ..pcm })).is_ok());
@@ -1027,7 +1074,11 @@ mod tests {
         let mut w = FragmentedWriter::new(Vec::new(), WriterOptions::new(Brand::Mp4));
         let v = w.add_track(TrackConfig::new(avc_entry(), 1000)).unwrap();
         for i in 0..6u8 {
-            w.write_sample(v, WriteSample { data: &[i; 10], duration: 40, composition_offset: -(i as i32 % 2), is_sync: i % 3 == 0 }).unwrap();
+            w.write_sample(
+                v,
+                WriteSample { data: &[i; 10], duration: 40, composition_offset: -(i as i32 % 2), is_sync: i % 3 == 0 },
+            )
+            .unwrap();
             if i % 3 == 2 {
                 w.flush_fragment().unwrap();
             }

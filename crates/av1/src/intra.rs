@@ -2,8 +2,9 @@
 
 use crate::frame::Plane;
 use crate::spec_tables::{
-    ANGLE_STEP, D67_PRED, DC_PRED, DR_INTRA_DERIVATIVE, INTRA_EDGE_KERNEL, INTRA_EDGE_TAPS, INTRA_FILTER_SCALE_BITS, INTRA_FILTER_TAPS, MODE_TO_ANGLE,
-    SM_WEIGHTS_TX_4X4, SM_WEIGHTS_TX_8X8, SM_WEIGHTS_TX_16X16, SM_WEIGHTS_TX_32X32, SM_WEIGHTS_TX_64X64, SMOOTH_H_PRED, SMOOTH_PRED, SMOOTH_V_PRED, V_PRED,
+    ANGLE_STEP, D67_PRED, DC_PRED, DR_INTRA_DERIVATIVE, INTRA_EDGE_KERNEL, INTRA_EDGE_TAPS, INTRA_FILTER_SCALE_BITS,
+    INTRA_FILTER_TAPS, MODE_TO_ANGLE, SM_WEIGHTS_TX_4X4, SM_WEIGHTS_TX_8X8, SM_WEIGHTS_TX_16X16, SM_WEIGHTS_TX_32X32,
+    SM_WEIGHTS_TX_64X64, SMOOTH_H_PRED, SMOOTH_PRED, SMOOTH_V_PRED, V_PRED,
 };
 use crate::transform::round2;
 
@@ -151,7 +152,8 @@ fn recursive_intra(above: &[i32], left: &[i32], w: usize, h: usize, mode: usize,
                     for i in 0..7 {
                         pr += INTRA_FILTER_TAPS[mode][(i1 << 2) + j1][i] as i32 * pv[i];
                     }
-                    pred[((i2 << 1) + i1) * w + (j4 << 2) + j1] = clip1(round2_signed(pr, INTRA_FILTER_SCALE_BITS as u32), bd);
+                    pred[((i2 << 1) + i1) * w + (j4 << 2) + j1] =
+                        clip1(round2_signed(pr, INTRA_FILTER_SCALE_BITS as u32), bd);
                 }
             }
         }

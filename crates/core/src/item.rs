@@ -91,10 +91,7 @@ pub struct Field {
 
 impl fmt::Debug for Field {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Field")
-            .field("kind", &self.kind)
-            .field("value", &"<redacted>")
-            .finish()
+        f.debug_struct("Field").field("kind", &self.kind).field("value", &"<redacted>").finish()
     }
 }
 
@@ -106,12 +103,7 @@ impl Drop for Field {
 
 #[test]
 fn field_debug_redacts_values_of_every_kind() {
-    for kind in [
-        FieldType::Secret,
-        FieldType::Otp,
-        FieldType::Note,
-        FieldType::Text,
-    ] {
+    for kind in [FieldType::Secret, FieldType::Otp, FieldType::Note, FieldType::Text] {
         let field = Field::new(kind, "private-marker");
         let debug = format!("{field:?}");
         assert!(debug.contains("<redacted>"));
@@ -121,10 +113,7 @@ fn field_debug_redacts_values_of_every_kind() {
 
 impl Field {
     pub fn new(kind: FieldType, value: impl Into<String>) -> Self {
-        Self {
-            kind,
-            value: value.into(),
-        }
+        Self { kind, value: value.into() }
     }
 }
 
@@ -166,34 +155,16 @@ impl Schema {
 }
 
 const fn known(name: &'static str, kind: FieldType, required: bool) -> SchemaField {
-    SchemaField {
-        multiline: matches!(kind, FieldType::Note),
-        name,
-        kind,
-        required,
-        format: Format::Any,
-    }
+    SchemaField { multiline: matches!(kind, FieldType::Note), name, kind, required, format: Format::Any }
 }
 
 /// A secret that spans lines: a secure note's body, a private key.
 const fn secret_lines(name: &'static str, required: bool) -> SchemaField {
-    SchemaField {
-        name,
-        kind: FieldType::Secret,
-        required,
-        format: Format::Any,
-        multiline: true,
-    }
+    SchemaField { name, kind: FieldType::Secret, required, format: Format::Any, multiline: true }
 }
 
 const fn digits(name: &'static str, required: bool, min: usize, max: usize) -> SchemaField {
-    SchemaField {
-        name,
-        kind: FieldType::Secret,
-        required,
-        format: Format::Digits { min, max },
-        multiline: false,
-    }
+    SchemaField { name, kind: FieldType::Secret, required, format: Format::Digits { min, max }, multiline: false }
 }
 
 static SCHEMAS: [Schema; 6] = [
@@ -220,10 +191,7 @@ static SCHEMAS: [Schema; 6] = [
         ],
     },
     // A secure note: the name is its title, and its body is secret.
-    Schema {
-        kind: "note",
-        fields: &[secret_lines("notes", false)],
-    },
+    Schema { kind: "note", fields: &[secret_lines("notes", false)] },
     Schema {
         kind: "ssh",
         fields: &[
@@ -303,9 +271,7 @@ pub enum ItemError {
     NoSuchItem,
     #[error("missing required field {0}")]
     MissingField(&'static str),
-    #[error(
-        "invalid field name {0:?}: use 1-64 lowercase letters, digits, - or _, starting with a letter"
-    )]
+    #[error("invalid field name {0:?}: use 1-64 lowercase letters, digits, - or _, starting with a letter")]
     InvalidFieldName(String),
     #[error("unknown field type {0:?}")]
     UnknownFieldType(String),
@@ -324,10 +290,7 @@ pub enum ItemError {
 }
 
 fn invalid(field: &str, reason: impl Into<String>) -> ItemError {
-    ItemError::InvalidValue {
-        field: field.into(),
-        reason: reason.into(),
-    }
+    ItemError::InvalidValue { field: field.into(), reason: reason.into() }
 }
 
 fn check_value(name: &str, field: &Field) -> Result<(), ItemError> {
@@ -378,11 +341,7 @@ fn valid_date(value: &str) -> bool {
         return false;
     }
     let digits = |r: std::ops::Range<usize>| {
-        b[r.clone()]
-            .iter()
-            .all(u8::is_ascii_digit)
-            .then(|| value[r].parse::<u32>().ok())
-            .flatten()
+        b[r.clone()].iter().all(u8::is_ascii_digit).then(|| value[r].parse::<u32>().ok()).flatten()
     };
     let (Some(year), Some(month), Some(day)) = (digits(0..4), digits(5..7), digits(8..10)) else {
         return false;
@@ -403,15 +362,7 @@ fn dates() {
     for ok in ["2024-02-29", "1970-01-01", "2026-12-31"] {
         assert!(valid_date(ok), "{ok}");
     }
-    for bad in [
-        "2023-02-29",
-        "2026-13-01",
-        "2026-04-31",
-        "2026-1-01",
-        "26-01-01",
-        "2026-01-00",
-        "+026-01-01",
-    ] {
+    for bad in ["2023-02-29", "2026-13-01", "2026-04-31", "2026-1-01", "26-01-01", "2026-01-00", "+026-01-01"] {
         assert!(!valid_date(bad), "{bad}");
     }
 }
@@ -424,10 +375,7 @@ pub fn check_field(schema: &Schema, name: &str, field: &Field) -> Result<(), Ite
     check_value(name, field)?;
     if let Some(known) = schema.field(name) {
         if field.kind != known.kind {
-            return Err(ItemError::WrongFieldType {
-                field: name.into(),
-                expected: known.kind.clone(),
-            });
+            return Err(ItemError::WrongFieldType { field: name.into(), expected: known.kind.clone() });
         }
         if let Format::Digits { min, max } = known.format {
             let n = field.value.len();
@@ -480,11 +428,7 @@ pub fn check_create(
     if source.is_some_and(|s| !valid_source(s)) {
         return Err(ItemError::InvalidSource);
     }
-    if let Some(missing) = schema
-        .fields
-        .iter()
-        .find(|f| f.required && !fields.contains_key(f.name))
-    {
+    if let Some(missing) = schema.fields.iter().find(|f| f.required && !fields.contains_key(f.name)) {
         return Err(ItemError::MissingField(missing.name));
     }
     if name.is_some_and(|n| !valid_item_name(n)) {
@@ -493,7 +437,5 @@ pub fn check_create(
     if name.is_none() && fields.is_empty() {
         return Err(ItemError::Empty);
     }
-    fields
-        .iter()
-        .try_for_each(|(name, field)| check_field(schema, name, field))
+    fields.iter().try_for_each(|(name, field)| check_field(schema, name, field))
 }

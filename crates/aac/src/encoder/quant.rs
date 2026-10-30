@@ -407,8 +407,14 @@ mod tests {
     #[test]
     fn bit_count_matches_written_bits() {
         let swb = swb_offsets_long(4);
-        let info = IcsInfo { window_sequence: WindowSequence::OnlyLong, window_shape: WindowShape::Sine, max_sfb: 40, ..Default::default() };
-        let spec: Vec<f32> = (0..1024).map(|i| ((i * 7919 % 1000) as f32 - 500.0) * (1000.0 / (i as f32 + 10.0))).collect();
+        let info = IcsInfo {
+            window_sequence: WindowSequence::OnlyLong,
+            window_shape: WindowShape::Sine,
+            max_sfb: 40,
+            ..Default::default()
+        };
+        let spec: Vec<f32> =
+            (0..1024).map(|i| ((i * 7919 % 1000) as f32 - 500.0) * (1000.0 / (i as f32 + 10.0))).collect();
         let thr = vec![vec![1000.0f32; 64]];
         let ch = ChannelInput::new(info, swb, &spec, &thr, None);
         for lambda in [0.01f32, 1.0, 100.0, 1e5] {

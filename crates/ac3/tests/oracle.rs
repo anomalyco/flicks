@@ -177,7 +177,8 @@ fn ffmpeg_encoded_streams_decode() {
             }
         }
         let o = Command::new(&ff).args(["-v", "error", "-i"]).arg(&f).args(["-f", "f32le", "-"]).output().unwrap();
-        let want: Vec<f32> = o.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let want: Vec<f32> =
+            o.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
         let ch = s.channels as usize;
         let n = want.len() / ch;
         assert_eq!(n, ours[0].len(), "{}: sample count", s.name);
@@ -196,7 +197,8 @@ fn ffmpeg_encoded_streams_decode() {
         // output (the difference to ffmpeg must be of that order)
         let mut dec2 = flicks_ac3::Decoder::new();
         dec2.set_dither_seed(0xDEAD_BEEF);
-        let other: Vec<f32> = frames(&data).iter().flat_map(|fr| dec2.decode(fr).unwrap().channels.swap_remove(0)).collect();
+        let other: Vec<f32> =
+            frames(&data).iter().flat_map(|fr| dec2.decode(fr).unwrap().channels.swap_remove(0)).collect();
         let (mut sig, mut err) = (0f64, 0f64);
         for i in 0..n {
             sig += (ours[0][i] as f64).powi(2);

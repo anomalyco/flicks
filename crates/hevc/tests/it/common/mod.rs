@@ -34,7 +34,16 @@ pub const FIXTURES: &[Fixture] = &[
     // intra only
     fx!("intra_main", "testsrc2", 352, 288, 3, NOISE, 8, ["-x265-params", "keyint=1:log-level=error"]),
     fx!("intra_main10", "testsrc2", 352, 288, 3, NOISE, 10, ["-x265-params", "keyint=1:log-level=error"]),
-    fx!("intra_nosao_nodbk", "testsrc2", 352, 288, 2, NOISE, 8, ["-x265-params", "keyint=1:no-sao=1:no-deblock=1:log-level=error"]),
+    fx!(
+        "intra_nosao_nodbk",
+        "testsrc2",
+        352,
+        288,
+        2,
+        NOISE,
+        8,
+        ["-x265-params", "keyint=1:no-sao=1:no-deblock=1:log-level=error"]
+    ),
     // presets (WPP is on by default in x265)
     fx!("ultrafast", "testsrc2", 352, 288, 20, NOISE, 8, ["-preset", "ultrafast", "-x265-params", "log-level=error"]),
     fx!("veryfast", "testsrc2", 352, 288, 20, NOISE, 8, ["-preset", "veryfast", "-x265-params", "log-level=error"]),
@@ -51,8 +60,26 @@ pub const FIXTURES: &[Fixture] = &[
     fx!("no_wpp", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "no-wpp=1:log-level=error"]),
     fx!("rect_amp", "mandelbrot", 352, 288, 16, NOISE, 8, ["-x265-params", "rect=1:amp=1:log-level=error"]),
     fx!("tskip", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "tskip=1:log-level=error"]),
-    fx!("weightp", "testsrc2", 352, 288, 30, "fade=in:0:25", 8, ["-x265-params", "weightp=1:weightb=1:bframes=3:log-level=error"]),
-    fx!("weightp_main10", "testsrc2", 352, 288, 20, "fade=in:0:18", 10, ["-x265-params", "weightp=1:weightb=1:log-level=error"]),
+    fx!(
+        "weightp",
+        "testsrc2",
+        352,
+        288,
+        30,
+        "fade=in:0:25",
+        8,
+        ["-x265-params", "weightp=1:weightb=1:bframes=3:log-level=error"]
+    ),
+    fx!(
+        "weightp_main10",
+        "testsrc2",
+        352,
+        288,
+        20,
+        "fade=in:0:18",
+        10,
+        ["-x265-params", "weightp=1:weightb=1:log-level=error"]
+    ),
     fx!("crf0", "mandelbrot", 176, 144, 6, NOISE, 8, ["-crf", "0", "-x265-params", "log-level=error"]),
     fx!("crf51", "testsrc2", 352, 288, 12, NOISE, 8, ["-crf", "51", "-x265-params", "log-level=error"]),
     fx!("qp1_main10", "mandelbrot", 176, 144, 4, NOISE, 10, ["-x265-params", "qp=1:log-level=error"]),
@@ -61,24 +88,114 @@ pub const FIXTURES: &[Fixture] = &[
     fx!("slices4", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "slices=4:log-level=error"]),
     fx!("scaling_list", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "scaling-list=default:log-level=error"]),
     fx!("ctu16", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "ctu=16:log-level=error"]),
-    fx!("ctu32_tu4", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "ctu=32:tu-intra-depth=4:tu-inter-depth=4:max-tu-size=16:log-level=error"]),
-    fx!("min_cu16", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "min-cu-size=16:rect=1:amp=1:log-level=error"]),
+    fx!(
+        "ctu32_tu4",
+        "testsrc2",
+        352,
+        288,
+        12,
+        NOISE,
+        8,
+        ["-x265-params", "ctu=32:tu-intra-depth=4:tu-inter-depth=4:max-tu-size=16:log-level=error"]
+    ),
+    fx!(
+        "min_cu16",
+        "testsrc2",
+        352,
+        288,
+        12,
+        NOISE,
+        8,
+        ["-x265-params", "min-cu-size=16:rect=1:amp=1:log-level=error"]
+    ),
     fx!("no_signhide", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "no-signhide=1:log-level=error"]),
-    fx!("constrained_intra", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "constrained-intra=1:log-level=error"]),
+    fx!(
+        "constrained_intra",
+        "testsrc2",
+        352,
+        288,
+        12,
+        NOISE,
+        8,
+        ["-x265-params", "constrained-intra=1:log-level=error"]
+    ),
     fx!("no_tmvp", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "no-temporal-mvp=1:log-level=error"]),
-    fx!("no_strong_intra", "testsrc2", 352, 288, 6, NOISE, 8, ["-x265-params", "no-strong-intra-smoothing=1:keyint=1:log-level=error"]),
+    fx!(
+        "no_strong_intra",
+        "testsrc2",
+        352,
+        288,
+        6,
+        NOISE,
+        8,
+        ["-x265-params", "no-strong-intra-smoothing=1:keyint=1:log-level=error"]
+    ),
     fx!("max_merge1", "testsrc2", 352, 288, 12, NOISE, 8, ["-x265-params", "max-merge=1:log-level=error"]),
-    fx!("open_gop", "testsrc2", 352, 288, 40, NOISE, 8, ["-x265-params", "keyint=12:min-keyint=12:open-gop=1:bframes=3:log-level=error"]),
+    fx!(
+        "open_gop",
+        "testsrc2",
+        352,
+        288,
+        40,
+        NOISE,
+        8,
+        ["-x265-params", "keyint=12:min-keyint=12:open-gop=1:bframes=3:log-level=error"]
+    ),
     fx!("keyint5_idr", "testsrc2", 352, 288, 20, NOISE, 8, ["-x265-params", "keyint=5:no-open-gop=1:log-level=error"]),
-    fx!("odd_1918x1078", "testsrc2", 1918, 1078, 3, NOISE, 8, ["-preset", "veryfast", "-x265-params", "log-level=error"]),
+    fx!(
+        "odd_1918x1078",
+        "testsrc2",
+        1918,
+        1078,
+        3,
+        NOISE,
+        8,
+        ["-preset", "veryfast", "-x265-params", "log-level=error"]
+    ),
     fx!("hd_1080p", "testsrc2", 1920, 1080, 3, "", 8, ["-preset", "fast", "-x265-params", "log-level=error"]),
-    fx!("uhd_4k_main10", "testsrc2", 3840, 2160, 2, "", 10, ["-preset", "ultrafast", "-x265-params", "log-level=error"]),
+    fx!(
+        "uhd_4k_main10",
+        "testsrc2",
+        3840,
+        2160,
+        2,
+        "",
+        10,
+        ["-preset", "ultrafast", "-x265-params", "log-level=error"]
+    ),
     // performance reference streams (tests/it/perf.rs)
-    fx!("bench_1080p", "testsrc2", 1920, 1080, 60, "noise=alls=3:allf=t", 8, ["-preset", "medium", "-crf", "24", "-x265-params", "log-level=error"]),
-    fx!("bench_4k", "testsrc2", 3840, 2160, 20, "noise=alls=3:allf=t", 10, ["-preset", "fast", "-crf", "26", "-x265-params", "log-level=error"]),
+    fx!(
+        "bench_1080p",
+        "testsrc2",
+        1920,
+        1080,
+        60,
+        "noise=alls=3:allf=t",
+        8,
+        ["-preset", "medium", "-crf", "24", "-x265-params", "log-level=error"]
+    ),
+    fx!(
+        "bench_4k",
+        "testsrc2",
+        3840,
+        2160,
+        20,
+        "noise=alls=3:allf=t",
+        10,
+        ["-preset", "fast", "-crf", "26", "-x265-params", "log-level=error"]
+    ),
     // Apple VideoToolbox (hardware encoder, macOS only)
     fx!("vt_main", "testsrc2", 640, 360, 20, NOISE, 8, ["-c:v", "hevc_videotoolbox", "-b:v", "2M"]),
-    fx!("vt_main10", "mandelbrot", 640, 360, 20, NOISE, 10, ["-c:v", "hevc_videotoolbox", "-profile:v", "main10", "-b:v", "2M"]),
+    fx!(
+        "vt_main10",
+        "mandelbrot",
+        640,
+        360,
+        20,
+        NOISE,
+        10,
+        ["-c:v", "hevc_videotoolbox", "-profile:v", "main10", "-b:v", "2M"]
+    ),
 ];
 
 pub fn fixture(name: &str) -> &'static Fixture {
@@ -240,9 +357,15 @@ pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize, bd: u32) 
             return Err(format!("frame {i}: size {}x{} != {}x{}", p.width, p.height, w, h));
         }
         let f = &reference[i * fsize..(i + 1) * fsize];
-        let sample = |buf: &[u8], k: usize| if bps == 2 { u16::from_le_bytes([buf[2 * k], buf[2 * k + 1]]) } else { buf[k] as u16 };
+        let sample = |buf: &[u8], k: usize| {
+            if bps == 2 { u16::from_le_bytes([buf[2 * k], buf[2 * k + 1]]) } else { buf[k] as u16 }
+        };
         let (ys, cs) = (w * h * bps, cw * ch * bps);
-        let planes = [("Y", &p.y, &f[..ys], w, h, 1), ("U", &p.u, &f[ys..ys + cs], cw, ch, 2), ("V", &p.v, &f[ys + cs..], cw, ch, 2)];
+        let planes = [
+            ("Y", &p.y, &f[..ys], w, h, 1),
+            ("U", &p.u, &f[ys..ys + cs], cw, ch, 2),
+            ("V", &p.v, &f[ys + cs..], cw, ch, 2),
+        ];
         for (name, got, exp, pw, ph, sub) in planes {
             let mut first = None;
             let mut count = 0usize;
@@ -289,11 +412,17 @@ pub fn check_fixture(name: &str) -> Result<bool, String> {
         let pics = match decode_file_threads(&hevc, threads) {
             Ok(p) => p,
             Err((au, e, partial)) => {
-                let cmp = compare(&partial, &reference, f.width as usize, f.height as usize, f.bit_depth).err().unwrap_or_default();
-                return Err(format!("{name} (threads {threads}): decode error at access unit {au}: {e} (after {} pictures) {cmp}", partial.len()));
+                let cmp = compare(&partial, &reference, f.width as usize, f.height as usize, f.bit_depth)
+                    .err()
+                    .unwrap_or_default();
+                return Err(format!(
+                    "{name} (threads {threads}): decode error at access unit {au}: {e} (after {} pictures) {cmp}",
+                    partial.len()
+                ));
             }
         };
-        compare(&pics, &reference, f.width as usize, f.height as usize, f.bit_depth).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
+        compare(&pics, &reference, f.width as usize, f.height as usize, f.bit_depth)
+            .map_err(|e| format!("{name} (threads {threads}): {e}"))?;
         check_pts(&pics).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
         if pics.iter().any(|p| p.draft) {
             return Err(format!("{name} (threads {threads}): picture flagged draft without draft mode"));

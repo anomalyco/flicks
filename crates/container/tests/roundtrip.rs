@@ -14,7 +14,12 @@ struct S {
 }
 
 fn sample_strategy() -> impl Strategy<Value = S> {
-    (0usize..300, 1u32..3000, -200i32..2000, any::<bool>()).prop_map(|(size, duration, cto, sync)| S { size, duration, cto, sync })
+    (0usize..300, 1u32..3000, -200i32..2000, any::<bool>()).prop_map(|(size, duration, cto, sync)| S {
+        size,
+        duration,
+        cto,
+        sync,
+    })
 }
 
 fn payload(track: usize, i: usize, n: usize) -> Vec<u8> {
@@ -147,7 +152,8 @@ fn sample_lookup() {
     // I P B B pattern: decode order I0 P3 B1 B2 | I4 P7 B5 B6
     let cto = [1, 3, 0, 0, 1, 3, 0, 0];
     for (i, c) in cto.iter().enumerate() {
-        w.write_sample(t, WriteSample { data: &[i as u8], duration: 1, composition_offset: *c, is_sync: i % 4 == 0 }).unwrap();
+        w.write_sample(t, WriteSample { data: &[i as u8], duration: 1, composition_offset: *c, is_sync: i % 4 == 0 })
+            .unwrap();
     }
     let out = w.finish().unwrap().into_inner();
     let f = open(out.as_slice()).unwrap();
@@ -269,7 +275,8 @@ impl ByteSource for Sparse {
         for (&at, data) in &self.kept {
             let (lo, hi) = (at.max(offset), (at + data.len() as u64).min(end));
             if lo < hi {
-                buf[(lo - offset) as usize..(hi - offset) as usize].copy_from_slice(&data[(lo - at) as usize..(hi - at) as usize]);
+                buf[(lo - offset) as usize..(hi - offset) as usize]
+                    .copy_from_slice(&data[(lo - at) as usize..(hi - at) as usize]);
             }
         }
         Ok(())

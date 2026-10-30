@@ -145,7 +145,9 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
                 if w.len() < 4 {
                     break None;
                 }
-                if let Some(i) = w.windows(4).position(|x| x[0] == 0 && x[1] == 0 && x[2] == 1 && (x[3] == 0xBA || (0xBD..=0xEF).contains(&x[3]))) {
+                if let Some(i) = w.windows(4).position(|x| {
+                    x[0] == 0 && x[1] == 0 && x[2] == 1 && (x[3] == 0xBA || (0xBD..=0xEF).contains(&x[3]))
+                }) {
                     break Some(p + i as u64);
                 }
                 p += (w.len() - 3) as u64;
@@ -210,7 +212,8 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
                 let key = (id, sub);
                 let e = streams.entry(key).or_insert_with(|| {
                     let codec = codec_for(id, sub, &psm, mpeg1);
-                    let lpcm = if codec == Codec::LpcmDvd { lpcm_format(&payload[1.min(payload.len())..]) } else { None };
+                    let lpcm =
+                        if codec == Codec::LpcmDvd { lpcm_format(&payload[1.min(payload.len())..]) } else { None };
                     order.push(key);
                     let stream = Stream {
                         id: StreamId::Ps { stream_id: id, sub_id: sub },
@@ -365,6 +368,10 @@ mod tests {
             assert_eq!(new.get(pos, 2000).unwrap(), old.get(pos, 2000).as_slice());
         }
         assert!(new.zero_filled <= 1000, "zeroed {} bytes, only 1000 are left in the file", new.zero_filled);
-        assert!(old.zero_filled > 499 * ((1 << 20) - 1000), "the reference zeroes about a megabyte per miss: {}", old.zero_filled);
+        assert!(
+            old.zero_filled > 499 * ((1 << 20) - 1000),
+            "the reference zeroes about a megabyte per miss: {}",
+            old.zero_filled
+        );
     }
 }

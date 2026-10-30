@@ -4,12 +4,14 @@ use crate::Result;
 use crate::header::{EIGHTTAP, SWITCHABLE};
 use crate::mvpred::MvP;
 use crate::spec_tables::{
-    ALTREF_FRAME, ALTREF2_FRAME, BLOCK_8X8, BLOCK_32X32, BLOCK_64X64, BLOCK_128X128, BWDREF_FRAME, CLASS0_SIZE, COMP_NEWMV_CTXS, COMPOUND_AVERAGE,
-    COMPOUND_DIFFWTD, COMPOUND_DISTANCE, COMPOUND_INTRA, COMPOUND_MODE_CTX_MAP, COMPOUND_REFERENCE, COMPOUND_WEDGE, GLOBAL_GLOBALMV, GLOBALMV, GOLDEN_FRAME,
-    INTRA_FRAME, INTRABC_DELAY_PIXELS, LAST_FRAME, LAST2_FRAME, LAST3_FRAME, LOCALWARP, MV_CLASS_0, MV_INTRABC_CONTEXT, MV_JOINT_HNZVNZ, MV_JOINT_HNZVZ,
-    MV_JOINT_HZVNZ, NEAR_NEARMV, NEAR_NEWMV, NEAREST_NEARESTMV, NEAREST_NEWMV, NEARESTMV, NEARMV, NEW_NEARESTMV, NEW_NEARMV, NEW_NEWMV, NEWMV,
-    NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, OBMC, REF_SCALE_SHIFT, SEG_LVL_GLOBALMV, SEG_LVL_REF_FRAME, SEG_LVL_SKIP, SIMPLE, SINGLE_REFERENCE, SIZE_GROUP,
-    TRANSLATION, UNIDIR_COMP_REFERENCE, UV_CFL_PRED, WEDGE_BITS,
+    ALTREF_FRAME, ALTREF2_FRAME, BLOCK_8X8, BLOCK_32X32, BLOCK_64X64, BLOCK_128X128, BWDREF_FRAME, CLASS0_SIZE,
+    COMP_NEWMV_CTXS, COMPOUND_AVERAGE, COMPOUND_DIFFWTD, COMPOUND_DISTANCE, COMPOUND_INTRA, COMPOUND_MODE_CTX_MAP,
+    COMPOUND_REFERENCE, COMPOUND_WEDGE, GLOBAL_GLOBALMV, GLOBALMV, GOLDEN_FRAME, INTRA_FRAME, INTRABC_DELAY_PIXELS,
+    LAST_FRAME, LAST2_FRAME, LAST3_FRAME, LOCALWARP, MV_CLASS_0, MV_INTRABC_CONTEXT, MV_JOINT_HNZVNZ, MV_JOINT_HNZVZ,
+    MV_JOINT_HZVNZ, NEAR_NEARMV, NEAR_NEWMV, NEAREST_NEARESTMV, NEAREST_NEWMV, NEARESTMV, NEARMV, NEW_NEARESTMV,
+    NEW_NEARMV, NEW_NEWMV, NEWMV, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, OBMC, REF_SCALE_SHIFT, SEG_LVL_GLOBALMV,
+    SEG_LVL_REF_FRAME, SEG_LVL_SKIP, SIMPLE, SINGLE_REFERENCE, SIZE_GROUP, TRANSLATION, UNIDIR_COMP_REFERENCE,
+    UV_CFL_PRED, WEDGE_BITS,
 };
 use crate::tile::TileDecoder;
 
@@ -236,15 +238,22 @@ impl TileDecoder<'_, '_> {
         Self::ref_count_ctx(self.count_refs(LAST3_FRAME as i8), self.count_refs(GOLDEN_FRAME as i8))
     }
     fn ctx_comp_bwdref(&self) -> usize {
-        Self::ref_count_ctx(self.count_refs(BWDREF_FRAME as i8) + self.count_refs(ALTREF2_FRAME as i8), self.count_refs(ALTREF_FRAME as i8))
+        Self::ref_count_ctx(
+            self.count_refs(BWDREF_FRAME as i8) + self.count_refs(ALTREF2_FRAME as i8),
+            self.count_refs(ALTREF_FRAME as i8),
+        )
     }
     fn ctx_comp_bwdref_p1(&self) -> usize {
         Self::ref_count_ctx(self.count_refs(BWDREF_FRAME as i8), self.count_refs(ALTREF2_FRAME as i8))
     }
     fn ctx_single_ref_p1(&self) -> usize {
-        let fwd =
-            self.count_refs(LAST_FRAME as i8) + self.count_refs(LAST2_FRAME as i8) + self.count_refs(LAST3_FRAME as i8) + self.count_refs(GOLDEN_FRAME as i8);
-        let bwd = self.count_refs(BWDREF_FRAME as i8) + self.count_refs(ALTREF2_FRAME as i8) + self.count_refs(ALTREF_FRAME as i8);
+        let fwd = self.count_refs(LAST_FRAME as i8)
+            + self.count_refs(LAST2_FRAME as i8)
+            + self.count_refs(LAST3_FRAME as i8)
+            + self.count_refs(GOLDEN_FRAME as i8);
+        let bwd = self.count_refs(BWDREF_FRAME as i8)
+            + self.count_refs(ALTREF2_FRAME as i8)
+            + self.count_refs(ALTREF_FRAME as i8);
         Self::ref_count_ctx(fwd, bwd)
     }
 
@@ -271,8 +280,10 @@ impl TileDecoder<'_, '_> {
                     if self.sd.read_symbol(&mut self.cdf.uni_comp_ref[ctx][0]) == 1 {
                         self.b.ref_frame = [BWDREF_FRAME as i8, ALTREF_FRAME as i8];
                     } else {
-                        let ctx1 =
-                            Self::ref_count_ctx(self.count_refs(LAST2_FRAME as i8), self.count_refs(LAST3_FRAME as i8) + self.count_refs(GOLDEN_FRAME as i8));
+                        let ctx1 = Self::ref_count_ctx(
+                            self.count_refs(LAST2_FRAME as i8),
+                            self.count_refs(LAST3_FRAME as i8) + self.count_refs(GOLDEN_FRAME as i8),
+                        );
                         if self.sd.read_symbol(&mut self.cdf.uni_comp_ref[ctx1][1]) == 1 {
                             let ctx2 = self.ctx_comp_ref_p2();
                             if self.sd.read_symbol(&mut self.cdf.uni_comp_ref[ctx2][2]) == 1 {
@@ -410,7 +421,8 @@ impl TileDecoder<'_, '_> {
         } else if self.seg_active(SEG_LVL_SKIP) || self.seg_active(SEG_LVL_GLOBALMV) {
             self.b.y_mode = GLOBALMV;
         } else if is_compound {
-            let ctx = COMPOUND_MODE_CTX_MAP[self.mvs.ref_mv_context >> 1][self.mvs.new_mv_context.min(COMP_NEWMV_CTXS - 1)] as usize;
+            let ctx = COMPOUND_MODE_CTX_MAP[self.mvs.ref_mv_context >> 1]
+                [self.mvs.new_mv_context.min(COMP_NEWMV_CTXS - 1)] as usize;
             self.b.y_mode = NEAREST_NEARESTMV + self.sd.read_symbol(&mut self.cdf.compound_mode[ctx]);
         } else {
             let new_mv = self.sd.read_symbol(&mut self.cdf.new_mv[self.mvs.new_mv_context]);
@@ -486,7 +498,8 @@ impl TileDecoder<'_, '_> {
         } else if large && self.b.y_mode == GLOBALMV {
             gm[self.b.ref_frame[0] as usize] as usize == TRANSLATION
         } else if large && self.b.y_mode == GLOBAL_GLOBALMV {
-            gm[self.b.ref_frame[0] as usize] as usize == TRANSLATION || gm[self.b.ref_frame[1] as usize] as usize == TRANSLATION
+            gm[self.b.ref_frame[0] as usize] as usize == TRANSLATION
+                || gm[self.b.ref_frame[1] as usize] as usize == TRANSLATION
         } else {
             true
         }
@@ -605,7 +618,8 @@ impl TileDecoder<'_, '_> {
         let class = self.sd.read_symbol(&mut self.cdf.mv_class[ctx][comp]);
         let mag = if class == MV_CLASS_0 {
             let b0 = self.sd.read_symbol(&mut self.cdf.mv_class0_bit[ctx][comp]) as i32;
-            let fr = if fim { 3 } else { self.sd.read_symbol(&mut self.cdf.mv_class0_fr[ctx][comp][b0 as usize]) as i32 };
+            let fr =
+                if fim { 3 } else { self.sd.read_symbol(&mut self.cdf.mv_class0_fr[ctx][comp][b0 as usize]) as i32 };
             let h = if hp { self.sd.read_symbol(&mut self.cdf.mv_class0_hp[ctx][comp]) as i32 } else { 1 };
             ((b0 << 3) | (fr << 1) | h) + 1
         } else {
@@ -625,7 +639,11 @@ impl TileDecoder<'_, '_> {
     fn read_interintra_mode(&mut self, is_compound: bool) {
         let ms = self.b.mi_size;
         self.b.interintra = false;
-        if !self.b.skip_mode && self.fs.seq.enable_interintra_compound && !is_compound && (BLOCK_8X8..=BLOCK_32X32).contains(&ms) {
+        if !self.b.skip_mode
+            && self.fs.seq.enable_interintra_compound
+            && !is_compound
+            && (BLOCK_8X8..=BLOCK_32X32).contains(&ms)
+        {
             let ctx = SIZE_GROUP[ms] as usize - 1;
             self.b.interintra = self.sd.read_symbol(&mut self.cdf.inter_intra[ctx]) == 1;
             if self.b.interintra {
@@ -675,7 +693,11 @@ impl TileDecoder<'_, '_> {
         }
         self.find_warp_samples();
         let fh = &self.fs.fh;
-        if fh.force_integer_mv || self.mvs.num_samples == 0 || !fh.allow_warped_motion || self.is_scaled(self.b.ref_frame[0]) {
+        if fh.force_integer_mv
+            || self.mvs.num_samples == 0
+            || !fh.allow_warped_motion
+            || self.is_scaled(self.b.ref_frame[0])
+        {
             let use_obmc = self.sd.read_symbol(&mut self.cdf.use_obmc[ms]);
             self.b.motion_mode = if use_obmc == 1 { OBMC as u8 } else { SIMPLE as u8 };
         } else {

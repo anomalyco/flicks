@@ -22,7 +22,16 @@ fn decode_all(frames: &[Vec<u8>], threads: usize) {
 
 #[test]
 fn corrupted_streams_do_not_panic() {
-    for name in ["default_good", "altref_hidden", "profile2_10bit", "tiles_cols4", "aq_segmentation", "lossless", "profile1_444", "tiles_rows4"] {
+    for name in [
+        "default_good",
+        "altref_hidden",
+        "profile2_10bit",
+        "tiles_cols4",
+        "aq_segmentation",
+        "lossless",
+        "profile1_444",
+        "tiles_rows4",
+    ] {
         let f = common::fixture(name);
         let Some((ivf, _)) = common::ensure(f) else { return };
         let data = std::fs::read(ivf).unwrap();

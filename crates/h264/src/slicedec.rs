@@ -5,7 +5,9 @@ use crate::deblock;
 use crate::error::{Result, ensure, invalid};
 use crate::inter::{self, McBlock, Weight};
 use crate::intra::{self, Avail};
-use crate::mbtypes::{CBP_ME, MbTypeInfo, Part, SubMbInfo, SubPart, b_mb_type, b_sub_mb_type, intra_mb_type, p_mb_type, p_sub_mb_type};
+use crate::mbtypes::{
+    CBP_ME, MbTypeInfo, Part, SubMbInfo, SubPart, b_mb_type, b_sub_mb_type, intra_mb_type, p_mb_type, p_sub_mb_type,
+};
 use crate::params::{Pps, Sps};
 use crate::picture::{Frame, FrameRef, MbKind, MbState, Planes, RefPic};
 use crate::slice::{SliceHeader, SliceType};
@@ -115,8 +117,12 @@ impl PicState {
         while self.rows_published < publish_limit {
             let r = self.rows_published;
             let slices = &self.slices;
-            let ids =
-                |st: &MbState, l: usize, ri: i8| slices.get(st.slice_num as usize).and_then(|s| s.ref_ids[l].get(ri as usize).copied()).unwrap_or(u32::MAX);
+            let ids = |st: &MbState, l: usize, ri: i8| {
+                slices
+                    .get(st.slice_num as usize)
+                    .and_then(|s| s.ref_ids[l].get(ri as usize).copied())
+                    .unwrap_or(u32::MAX)
+            };
             let row = Frame::make_row(&self.planes, r, &self.mbs, &ids);
             self.frame.publish(r, row);
             self.rows_published += 1;
@@ -173,7 +179,14 @@ pub(crate) struct Scratch {
 
 impl Scratch {
     pub fn new() -> Box<Self> {
-        Box::new(Scratch { coef: [0; 256], coef_c: [[0; 64]; 2], blk_nz: 0, c_nz: [0; 2], pred: [[0; 256]; 2], pred_c: [[[0; 64]; 2]; 2] })
+        Box::new(Scratch {
+            coef: [0; 256],
+            coef_c: [[0; 64]; 2],
+            blk_nz: 0,
+            c_nz: [0; 2],
+            pred: [[0; 256]; 2],
+            pred_c: [[[0; 64]; 2]; 2],
+        })
     }
 }
 
@@ -217,7 +230,15 @@ pub struct SliceDecoder<'a> {
 /// Interpolate a bw x bh luma block at (px, py) with motion vector `mv` from reference `f` into `y`,
 /// and the corresponding chroma blocks into `c` (stride `cs`).
 #[inline]
-fn predict_block(f: &Frame, mv: [i16; 2], (px, py): (usize, usize), (bw, bh): (usize, usize), y: (&mut [u8], usize), c: [&mut [u8]; 2], cs: usize) {
+fn predict_block(
+    f: &Frame,
+    mv: [i16; 2],
+    (px, py): (usize, usize),
+    (bw, bh): (usize, usize),
+    y: (&mut [u8], usize),
+    c: [&mut [u8]; 2],
+    cs: usize,
+) {
     const LW: usize = 24;
     let mut win = [0u8; LW * 21];
     let ix = px as i32 + (mv[0] as i32 >> 2);
@@ -241,7 +262,14 @@ fn median(a: i16, b: i16, c: i16) -> i16 {
 }
 
 impl<'a> SliceDecoder<'a> {
-    pub fn new(sh: &'a SliceHeader, pps: &'a Pps, sps: &'a Sps, pic: &'a mut PicState, refs: &'a [Vec<RefPic>; 2], ls: &'a LevelScale) -> Result<Self> {
+    pub fn new(
+        sh: &'a SliceHeader,
+        pps: &'a Pps,
+        sps: &'a Sps,
+        pic: &'a mut PicState,
+        refs: &'a [Vec<RefPic>; 2],
+        ls: &'a LevelScale,
+    ) -> Result<Self> {
         let slice_num = pic.slices.len() as u32;
         let chroma_qp_offset = [pps.chroma_qp_index_offset, pps.second_chroma_qp_index_offset];
         pic.slices.push(SliceInfo {
@@ -301,7 +329,8 @@ impl<'a> SliceDecoder<'a> {
             implicit: Vec::new(),
             n1: refs[1].len(),
         };
-        let explicit = (pps.weighted_pred && sh.slice_type.is_p()) || (pps.weighted_bipred_idc == 1 && sh.slice_type.is_b());
+        let explicit =
+            (pps.weighted_pred && sh.slice_type.is_p()) || (pps.weighted_bipred_idc == 1 && sh.slice_type.is_b());
         if explicit {
             if let Some(t) = &sh.pred_weight_table {
                 w.mode = WpMode::Explicit;
@@ -309,7 +338,10 @@ impl<'a> SliceDecoder<'a> {
                 w.chroma_denom = t.chroma_log2_denom as i32;
                 for (l, entries) in [&t.l0, &t.l1].into_iter().enumerate() {
                     w.luma[l] = entries.iter().map(|e| (e.luma_weight, e.luma_offset)).collect();
-                    w.chroma[l] = entries.iter().map(|e| [(e.chroma_weight[0], e.chroma_offset[0]), (e.chroma_weight[1], e.chroma_offset[1])]).collect();
+                    w.chroma[l] = entries
+                        .iter()
+                        .map(|e| [(e.chroma_weight[0], e.chroma_offset[0]), (e.chroma_weight[1], e.chroma_offset[1])])
+                        .collect();
                 }
             }
         } else if pps.weighted_bipred_idc == 2 && sh.slice_type.is_b() {
@@ -394,8 +426,13 @@ impl<'a> SliceDecoder<'a> {
     fn nc_chroma(&self, c: usize, raster: usize) -> i32 {
         let (bx, by) = (raster & 1, raster >> 1);
         let cur = self.mb();
-        let a = if bx > 0 { Some(cur.nnz_c[c][raster - 1]) } else { self.nb[0].map(|m| self.pic.mbs[m].nnz_c[c][by * 2 + 1]) };
-        let b = if by > 0 { Some(cur.nnz_c[c][raster - 2]) } else { self.nb[1].map(|m| self.pic.mbs[m].nnz_c[c][2 + bx]) };
+        let a = if bx > 0 {
+            Some(cur.nnz_c[c][raster - 1])
+        } else {
+            self.nb[0].map(|m| self.pic.mbs[m].nnz_c[c][by * 2 + 1])
+        };
+        let b =
+            if by > 0 { Some(cur.nnz_c[c][raster - 2]) } else { self.nb[1].map(|m| self.pic.mbs[m].nnz_c[c][2 + bx]) };
         match (a, b) {
             (Some(a), Some(b)) => (a as i32 + b as i32 + 1) >> 1,
             (Some(a), None) => a as i32,
@@ -558,7 +595,8 @@ impl<'a> SliceDecoder<'a> {
     /// Derive direct-mode motion for the 8x8 blocks in `b8_mask` of the current MB.
     fn derive_direct(&mut self, b8_mask: u8) -> Result<()> {
         let spatial = self.sh.direct_spatial_mv_pred;
-        let (base_refs, base_mvs, direct_zero) = if spatial { self.spatial_direct_base() } else { ([0, 0], [[0, 0]; 2], false) };
+        let (base_refs, base_mvs, direct_zero) =
+            if spatial { self.spatial_direct_base() } else { ([0, 0], [[0, 0]; 2], false) };
         let col_short_term = self.refs[1].first().map(|r| !r.long_term).unwrap_or(false);
         for b8 in 0..4 {
             if b8_mask & (1 << b8) == 0 {
@@ -571,7 +609,10 @@ impl<'a> SliceDecoder<'a> {
                 let raster = y * 4 + x;
                 let (mv_col, ref_col, id_col) = self.colocated(raster);
                 let (refs, mvs) = if spatial {
-                    let col_zero = col_short_term && ref_col == 0 && (-1..=1).contains(&mv_col[0]) && (-1..=1).contains(&mv_col[1]);
+                    let col_zero = col_short_term
+                        && ref_col == 0
+                        && (-1..=1).contains(&mv_col[0])
+                        && (-1..=1).contains(&mv_col[1]);
                     let mut mvs = base_mvs;
                     for l in 0..2 {
                         if direct_zero || base_refs[l] < 0 || (base_refs[l] == 0 && col_zero) {
@@ -614,7 +655,11 @@ impl<'a> SliceDecoder<'a> {
     pub fn derive_p_skip(&mut self) {
         let a = self.nb_motion(0, -1, 0);
         let b = self.nb_motion(0, 0, -1);
-        let mv = if self.nb[0].is_none() || self.nb[1].is_none() || (a.ref_idx == 0 && a.mv == [0, 0]) || (b.ref_idx == 0 && b.mv == [0, 0]) {
+        let mv = if self.nb[0].is_none()
+            || self.nb[1].is_none()
+            || (a.ref_idx == 0 && a.mv == [0, 0])
+            || (b.ref_idx == 0 && b.mv == [0, 0])
+        {
             [0, 0]
         } else {
             self.mvp(0, (0, 0), 4, 0, 0, 0)
@@ -760,7 +805,15 @@ impl<'a> SliceDecoder<'a> {
             }
             let Some(rp) = self.refs[l].get(refs[l] as usize) else { continue };
             let [pc0, pc1] = &mut s.pred_c[l];
-            predict_block(&rp.frame, mvs[l], (px, py), (bw, bh), (&mut s.pred[l][..], 16), [&mut pc0[..], &mut pc1[..]], 8);
+            predict_block(
+                &rp.frame,
+                mvs[l],
+                (px, py),
+                (bw, bh),
+                (&mut s.pred[l][..], 16),
+                [&mut pc0[..], &mut pc1[..]],
+                8,
+            );
         }
         inter::weighted_store(
             &mut self.pic.planes.y[py * ys + px..],
@@ -992,7 +1045,12 @@ impl<'a> SliceDecoder<'a> {
                 }
             }
             MbKind::I16x16 => {
-                let av = Avail { left: self.intra_nb(0), top: self.intra_nb(1), top_left: self.intra_nb(3), top_right: false };
+                let av = Avail {
+                    left: self.intra_nb(0),
+                    top: self.intra_nb(1),
+                    top_left: self.intra_nb(3),
+                    top_right: false,
+                };
                 intra::pred16x16(&mut self.pic.planes.y, stride, x0, y0, self.cur.info.i16_mode, av);
                 for r in 0..16 {
                     self.add_luma_block4(r);
@@ -1030,7 +1088,8 @@ impl<'a> SliceDecoder<'a> {
         let stride = self.pic.planes.width;
         let (x0, y0) = (self.mb_x * 16, self.mb_y * 16);
         for r in 0..16 {
-            self.pic.planes.y[(y0 + r) * stride + x0..(y0 + r) * stride + x0 + 16].copy_from_slice(&samples[r * 16..r * 16 + 16]);
+            self.pic.planes.y[(y0 + r) * stride + x0..(y0 + r) * stride + x0 + 16]
+                .copy_from_slice(&samples[r * 16..r * 16 + 16]);
         }
         let cs = self.pic.planes.cwidth;
         let (cx, cy) = (self.mb_x * 8, self.mb_y * 8);
@@ -1275,7 +1334,8 @@ impl<'a> SliceDecoder<'a> {
                             if sub.direct || sub.pred & (1 << l) == 0 {
                                 continue;
                             }
-                            self.cur.ref_idx[l][p] = if n_ref[l] > 1 && !info.ref0 { Self::read_te(r, n_ref[l] - 1)? as i8 } else { 0 };
+                            self.cur.ref_idx[l][p] =
+                                if n_ref[l] > 1 && !info.ref0 { Self::read_te(r, n_ref[l] - 1)? as i8 } else { 0 };
                         }
                     }
                     for l in 0..2 {
@@ -1296,7 +1356,8 @@ impl<'a> SliceDecoder<'a> {
                     for l in 0..2 {
                         for p in 0..np {
                             if info.pred[p] & (1 << l) != 0 {
-                                self.cur.ref_idx[l][p] = if n_ref[l] > 1 { Self::read_te(r, n_ref[l] - 1)? as i8 } else { 0 };
+                                self.cur.ref_idx[l][p] =
+                                    if n_ref[l] > 1 { Self::read_te(r, n_ref[l] - 1)? as i8 } else { 0 };
                             }
                         }
                     }
@@ -1350,9 +1411,11 @@ impl<'a> SliceDecoder<'a> {
         let info = self.cur.info;
         match info.kind {
             MbKind::BDirect16x16 => self.sps.direct_8x8_inference,
-            MbKind::Inter if info.part == Part::P8x8 => {
-                self.cur.sub.iter().all(|s| if s.direct { self.sps.direct_8x8_inference } else { s.shape == SubPart::S8x8 })
-            }
+            MbKind::Inter if info.part == Part::P8x8 => self
+                .cur
+                .sub
+                .iter()
+                .all(|s| if s.direct { self.sps.direct_8x8_inference } else { s.shape == SubPart::S8x8 }),
             _ => true,
         }
     }

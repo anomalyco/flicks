@@ -10,8 +10,8 @@ use iroh::{
     Endpoint, EndpointAddr, PublicKey, RelayMode, RelayUrl, SecretKey,
     address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver},
     endpoint::{
-        AfterHandshakeOutcome, BeforeConnectOutcome, Connection, EndpointHooks, PortmapperConfig,
-        Side, WeakConnectionHandle, presets,
+        AfterHandshakeOutcome, BeforeConnectOutcome, Connection, EndpointHooks, PortmapperConfig, Side,
+        WeakConnectionHandle, presets,
     },
 };
 use tokio::{
@@ -111,11 +111,7 @@ pub struct PeerAddr {
 
 impl From<PeerId> for PeerAddr {
     fn from(id: PeerId) -> Self {
-        Self {
-            id,
-            relay_url: None,
-            direct_addrs: Vec::new(),
-        }
+        Self { id, relay_url: None, direct_addrs: Vec::new() }
     }
 }
 
@@ -125,9 +121,7 @@ impl PeerAddr {
             .map_err(|_| Error::Connect(format!("invalid peer id {}", fmt_id(&self.id))))?;
         let mut addr = EndpointAddr::new(id);
         if let Some(url) = &self.relay_url {
-            let url: RelayUrl = url
-                .parse()
-                .map_err(|_| Error::InvalidRelayUrl(url.clone()))?;
+            let url: RelayUrl = url.parse().map_err(|_| Error::InvalidRelayUrl(url.clone()))?;
             addr = addr.with_relay_url(url);
         }
         for ip in &self.direct_addrs {
@@ -174,9 +168,7 @@ impl Drop for AbortOnDrop {
 
 impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Node")
-            .field("id", &fmt_id(&self.id()))
-            .finish_non_exhaustive()
+        f.debug_struct("Node").field("id", &fmt_id(&self.id())).finish_non_exhaustive()
     }
 }
 
@@ -186,11 +178,7 @@ impl Node {
     /// `membership` is consulted for every sync connection, inbound and outbound. It is
     /// called while an internal lock is held, so it must be fast and must not call back
     /// into the [`Node`].
-    pub async fn spawn(
-        config: NodeConfig,
-        membership: Arc<dyn Membership>,
-        handler: impl SyncHandler,
-    ) -> Result<Self> {
+    pub async fn spawn(config: NodeConfig, membership: Arc<dyn Membership>, handler: impl SyncHandler) -> Result<Self> {
         let gate = Arc::new(Gate::new(membership));
         let relays_enabled = config.relays != Relays::Disabled;
         let relay_mode = match &config.relays {
@@ -198,10 +186,7 @@ impl Node {
             Relays::Disabled => RelayMode::Disabled,
             Relays::Custom(urls) => RelayMode::custom(
                 urls.iter()
-                    .map(|u| {
-                        u.parse::<RelayUrl>()
-                            .map_err(|_| Error::InvalidRelayUrl(u.clone()))
-                    })
+                    .map(|u| u.parse::<RelayUrl>().map_err(|_| Error::InvalidRelayUrl(u.clone())))
                     .collect::<Result<Vec<_>>>()?,
             ),
         };
@@ -220,15 +205,9 @@ impl Node {
             builder = builder.portmapper_config(PortmapperConfig::Disabled);
         }
         if let Some(addr) = config.bind_addr {
-            builder = builder
-                .clear_ip_transports()
-                .bind_addr(addr)
-                .map_err(|e| Error::Bind(e.to_string()))?;
+            builder = builder.clear_ip_transports().bind_addr(addr).map_err(|e| Error::Bind(e.to_string()))?;
         }
-        let endpoint = builder
-            .bind()
-            .await
-            .map_err(|e| Error::Bind(e.to_string()))?;
+        let endpoint = builder.bind().await.map_err(|e| Error::Bind(e.to_string()))?;
 
         let handler: Arc<dyn DynSyncHandler> = Arc::new(handler);
         let accept_task = AbortOnDrop(tokio::spawn(accept_loop(
@@ -262,10 +241,7 @@ impl Node {
     /// Waits until connected to a home relay. Returns `false` on timeout or if relays are
     /// disabled.
     pub async fn online(&self, timeout: Duration) -> bool {
-        self.inner.relays_enabled
-            && tokio::time::timeout(timeout, self.inner.endpoint.online())
-                .await
-                .is_ok()
+        self.inner.relays_enabled && tokio::time::timeout(timeout, self.inner.endpoint.online()).await.is_ok()
     }
 
     /// Opens a sync connection to a member. Refuses to dial non-members.
@@ -282,11 +258,7 @@ impl Node {
                 return Err(Error::Connect(err.to_string()));
             }
         };
-        Ok(SyncConnection::new(
-            conn,
-            self.inner.handler.clone(),
-            self.inner.max_frame_len,
-        ))
+        Ok(SyncConnection::new(conn, self.inner.handler.clone(), self.inner.max_frame_len))
     }
 
     /// Connects, runs one sync session and closes the connection.
@@ -316,12 +288,7 @@ impl Node {
     }
 }
 
-async fn accept_loop(
-    endpoint: Endpoint,
-    gate: Arc<Gate>,
-    handler: Arc<dyn DynSyncHandler>,
-    max_frame_len: usize,
-) {
+async fn accept_loop(endpoint: Endpoint, gate: Arc<Gate>, handler: Arc<dyn DynSyncHandler>, max_frame_len: usize) {
     let mut tasks = JoinSet::new();
     loop {
         tokio::select! {
@@ -363,9 +330,7 @@ struct Tracked {
 
 impl Tracked {
     fn live(&self) -> Option<Connection> {
-        self.handle
-            .upgrade()
-            .filter(|conn| conn.close_reason().is_none())
+        self.handle.upgrade().filter(|conn| conn.close_reason().is_none())
     }
 }
 
@@ -403,10 +368,7 @@ impl fmt::Debug for Gate {
 impl Gate {
     /// Creates a gate without opening a transport endpoint.
     pub fn new(membership: Arc<dyn Membership>) -> Self {
-        Self {
-            membership,
-            state: Mutex::default(),
-        }
+        Self { membership, state: Mutex::default() }
     }
 
     fn lock(&self) -> MutexGuard<'_, GateState> {
@@ -435,10 +397,7 @@ impl Gate {
     /// caller updates [`Membership`], so a connection admitted concurrently with a
     /// removal is always either rejected here or closed there. No sticky revocation set is
     /// needed, so a device removed from one vault can still pair into another vault later.
-    fn admit(
-        &self,
-        conn: &Connection,
-    ) -> std::result::Result<(), (iroh::endpoint::VarInt, &'static [u8])> {
+    fn admit(&self, conn: &Connection) -> std::result::Result<(), (iroh::endpoint::VarInt, &'static [u8])> {
         let peer = *conn.remote_id().as_bytes();
         let mut st = self.lock();
         let kind = match conn.alpn() {
@@ -449,9 +408,7 @@ impl Gate {
                 ConnKind::Sync
             }
             PAIR_ALPN => {
-                if conn.side() == Side::Server
-                    && !st.pairing.as_ref().is_some_and(PairingSlot::open)
-                {
+                if conn.side() == Side::Server && !st.pairing.as_ref().is_some_and(PairingSlot::open) {
                     return Err((close::PAIRING_UNAVAILABLE, b"not pairing"));
                 }
                 ConnKind::Pair
@@ -460,10 +417,7 @@ impl Gate {
         };
         let list = st.conns.entry(peer).or_default();
         list.retain(|t| t.live().is_some());
-        list.push(Tracked {
-            kind,
-            handle: conn.weak_handle(),
-        });
+        list.push(Tracked { kind, handle: conn.weak_handle() });
         Ok(())
     }
 
@@ -522,17 +476,13 @@ impl Gate {
     fn route_pairing(&self, conn: Connection) {
         let tx = {
             let st = self.lock();
-            st.pairing
-                .as_ref()
-                .filter(|s| s.open())
-                .map(|s| s.tx.clone())
+            st.pairing.as_ref().filter(|s| s.open()).map(|s| s.tx.clone())
         };
         match tx {
             Some(tx) => {
                 if let Err(err) = tx.try_send(conn) {
                     warn!("dropping pairing connection: {err}");
-                    let (mpsc::error::TrySendError::Full(conn)
-                    | mpsc::error::TrySendError::Closed(conn)) = err;
+                    let (mpsc::error::TrySendError::Full(conn) | mpsc::error::TrySendError::Closed(conn)) = err;
                     conn.close(close::PAIRING_UNAVAILABLE, b"busy");
                 }
             }
@@ -561,10 +511,7 @@ impl EndpointHooks for GateHook {
         }
     }
 
-    fn after_handshake<'a>(
-        &'a self,
-        conn: &'a Connection,
-    ) -> impl Future<Output = AfterHandshakeOutcome> + Send + 'a {
+    fn after_handshake<'a>(&'a self, conn: &'a Connection) -> impl Future<Output = AfterHandshakeOutcome> + Send + 'a {
         let outcome = match self.0.admit(conn) {
             Ok(()) => AfterHandshakeOutcome::Accept,
             Err((error_code, reason)) => {
@@ -573,10 +520,7 @@ impl EndpointHooks for GateHook {
                     reason = %String::from_utf8_lossy(reason),
                     "rejecting connection"
                 );
-                AfterHandshakeOutcome::Reject {
-                    error_code,
-                    reason: reason.to_vec(),
-                }
+                AfterHandshakeOutcome::Reject { error_code, reason: reason.to_vec() }
             }
         };
         async move { outcome }
@@ -604,9 +548,7 @@ mod tests {
 
     async fn node(membership: impl Membership + 'static) -> Node {
         let key = SecretKey::generate().to_bytes();
-        Node::spawn(NodeConfig::local_only(key), Arc::new(membership), Nothing)
-            .await
-            .unwrap()
+        Node::spawn(NodeConfig::local_only(key), Arc::new(membership), Nothing).await.unwrap()
     }
 
     /// The endpoint hook itself refuses to dial non-members, independent of the check in
@@ -624,10 +566,7 @@ mod tests {
         if let Ok(conn) = conn {
             // b has no outstanding ticket, so it closes the connection.
             conn.closed().await;
-            assert!(matches!(
-                crate::error::from_conn(&conn, Error::Timeout),
-                Error::Rejected(_)
-            ));
+            assert!(matches!(crate::error::from_conn(&conn, Error::Timeout), Error::Rejected(_)));
         }
     }
 
@@ -637,12 +576,7 @@ mod tests {
     async fn endpoint_hook_rejects_raw_inbound_non_member() {
         let a = node(|_: &PeerId| false).await;
         let b = node(|_: &PeerId| true).await;
-        let conn = b
-            .inner
-            .endpoint
-            .connect(a.addr().to_endpoint_addr().unwrap(), SYNC_ALPN)
-            .await
-            .unwrap();
+        let conn = b.inner.endpoint.connect(a.addr().to_endpoint_addr().unwrap(), SYNC_ALPN).await.unwrap();
         conn.closed().await;
         assert!(matches!(
             crate::error::from_conn(&conn, Error::Timeout),

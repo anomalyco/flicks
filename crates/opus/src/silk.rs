@@ -9,12 +9,16 @@ mod resampler;
 #[allow(dead_code)]
 pub(crate) mod tables;
 
-use lpc::{MAX_LPC_ORDER, bwexpander, div32_varq, inverse32_varq, nlsf_decode, nlsf2a, rshift_round, sat16, smlawb, smulwb, smulww};
+use lpc::{
+    MAX_LPC_ORDER, bwexpander, div32_varq, inverse32_varq, nlsf_decode, nlsf2a, rshift_round, sat16, smlawb, smulwb,
+    smulww,
+};
 use resampler::Resampler;
 use tables::{
-    CB_NB_10, CB_NB_20, CB_WB_10, CB_WB_20, DELTA_GAIN, EXC_LSB, EXC_SIGN, GAIN_MSB, LBRR_FLAGS, LTP_FILTER, LTP_PERIODICITY, LTP_SCALE, LTP_TAPS_0,
-    LTP_TAPS_1, LTP_TAPS_2, MID_ONLY, NLSF_EXT, NLSF_INTERP, NLSF_SEL_NBMB, NLSF_SEL_WB, NLSF_STAGE1, NLSF_STAGE2, PITCH_CONTOUR, PITCH_DELTA, PITCH_HIGH,
-    PITCH_LOW, PULSE_COUNT, RATE_LEVEL, SHELL_2, SHELL_4, SHELL_8, SHELL_16, STEREO_PRED_JOINT, STEREO_WEIGHTS_Q13, TYPE_ACTIVE, TYPE_INACTIVE, UNIFORM3,
+    CB_NB_10, CB_NB_20, CB_WB_10, CB_WB_20, DELTA_GAIN, EXC_LSB, EXC_SIGN, GAIN_MSB, LBRR_FLAGS, LTP_FILTER,
+    LTP_PERIODICITY, LTP_SCALE, LTP_TAPS_0, LTP_TAPS_1, LTP_TAPS_2, MID_ONLY, NLSF_EXT, NLSF_INTERP, NLSF_SEL_NBMB,
+    NLSF_SEL_WB, NLSF_STAGE1, NLSF_STAGE2, PITCH_CONTOUR, PITCH_DELTA, PITCH_HIGH, PITCH_LOW, PULSE_COUNT, RATE_LEVEL,
+    SHELL_2, SHELL_4, SHELL_8, SHELL_16, STEREO_PRED_JOINT, STEREO_WEIGHTS_Q13, TYPE_ACTIVE, TYPE_INACTIVE, UNIFORM3,
     UNIFORM4, UNIFORM5, UNIFORM8,
 };
 
@@ -145,7 +149,11 @@ impl Channel {
     }
 
     fn decode_indices(&mut self, dec: &mut RangeDecoder, frame_index: usize, decode_lbrr: bool, cond: Cond) {
-        let ix = if decode_lbrr || self.vad_flags[frame_index] { dec.icdf(&TYPE_ACTIVE, 8) + 2 } else { dec.icdf(&TYPE_INACTIVE, 8) };
+        let ix = if decode_lbrr || self.vad_flags[frame_index] {
+            dec.icdf(&TYPE_ACTIVE, 8) + 2
+        } else {
+            dec.icdf(&TYPE_INACTIVE, 8)
+        };
         let ind = &mut self.indices;
         ind.signal_type = ix >> 1;
         ind.quant_offset_type = ix & 1;
@@ -270,7 +278,8 @@ impl Channel {
         if self.indices.nlsf_interp_q2 < 4 {
             let mut n0 = [0i32; MAX_LPC_ORDER];
             for i in 0..order {
-                n0[i] = self.prev_nlsf_q15[i] + ((self.indices.nlsf_interp_q2 * (nlsf[i] - self.prev_nlsf_q15[i])) >> 2);
+                n0[i] =
+                    self.prev_nlsf_q15[i] + ((self.indices.nlsf_interp_q2 * (nlsf[i] - self.prev_nlsf_q15[i])) >> 2);
             }
             ctrl.pred_coef_q12[0] = nlsf2a(&n0[..order]);
         } else {
@@ -375,7 +384,12 @@ impl Channel {
                         self.out_buf[ltp_mem..ltp_mem + 2 * sub].copy_from_slice(&xq[..2 * sub]);
                     }
                     let src_off = start_idx + k * sub;
-                    lpc_analysis_filter(&mut s_ltp[start_idx..ltp_mem], &self.out_buf[src_off..src_off + ltp_mem - start_idx], a_q12, order);
+                    lpc_analysis_filter(
+                        &mut s_ltp[start_idx..ltp_mem],
+                        &self.out_buf[src_off..src_off + ltp_mem - start_idx],
+                        a_q12,
+                        order,
+                    );
                     if k == 0 {
                         inv_gain_q31 = smulwb(inv_gain_q31, ctrl.ltp_scale_q14) << 2;
                     }
@@ -493,7 +507,11 @@ fn log2lin(in_log_q7: i32) -> i32 {
     }
     let out = 1i32 << (in_log_q7 >> 7);
     let frac = in_log_q7 & 0x7F;
-    if in_log_q7 < 2048 { out + ((out * smlawb(frac, frac * (128 - frac), -174)) >> 7) } else { out + (out >> 7) * smlawb(frac, frac * (128 - frac), -174) }
+    if in_log_q7 < 2048 {
+        out + ((out * smlawb(frac, frac * (128 - frac), -174)) >> 7)
+    } else {
+        out + (out >> 7) * smlawb(frac, frac * (128 - frac), -174)
+    }
 }
 
 fn lpc_analysis_filter(out: &mut [i16], input: &[i16], b: &[i32], d: usize) {
@@ -511,7 +529,13 @@ fn lpc_analysis_filter(out: &mut [i16], input: &[i16], b: &[i32], d: usize) {
     }
 }
 
-fn decode_pulses(dec: &mut RangeDecoder, pulses: &mut [i32], signal_type: usize, quant_offset_type: usize, frame_length: usize) {
+fn decode_pulses(
+    dec: &mut RangeDecoder,
+    pulses: &mut [i32],
+    signal_type: usize,
+    quant_offset_type: usize,
+    frame_length: usize,
+) {
     let rate_level = dec.icdf(RATE_LEVEL[signal_type >> 1], 8);
     let mut iter = frame_length >> 4;
     if iter * 16 < frame_length {
@@ -702,7 +726,8 @@ impl SilkDecoder {
         if nci > self.channels_internal_prev && self.channels_internal_prev != 0 {
             self.ch[1] = Channel::new();
         }
-        let stereo_to_mono = nci == 1 && self.channels_internal_prev == 2 && self.internal_rate == 1000 * self.ch[0].fs_khz as u32;
+        let stereo_to_mono =
+            nci == 1 && self.channels_internal_prev == 2 && self.internal_rate == 1000 * self.ch[0].fs_khz as u32;
         if self.ch[0].n_frames_decoded == 0 {
             let (frames, subframes) = match payload_ms {
                 10 => (1, 2),
@@ -770,17 +795,34 @@ impl SilkDecoder {
                         decoder.icdf(&MID_ONLY, 8);
                     }
                 }
-                let condition = if frame > 0 && self.ch[channel].lbrr_flags[frame - 1] { Cond::Conditionally } else { Cond::Independently };
+                let condition = if frame > 0 && self.ch[channel].lbrr_flags[frame - 1] {
+                    Cond::Conditionally
+                } else {
+                    Cond::Independently
+                };
                 let state = &mut self.ch[channel];
                 state.decode_indices(decoder, frame, true, condition);
                 let mut pulses = [0i32; MAX_FRAME + 16];
-                decode_pulses(decoder, &mut pulses, state.indices.signal_type, state.indices.quant_offset_type, state.frame_length);
+                decode_pulses(
+                    decoder,
+                    &mut pulses,
+                    state.indices.signal_type,
+                    state.indices.quant_offset_type,
+                    state.frame_length,
+                );
             }
         }
     }
 
     /// Decodes one SILK frame (10 or 20 ms) into interleaved `out` at the API rate.
-    pub fn decode(&mut self, mut dec: Option<&mut RangeDecoder>, lost: LostFlag, new_packet: bool, payload_ms: usize, out: &mut [f32]) -> Result<usize> {
+    pub fn decode(
+        &mut self,
+        mut dec: Option<&mut RangeDecoder>,
+        lost: LostFlag,
+        new_packet: bool,
+        payload_ms: usize,
+        out: &mut [f32],
+    ) -> Result<usize> {
         let nci = self.channels_internal;
         let stereo_to_mono = self.prepare_frame(new_packet, payload_ms)?;
         self.decode_packet_header(&mut dec, lost)?;
@@ -791,7 +833,8 @@ impl SilkDecoder {
             match dec.as_deref_mut() {
                 Some(d) if coded => {
                     self.ms_pred = stereo_decode_pred(d);
-                    let side_inactive = (lost == LostFlag::Normal && !self.ch[1].vad_flags[fi]) || (lost == LostFlag::Lbrr && !self.ch[1].lbrr_flags[fi]);
+                    let side_inactive = (lost == LostFlag::Normal && !self.ch[1].vad_flags[fi])
+                        || (lost == LostFlag::Lbrr && !self.ch[1].lbrr_flags[fi]);
                     self.decode_only_middle = if side_inactive { d.icdf(&MID_ONLY, 8) == 1 } else { false };
                 }
                 _ => {
@@ -813,7 +856,8 @@ impl SilkDecoder {
         let has_side = if lost == LostFlag::Normal {
             !self.decode_only_middle
         } else {
-            !self.prev_decode_only_middle || (nci == 2 && lost == LostFlag::Lbrr && self.ch[1].lbrr_flags[self.ch[1].n_frames_decoded])
+            !self.prev_decode_only_middle
+                || (nci == 2 && lost == LostFlag::Lbrr && self.ch[1].lbrr_flags[self.ch[1].n_frames_decoded])
         };
         for n in 0..nci {
             if n == 0 || has_side {
@@ -821,7 +865,11 @@ impl SilkDecoder {
                 let cond = if frame_index <= 0 {
                     Cond::Independently
                 } else if lost == LostFlag::Lbrr {
-                    if self.ch[n].lbrr_flags[frame_index as usize - 1] { Cond::Conditionally } else { Cond::Independently }
+                    if self.ch[n].lbrr_flags[frame_index as usize - 1] {
+                        Cond::Conditionally
+                    } else {
+                        Cond::Independently
+                    }
                 } else if n > 0 && self.prev_decode_only_middle {
                     Cond::IndependentlyNoLtpScaling
                 } else {

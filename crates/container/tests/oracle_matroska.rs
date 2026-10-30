@@ -22,7 +22,11 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
     for (i, st) in streams.iter().enumerate() {
         let t = &file.tracks[i];
         assert_eq!(st["codec_name"].as_str().unwrap_or(""), t.codec.name(), "{name}: track {i} codec ({})", t.codec_id);
-        assert_eq!(st["time_base"].as_str(), Some(format!("{}/{}", t.timebase.0, t.timebase.1).as_str()), "{name}: time_base");
+        assert_eq!(
+            st["time_base"].as_str(),
+            Some(format!("{}/{}", t.timebase.0, t.timebase.1).as_str()),
+            "{name}: time_base"
+        );
         match t.kind {
             TrackKind::Video => {
                 let v = t.video.as_ref().unwrap();
@@ -100,7 +104,8 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
 /// Seek to a range of times on `track` and check we land on the latest keyframe ≤ target.
 fn check_seeks(bytes: &[u8], opts: OpenOptions, track: usize, packets: &[Packet]) {
     let mut d = Demuxer::with_options(bytes, opts).unwrap();
-    let keys: Vec<(i64, i64)> = packets.iter().filter(|p| p.track == track && p.keyframe).map(|p| (p.pts, p.pts_ns)).collect();
+    let keys: Vec<(i64, i64)> =
+        packets.iter().filter(|p| p.track == track && p.keyframe).map(|p| (p.pts, p.pts_ns)).collect();
     let last = packets.iter().filter(|p| p.track == track).map(|p| p.pts_ns).max().unwrap();
     let mut t = 0i64;
     while t <= last + 100_000_000 {
@@ -302,7 +307,8 @@ fn laced_remux() {
                     // audio without a DefaultDuration gets its mean packet spacing, so it can lace
                     s.default_duration_ns = t.default_duration_ns.or_else(|| {
                         let pts: Vec<i64> = packets.iter().filter(|p| p.track == ti).map(|p| p.pts_ns).collect();
-                        (t.kind == TrackKind::Audio && pts.len() > 1).then(|| ((pts[pts.len() - 1] - pts[0]) / (pts.len() as i64 - 1)) as u64)
+                        (t.kind == TrackKind::Audio && pts.len() > 1)
+                            .then(|| ((pts[pts.len() - 1] - pts[0]) / (pts.len() as i64 - 1)) as u64)
                     });
                     s.video_size = t.video.as_ref().map(|v| (v.pixel_width, v.pixel_height));
                     s.audio = t.audio.as_ref().map(|a| (a.sampling_frequency, a.channels, a.bit_depth));

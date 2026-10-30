@@ -63,12 +63,7 @@ pub fn init(dir: &Path, passphrase: &[u8], device_secret: [u8; 32]) -> Result<Un
 ///
 /// The store is built in a temporary file and linked into place only once
 /// fully written, so a crash during init leaves no half-initialized store.
-pub fn init_with_params(
-    dir: &Path,
-    passphrase: &[u8],
-    device_secret: [u8; 32],
-    params: KdfParams,
-) -> Result<Unlocked> {
+pub fn init_with_params(dir: &Path, passphrase: &[u8], device_secret: [u8; 32], params: KdfParams) -> Result<Unlocked> {
     let device_secret = Zeroizing::new(device_secret);
     let db_path = dir.join(DB_FILE);
     params.validate()?;
@@ -77,19 +72,14 @@ pub fn init_with_params(
         return Err(Error::AlreadyExists(dir.to_path_buf()));
     }
 
-    let keyset = KeySet {
-        data_key: crypto::random_key()?,
-        device_secret,
-    };
+    let keyset = KeySet { data_key: crypto::random_key()?, device_secret };
     let kdf = KdfHeader::generate(params)?;
     let wrapped = keyset.wrap(&kdf, passphrase)?;
     let keys = Keys::new(keyset);
 
     let tmp = TempFile(dir.join(format!(".{DB_FILE}.init-{}", hex(&crypto::random::<8>()?))));
     {
-        let db = redb::Builder::new()
-            .set_cache_size(CACHE_BYTES)
-            .create_file(create_private_file(&tmp.0)?)?;
+        let db = redb::Builder::new().set_cache_size(CACHE_BYTES).create_file(create_private_file(&tmp.0)?)?;
         let txn = begin_write(&db)?;
         {
             let mut header = txn.open_table(HEADER)?;
@@ -111,11 +101,7 @@ pub fn init_with_params(
     drop(tmp);
     sync_dir(dir)?;
 
-    Ok(Unlocked {
-        db: open_db(&db_path)?,
-        dir: dir.to_path_buf(),
-        keys,
-    })
+    Ok(Unlocked { db: open_db(&db_path)?, dir: dir.to_path_buf(), keys })
 }
 
 /// Opens the store in `dir` and decrypts its key set with `passphrase`.
@@ -135,11 +121,7 @@ pub fn unlock(dir: &Path, passphrase: &[u8]) -> Result<Unlocked> {
         Header::read(&table)?
     };
     let keyset = KeySet::unwrap(&header.kdf, &header.keyset, passphrase)?;
-    Ok(Unlocked {
-        db,
-        dir: dir.to_path_buf(),
-        keys: Keys::new(keyset),
-    })
+    Ok(Unlocked { db, dir: dir.to_path_buf(), keys: Keys::new(keyset) })
 }
 
 /// Generates a fresh 256-bit wrapping key for [`Unlocked::set_biometric`].
@@ -178,11 +160,7 @@ pub fn unlock_biometric(dir: &Path, key: &[u8; KEY_LEN]) -> Result<Unlocked> {
         read_biometric(&table)?.ok_or(Error::InvalidBiometric)?
     };
     let keyset = KeySet::unwrap_biometric(key, &token, &wrapped)?;
-    Ok(Unlocked {
-        db,
-        dir: dir.to_path_buf(),
-        keys: Keys::new(keyset),
-    })
+    Ok(Unlocked { db, dir: dir.to_path_buf(), keys: Keys::new(keyset) })
 }
 
 /// Removes the enrolled biometric key set and token from `dir` while the store
@@ -218,9 +196,7 @@ pub struct Unlocked {
 
 impl fmt::Debug for Unlocked {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Unlocked")
-            .field("dir", &self.dir)
-            .finish_non_exhaustive()
+        f.debug_struct("Unlocked").field("dir", &self.dir).finish_non_exhaustive()
     }
 }
 
@@ -272,13 +248,7 @@ impl Unlocked {
         let txn = self.db.begin_read()?;
         let len = read_log_len(&self.keys, &txn.open_table(HEADER)?)?;
         let range = txn.open_table(LOG)?.range::<u64>(..)?;
-        Ok(LogIter {
-            keys: &self.keys,
-            range,
-            next_seq: 0,
-            len,
-            done: false,
-        })
+        Ok(LogIter { keys: &self.keys, range, next_seq: 0, len, done: false })
     }
 
     /// Reads a meta value.
@@ -320,12 +290,7 @@ impl Unlocked {
     /// Like [`change_passphrase`](Self::change_passphrase), also switching to
     /// new KDF parameters. Passing the same passphrase twice just re-tunes the
     /// KDF.
-    pub fn change_passphrase_with_params(
-        &self,
-        old: &[u8],
-        new: &[u8],
-        params: KdfParams,
-    ) -> Result<()> {
+    pub fn change_passphrase_with_params(&self, old: &[u8], new: &[u8], params: KdfParams) -> Result<()> {
         params.validate()?;
         // Everything happens inside one write transaction so concurrent
         // changes serialize and the swap is atomic.
@@ -335,9 +300,7 @@ impl Unlocked {
             let header = Header::read(&table)?;
             let current = KeySet::unwrap(&header.kdf, &header.keyset, old)?;
             if current.encode() != self.keys.keyset.encode() {
-                return Err(Error::corrupt(
-                    "key set on disk differs from the open store",
-                ));
+                return Err(Error::corrupt("key set on disk differs from the open store"));
             }
             let kdf = KdfHeader::generate(params)?;
             let wrapped = current.wrap(&kdf, new)?;
@@ -459,31 +422,23 @@ impl KeySet {
 
     fn wrap(&self, kdf: &KdfHeader, passphrase: &[u8]) -> Result<Vec<u8>> {
         let unlock_key = kdf.derive(passphrase)?;
-        crypto::seal(
-            &crypto::cipher(&unlock_key),
-            &keyset_aad(kdf),
-            &[self.encode().as_slice()],
-        )
+        crypto::seal(&crypto::cipher(&unlock_key), &keyset_aad(kdf), &[self.encode().as_slice()])
     }
 
     fn unwrap(kdf: &KdfHeader, wrapped: &[u8], passphrase: &[u8]) -> Result<Self> {
         let unlock_key = kdf.derive(passphrase)?;
-        let plain = crypto::open(&crypto::cipher(&unlock_key), &keyset_aad(kdf), wrapped)
-            .ok_or(Error::WrongPassphrase)?;
+        let plain =
+            crypto::open(&crypto::cipher(&unlock_key), &keyset_aad(kdf), wrapped).ok_or(Error::WrongPassphrase)?;
         Self::decode(&plain)
     }
 
     fn wrap_biometric(&self, key: &[u8; KEY_LEN], token: &[u8]) -> Result<Vec<u8>> {
-        crypto::seal(
-            &crypto::cipher(key),
-            &biometric_keyset_aad(token),
-            &[self.encode().as_slice()],
-        )
+        crypto::seal(&crypto::cipher(key), &biometric_keyset_aad(token), &[self.encode().as_slice()])
     }
 
     fn unwrap_biometric(key: &[u8; KEY_LEN], token: &[u8], wrapped: &[u8]) -> Result<Self> {
-        let plain = crypto::open(&crypto::cipher(key), &biometric_keyset_aad(token), wrapped)
-            .ok_or(Error::InvalidBiometric)?;
+        let plain =
+            crypto::open(&crypto::cipher(key), &biometric_keyset_aad(token), wrapped).ok_or(Error::InvalidBiometric)?;
         Self::decode(&plain).map_err(|_| Error::InvalidBiometric)
     }
 
@@ -495,10 +450,7 @@ impl KeySet {
         let mut device_secret = Zeroizing::new([0u8; 32]);
         data_key.copy_from_slice(&plain[..32]);
         device_secret.copy_from_slice(&plain[32..]);
-        Ok(Self {
-            data_key,
-            device_secret,
-        })
+        Ok(Self { data_key, device_secret })
     }
 }
 
@@ -511,11 +463,7 @@ pub(crate) struct Keys {
 impl Keys {
     fn new(keyset: KeySet) -> Self {
         let data = crypto::subkey(CTX_DATA, &keyset.data_key);
-        Self {
-            data: crypto::cipher(&data),
-            meta_index: crypto::subkey(CTX_META_INDEX, &keyset.data_key),
-            keyset,
-        }
+        Self { data: crypto::cipher(&data), meta_index: crypto::subkey(CTX_META_INDEX, &keyset.data_key), keyset }
     }
 
     pub(crate) fn meta_blind(&self, name: &str) -> [u8; 32] {
@@ -544,34 +492,20 @@ impl Header {
         };
         let format = field(H_FORMAT)?;
         let format = u32::from_le_bytes(
-            format
-                .as_slice()
-                .try_into()
-                .map_err(|_| Error::corrupt("format version has the wrong length"))?,
+            format.as_slice().try_into().map_err(|_| Error::corrupt("format version has the wrong length"))?,
         );
         if format != FORMAT_VERSION {
             return Err(Error::UnsupportedFormat(format));
         }
-        Ok(Self {
-            kdf: KdfHeader::decode(&field(H_KDF)?)?,
-            keyset: field(H_KEYSET)?,
-        })
+        Ok(Self { kdf: KdfHeader::decode(&field(H_KDF)?)?, keyset: field(H_KEYSET)? })
     }
 }
 
-fn read_log_len(
-    keys: &Keys,
-    table: &impl ReadableTable<&'static str, &'static [u8]>,
-) -> Result<u64> {
-    let sealed = table
-        .get(H_LOG_LEN)?
-        .ok_or_else(|| Error::corrupt("log length is missing"))?;
+fn read_log_len(keys: &Keys, table: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<u64> {
+    let sealed = table.get(H_LOG_LEN)?.ok_or_else(|| Error::corrupt("log length is missing"))?;
     let plain = crypto::open(&keys.data, AAD_LOG_LEN, sealed.value())
         .ok_or_else(|| Error::corrupt("log length failed authentication"))?;
-    let bytes: [u8; 8] = plain
-        .as_slice()
-        .try_into()
-        .map_err(|_| Error::corrupt("log length has the wrong size"))?;
+    let bytes: [u8; 8] = plain.as_slice().try_into().map_err(|_| Error::corrupt("log length has the wrong size"))?;
     Ok(u64::from_le_bytes(bytes))
 }
 
@@ -586,18 +520,10 @@ fn keyset_aad(kdf: &KdfHeader) -> Vec<u8> {
 }
 
 fn biometric_keyset_aad(token: &[u8]) -> Vec<u8> {
-    [
-        AAD_KEYSET_BIOMETRIC,
-        &FORMAT_VERSION.to_le_bytes(),
-        &(token.len() as u64).to_le_bytes(),
-        token,
-    ]
-    .concat()
+    [AAD_KEYSET_BIOMETRIC, &FORMAT_VERSION.to_le_bytes(), &(token.len() as u64).to_le_bytes(), token].concat()
 }
 
-fn read_biometric(
-    table: &impl ReadableTable<&'static str, &'static [u8]>,
-) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+fn read_biometric(table: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     let token = table.get(H_BIOMETRIC_TOKEN)?.map(|v| v.value().to_vec());
     let keyset = table.get(H_KEYSET_BIOMETRIC)?.map(|v| v.value().to_vec());
     match (token, keyset) {
@@ -628,9 +554,7 @@ fn meta_aad(blinded: &[u8; 32]) -> Vec<u8> {
 /// check, damage below the B-tree level can only surface as an AEAD failure.
 fn open_db(path: &Path) -> Result<Database> {
     let opened = std::panic::catch_unwind(|| -> Result<Database> {
-        let mut db = redb::Builder::new()
-            .set_cache_size(CACHE_BYTES)
-            .open(path)?;
+        let mut db = redb::Builder::new().set_cache_size(CACHE_BYTES).open(path)?;
         // Ok(false) means redb repaired the file (e.g. after a crash) by
         // rolling back to the last intact commit, which is fine.
         db.check_integrity()?;
@@ -674,9 +598,7 @@ fn link_no_clobber(from: &Path, to: &Path) -> io::Result<()> {
             // Filesystems without hard links: fall back to a checked rename.
             fs::rename(from, to)
         }
-        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
-            Err(io::Error::from(io::ErrorKind::AlreadyExists))
-        }
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(io::Error::from(io::ErrorKind::AlreadyExists)),
         result => result,
     }
 }

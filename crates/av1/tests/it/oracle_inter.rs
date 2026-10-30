@@ -17,10 +17,23 @@ fn specs() -> Vec<Spec> {
 
 /// Super-resolution (denominator 12 on the inter frames) and film grain synthesis.
 fn specs_tools() -> Vec<Spec> {
-    let p = |params: &'static str| -> Vec<&'static str> { vec!["-preset", "6", "-crf", "35", "-svtav1-params", params] };
+    let p =
+        |params: &'static str| -> Vec<&'static str> { vec!["-preset", "6", "-crf", "35", "-svtav1-params", params] };
     vec![
-        Spec::new("inter_superres", "testsrc2=s=416x240:r=25", 8, "yuv420p", &p("superres-mode=1:superres-denom=12:superres-kf-denom=13")),
-        Spec::new("inter_film_grain", "testsrc2=s=352x288:r=25,noise=alls=20:allf=t", 8, "yuv420p", &p("film-grain=10")),
+        Spec::new(
+            "inter_superres",
+            "testsrc2=s=416x240:r=25",
+            8,
+            "yuv420p",
+            &p("superres-mode=1:superres-denom=12:superres-kf-denom=13"),
+        ),
+        Spec::new(
+            "inter_film_grain",
+            "testsrc2=s=352x288:r=25,noise=alls=20:allf=t",
+            8,
+            "yuv420p",
+            &p("film-grain=10"),
+        ),
     ]
 }
 
@@ -70,10 +83,24 @@ fn draft_mode_changes_only_flagged_non_reference_frames() {
 
 /// Several tiles (decoded in parallel into private buffers, then merged).
 fn specs_tiles() -> Vec<Spec> {
-    let p = |preset: &'static str, params: &'static str| -> Vec<&'static str> { vec!["-preset", preset, "-crf", "32", "-svtav1-params", params] };
+    let p = |preset: &'static str, params: &'static str| -> Vec<&'static str> {
+        vec!["-preset", preset, "-crf", "32", "-svtav1-params", params]
+    };
     vec![
-        Spec::new("inter_tiles_4x2", "testsrc2=s=1280x720:r=25,noise=alls=4:allf=t", 8, "yuv420p", &p("8", "tile-columns=2:tile-rows=1")),
-        Spec::new("inter_tiles_odd_10bit", "mandelbrot=s=650x370:r=25", 8, "yuv420p10le", &p("6", "tile-columns=1:tile-rows=1")),
+        Spec::new(
+            "inter_tiles_4x2",
+            "testsrc2=s=1280x720:r=25,noise=alls=4:allf=t",
+            8,
+            "yuv420p",
+            &p("8", "tile-columns=2:tile-rows=1"),
+        ),
+        Spec::new(
+            "inter_tiles_odd_10bit",
+            "mandelbrot=s=650x370:r=25",
+            8,
+            "yuv420p10le",
+            &p("6", "tile-columns=1:tile-rows=1"),
+        ),
     ]
 }
 
@@ -90,7 +117,9 @@ fn inter_tiles() {
 #[ignore]
 fn inter_1080p() {
     let Some(ff) = ffmpeg() else { return };
-    let p = |crf: &'static str, params: &'static str| -> Vec<&'static str> { vec!["-preset", "8", "-crf", crf, "-svtav1-params", params] };
+    let p = |crf: &'static str, params: &'static str| -> Vec<&'static str> {
+        vec!["-preset", "8", "-crf", crf, "-svtav1-params", params]
+    };
     let src = "testsrc2=s=1920x1080:r=25,noise=alls=6:allf=t";
     for s in [
         Spec::new("perf_1080p_gop", src, 60, "yuv420p", &p("30", "keyint=60")),

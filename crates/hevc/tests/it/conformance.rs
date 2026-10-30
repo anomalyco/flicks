@@ -78,7 +78,8 @@ fn draft_mode_changes_only_flagged_non_reference_pictures() {
         let bps = if f.bit_depth > 8 { 2 } else { 1 };
         let fsize = (w * h + 2 * w.div_ceil(2) * h.div_ceil(2)) * bps;
         for threads in [1, 3] {
-            let pics = common::decode_file_opts(&hevc, threads, true).unwrap_or_else(|(au, e, _)| panic!("{name}: error at {au}: {e}"));
+            let pics = common::decode_file_opts(&hevc, threads, true)
+                .unwrap_or_else(|(au, e, _)| panic!("{name}: error at {au}: {e}"));
             common::check_pts(&pics).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(pics.len() * fsize, reference.len(), "{name}: picture count");
             let (mut draft, mut changed) = (0, 0);

@@ -21,7 +21,8 @@ impl Rng {
 }
 
 /// (name, encoder args, pix_fmt)
-const SEEDS: &[(&str, &str, &str)] = &[("av1_fz_default", "-c:v libsvtav1 -g 4", "yuv420p"), ("av1_fz_10bit", "-c:v libsvtav1 -g 6", "yuv420p10le")];
+const SEEDS: &[(&str, &str, &str)] =
+    &[("av1_fz_default", "-c:v libsvtav1 -g 4", "yuv420p"), ("av1_fz_10bit", "-c:v libsvtav1 -g 6", "yuv420p10le")];
 
 fn ivf_frames(data: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();

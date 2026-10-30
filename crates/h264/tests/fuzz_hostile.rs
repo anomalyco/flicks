@@ -171,7 +171,9 @@ impl Depth {
             Some(rounds) => Depth { full: true, truncations: 300, rounds, rotation: 0 },
             None => {
                 let rotation = rotation();
-                eprintln!("fuzz subset rotation {rotation} (FLICKS_FUZZ_SEED={rotation} replays it; FLICKS_FUZZ_ITERS=400 runs everything)");
+                eprintln!(
+                    "fuzz subset rotation {rotation} (FLICKS_FUZZ_SEED={rotation} replays it; FLICKS_FUZZ_ITERS=400 runs everything)"
+                );
                 Depth { full: false, truncations: 300, rounds: 400, rotation }
             }
         }

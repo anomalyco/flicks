@@ -5,7 +5,8 @@ use crate::picture::RefPic;
 use crate::slicedec::{F_INTRA, MvField, PartMode, SliceDecoder};
 
 /// l0CandIdx / l1CandIdx of Table 8-7.
-const COMB: [(usize, usize); 12] = [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1), (0, 3), (3, 0), (1, 3), (3, 1), (2, 3), (3, 2)];
+const COMB: [(usize, usize); 12] =
+    [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1), (0, 3), (3, 0), (1, 3), (3, 1), (2, 3), (3, 2)];
 
 /// Motion vector scaling (8-179 .. 8-183).
 pub fn scale_mv(mv: [i16; 2], td: i32, tb: i32) -> [i16; 2] {
@@ -80,7 +81,8 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
         let PredBlock { xc, yc, ncb, w: w0, h: h0, part, .. } = *pb;
         let pml = self.pps.log2_parallel_merge_level;
         // with a parallel merge level above 4x4, the 8x8 coding block's 2Nx2N candidates are shared
-        let pb = if pml > 2 && ncb == 8 { PredBlock { xp: xc, yp: yc, w: ncb, h: ncb, part_idx: 0, ..*pb } } else { *pb };
+        let pb =
+            if pml > 2 && ncb == 8 { PredBlock { xp: xc, yp: yc, w: ncb, h: ncb, part_idx: 0, ..*pb } } else { *pb };
         let PredBlock { xp, yp, w, h, part_idx, .. } = pb;
         let same_mer = |xn: i32, yn: i32| (xp >> pml) == (xn >> pml) && (yp >> pml) == (yn >> pml);
         let avail = |xn: i32, yn: i32| self.pb_avail(&pb, xn, yn) && !same_mer(xn, yn);
@@ -89,14 +91,16 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
         let max = self.sh.max_num_merge_cand as usize;
         // spatial candidates (8.5.3.2.3)
         let pa1 = (xp - 1, yp + h - 1);
-        let av_a1 = avail(pa1.0, pa1.1) && !(matches!(part, PartMode::PNx2N | PartMode::PnLx2N | PartMode::PnRx2N) && part_idx == 1);
+        let av_a1 = avail(pa1.0, pa1.1)
+            && !(matches!(part, PartMode::PNx2N | PartMode::PnLx2N | PartMode::PnRx2N) && part_idx == 1);
         let m_a1 = if av_a1 { self.mv_at(pa1.0, pa1.1) } else { MvField::default() };
         if av_a1 {
             list[n] = m_a1;
             n += 1;
         }
         let pb1 = (xp + w - 1, yp - 1);
-        let av_b1 = avail(pb1.0, pb1.1) && !(matches!(part, PartMode::P2NxN | PartMode::P2NxnU | PartMode::P2NxnD) && part_idx == 1);
+        let av_b1 = avail(pb1.0, pb1.1)
+            && !(matches!(part, PartMode::P2NxN | PartMode::P2NxnU | PartMode::P2NxnD) && part_idx == 1);
         let m_b1 = if av_b1 { self.mv_at(pb1.0, pb1.1) } else { MvField::default() };
         let fl_b1 = av_b1 && !(av_a1 && same_motion(&m_a1, &m_b1));
         if fl_b1 {
@@ -127,7 +131,8 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
         let av_b2 = avail(pb2.0, pb2.1);
         let fl_b2 = av_b2 && {
             let m = self.mv_at(pb2.0, pb2.1);
-            !((av_a1 && same_motion(&m_a1, &m)) || (av_b1 && same_motion(&m_b1, &m))) && (fl_a0 as u32 + av_a1 as u32 + fl_b0 as u32 + fl_b1 as u32) != 4
+            !((av_a1 && same_motion(&m_a1, &m)) || (av_b1 && same_motion(&m_b1, &m)))
+                && (fl_a0 as u32 + av_a1 as u32 + fl_b0 as u32 + fl_b1 as u32) != 4
         };
         if fl_b2 {
             list[n] = self.mv_at(pb2.0, pb2.1);
@@ -165,7 +170,11 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
             while comb < num_orig * (num_orig - 1) && cands.len() < max {
                 let (i0, i1) = COMB[comb];
                 let (c0, c1) = (cands[i0], cands[i1]);
-                if c0.pred(0) && c1.pred(1) && (self.ref_pic(0, c0.ref_idx[0]).poc != self.ref_pic(1, c1.ref_idx[1]).poc || c0.mv[0] != c1.mv[1]) {
+                if c0.pred(0)
+                    && c1.pred(1)
+                    && (self.ref_pic(0, c0.ref_idx[0]).poc != self.ref_pic(1, c1.ref_idx[1]).poc
+                        || c0.mv[0] != c1.mv[1])
+                {
                     cands.push(MvField { mv: [c0.mv[0], c1.mv[1]], ref_idx: [c0.ref_idx[0], c1.ref_idx[1]] });
                 }
                 comb += 1;
@@ -175,7 +184,9 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
             return self.finish_merge(cands[merge_idx], w0, h0);
         }
         // zero candidates (8.5.3.2.5)
-        let num_ref = if self.sh.is_b() { self.sh.num_ref_idx[0].min(self.sh.num_ref_idx[1]) } else { self.sh.num_ref_idx[0] } as usize;
+        let num_ref =
+            if self.sh.is_b() { self.sh.num_ref_idx[0].min(self.sh.num_ref_idx[1]) } else { self.sh.num_ref_idx[0] }
+                as usize;
         let mut zero_idx = 0;
         while cands.len() <= merge_idx {
             let r = if zero_idx < num_ref { zero_idx as i8 } else { 0 };
@@ -269,7 +280,9 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
             } else {
                 None
             };
-            pick.map(|(mv, r)| if r.poc != tpoc && !r.long_term && !tlt { scale_mv(mv, cur_poc - r.poc, cur_poc - tpoc) } else { mv })
+            pick.map(|(mv, r)| {
+                if r.poc != tpoc && !r.long_term && !tlt { scale_mv(mv, cur_poc - r.poc, cur_poc - tpoc) } else { mv }
+            })
         };
         let pa = [(xp - 1, yp + h), (xp - 1, yp + h - 1)];
         let av_a = [self.pb_avail(pb, pa[0].0, pa[0].1), self.pb_avail(pb, pa[1].0, pa[1].1)];

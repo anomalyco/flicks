@@ -80,45 +80,24 @@ struct Graph<'a> {
 
 impl<'a> Graph<'a> {
     fn new(entries: &'a [Entry]) -> Self {
-        let mut graph = Self {
-            entries: Vec::new(),
-            past: Vec::new(),
-            depth: Vec::new(),
-            genesis: None,
-        };
+        let mut graph = Self { entries: Vec::new(), past: Vec::new(), depth: Vec::new(), genesis: None };
         // Inputs may be delivered in any order. Build the DAG by actual hashes.
         while graph.entries.len() < entries.len() {
             let entry = entries
                 .iter()
                 .find(|entry| {
                     !graph.entries.iter().any(|e| e.hash() == entry.hash())
-                        && entry
-                            .deps()
-                            .iter()
-                            .all(|hash| graph.entries.iter().any(|e| e.hash() == *hash))
+                        && entry.deps().iter().all(|hash| graph.entries.iter().any(|e| e.hash() == *hash))
                 })
                 .expect("complete acyclic history");
-            let parents: Vec<_> = entry
-                .deps()
-                .iter()
-                .map(|hash| {
-                    graph
-                        .entries
-                        .iter()
-                        .position(|e| e.hash() == *hash)
-                        .unwrap()
-                })
-                .collect();
+            let parents: Vec<_> =
+                entry.deps().iter().map(|hash| graph.entries.iter().position(|e| e.hash() == *hash).unwrap()).collect();
             let mut past = BTreeSet::new();
             for &p in &parents {
                 past.insert(p);
                 past.extend(&graph.past[p]);
             }
-            let depth = parents
-                .iter()
-                .map(|&p| graph.depth[p] + 1)
-                .max()
-                .unwrap_or(0);
+            let depth = parents.iter().map(|&p| graph.depth[p] + 1).max().unwrap_or(0);
             graph.entries.push(entry);
             graph.past.push(past);
             graph.depth.push(depth);
@@ -146,8 +125,7 @@ impl<'a> Graph<'a> {
     }
 
     fn removals(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.entries.len())
-            .filter(|&i| matches!(self.membership(i), Some(MembershipOp::Remove { .. })))
+        (0..self.entries.len()).filter(|&i| matches!(self.membership(i), Some(MembershipOp::Remove { .. })))
     }
 
     fn target(&self, r: usize) -> DeviceId {
@@ -160,9 +138,7 @@ impl<'a> Graph<'a> {
     fn admissions(&self, device: DeviceId) -> impl Iterator<Item = usize> + '_ {
         (0..self.entries.len()).filter(move |&i| match self.membership(i) {
             Some(MembershipOp::Add { device: added, .. }) => *added == device,
-            Some(MembershipOp::Create {
-                device: creator, ..
-            }) => self.genesis == Some(i) && *creator == device,
+            Some(MembershipOp::Create { device: creator, .. }) => self.genesis == Some(i) && *creator == device,
             _ => false,
         })
     }
@@ -176,10 +152,7 @@ impl<'a> Graph<'a> {
             Some(_) => {}
         }
         let author = self.entries[i].author();
-        if removals
-            .iter()
-            .any(|&r| r != i && self.target(r) == author && !self.past[r].contains(&i))
-        {
+        if removals.iter().any(|&r| r != i && self.target(r) == author && !self.past[r].contains(&i)) {
             return false;
         }
         self.admitted(author, i, removals)
@@ -187,8 +160,7 @@ impl<'a> Graph<'a> {
 
     // Whether past(i) holds an authorized admission of `device`.
     fn admitted(&self, device: DeviceId, i: usize, removals: &[usize]) -> bool {
-        self.admissions(device)
-            .any(|a| self.past[i].contains(&a) && self.authorized(a, removals))
+        self.admissions(device).any(|a| self.past[i].contains(&a) && self.authorized(a, removals))
     }
 
     fn seniority(&self, device: DeviceId) -> Option<(usize, Hash)> {
@@ -202,11 +174,9 @@ impl<'a> Graph<'a> {
         removals.iter().all(|&r| {
             self.authorized(r, removals)
                 && self.admitted(self.target(r), r, removals)
-                && !removals.iter().any(|&other| {
-                    other != r
-                        && self.target(other) == self.target(r)
-                        && self.past[r].contains(&other)
-                })
+                && !removals
+                    .iter()
+                    .any(|&other| other != r && self.target(other) == self.target(r) && self.past[r].contains(&other))
         })
     }
 
@@ -234,19 +204,13 @@ impl<'a> Graph<'a> {
         let mut members: BTreeSet<DeviceId> = (0..self.entries.len())
             .filter(|&i| self.authorized(i, &winners))
             .filter_map(|i| match self.membership(i) {
-                Some(MembershipOp::Create { device, .. } | MembershipOp::Add { device, .. }) => {
-                    Some(*device)
-                }
+                Some(MembershipOp::Create { device, .. } | MembershipOp::Add { device, .. }) => Some(*device),
                 _ => None,
             })
             .collect();
         let mut cutoffs: BTreeMap<DeviceId, Option<u64>> = BTreeMap::new();
         for &r in &winners {
-            if let Some(MembershipOp::Remove {
-                device,
-                last_seen_seq,
-            }) = self.membership(r)
-            {
+            if let Some(MembershipOp::Remove { device, last_seen_seq }) = self.membership(r) {
                 members.remove(device);
                 let cutoff = cutoffs.entry(*device).or_default();
                 *cutoff = (*cutoff).max(*last_seen_seq);
@@ -254,10 +218,8 @@ impl<'a> Graph<'a> {
         }
         let names: Vec<_> = (0..self.entries.len())
             .filter(|&i| {
-                matches!(
-                    self.membership(i),
-                    Some(MembershipOp::Create { .. } | MembershipOp::Rename { .. })
-                ) && self.authorized(i, &winners)
+                matches!(self.membership(i), Some(MembershipOp::Create { .. } | MembershipOp::Rename { .. }))
+                    && self.authorized(i, &winners)
             })
             .collect();
         let name = names
@@ -266,17 +228,11 @@ impl<'a> Graph<'a> {
             .filter(|&i| !names.iter().any(|&j| self.past[j].contains(&i)))
             .max_by_key(|&i| self.entries[i].hash())
             .and_then(|i| match self.membership(i) {
-                Some(MembershipOp::Create { name, .. } | MembershipOp::Rename { name }) => {
-                    Some(name.clone())
-                }
+                Some(MembershipOp::Create { name, .. } | MembershipOp::Rename { name }) => Some(name.clone()),
                 _ => None,
             })
             .unwrap_or_default();
-        Model {
-            members,
-            cutoffs,
-            name,
-        }
+        Model { members, cutoffs, name }
     }
 
     // The entry indices in the causal past of `deps`, inclusive.
@@ -291,24 +247,17 @@ impl<'a> Graph<'a> {
 
     // The model's verdict on applying `entry` after `self`'s entries.
     fn accepts(&self, entry: &Entry) -> Result<bool, Error> {
-        let past: Vec<_> = self
-            .closure(entry.deps().iter().copied())
-            .into_iter()
-            .map(|i| self.entries[i].clone())
-            .collect();
+        let past: Vec<_> =
+            self.closure(entry.deps().iter().copied()).into_iter().map(|i| self.entries[i].clone()).collect();
         let state = model(&past);
         if !state.members.contains(&entry.author()) {
             return Err(Error::NotMember);
         }
         match entry.payload() {
-            Payload::Membership(MembershipOp::Add { device, .. })
-                if state.cutoffs.contains_key(device) =>
-            {
+            Payload::Membership(MembershipOp::Add { device, .. }) if state.cutoffs.contains_key(device) => {
                 Err(Error::AddRemovedDevice)
             }
-            Payload::Membership(MembershipOp::Remove { device, .. })
-                if !state.members.contains(device) =>
-            {
+            Payload::Membership(MembershipOp::Remove { device, .. }) if !state.members.contains(device) => {
                 Err(Error::RemoveNonMember)
             }
             _ => Ok(true),
@@ -337,11 +286,7 @@ fn genesis(a: &DeviceSecret) -> Entry {
         VaultId::derive(&device, &nonce),
         0,
         [],
-        Payload::Membership(MembershipOp::Create {
-            device,
-            nonce,
-            name: "test".into(),
-        }),
+        Payload::Membership(MembershipOp::Create { device, nonce, name: "test".into() }),
     )
 }
 
@@ -367,17 +312,11 @@ fn assert_model(vault: &Vault, entries: &[Entry], expected: &Model) {
         .filter(|e| e.log() == Log::Data)
         .filter(|e| {
             expected.members.contains(&e.author())
-                || expected
-                    .cutoffs
-                    .get(&e.author())
-                    .is_some_and(|c| c.is_some_and(|seq| e.seq() <= seq))
+                || expected.cutoffs.get(&e.author()).is_some_and(|c| c.is_some_and(|seq| e.seq() <= seq))
         })
         .map(|e| ItemId::of_create(&e.hash(), 0))
         .collect();
-    assert_eq!(
-        vault.items().iter().map(|i| i.id).collect::<BTreeSet<_>>(),
-        visible
-    );
+    assert_eq!(vault.items().iter().map(|i| i.id).collect::<BTreeSet<_>>(), visible);
 }
 
 fn deliver(entries: &[Entry], seed: u64) {
@@ -400,26 +339,11 @@ fn deliver(entries: &[Entry], seed: u64) {
     }
     assert_state(&vault, entries);
     // Reject entries that acknowledge removal, without changing stored heads.
-    for device in (1..=5)
-        .map(key)
-        .filter(|key| !vault.is_member(&key.device_id()))
-        .collect::<Vec<_>>()
-    {
-        for payload in [
-            Payload::Membership(MembershipOp::Rename {
-                name: "hostile".into(),
-            }),
-            data(),
-        ] {
-            let log = LogId {
-                author: device.device_id(),
-                log: payload.log(),
-            };
+    for device in (1..=5).map(key).filter(|key| !vault.is_member(&key.device_id())).collect::<Vec<_>>() {
+        for payload in [Payload::Membership(MembershipOp::Rename { name: "hostile".into() }), data()] {
+            let log = LogId { author: device.device_id(), log: payload.log() };
             let seq = vault.heads().get(&log).map_or(0, |s| s + 1);
-            let deps = entries
-                .iter()
-                .filter(|e| log.log == Log::Data || e.log() == Log::Membership)
-                .map(Entry::hash);
+            let deps = entries.iter().filter(|e| log.log == Log::Data || e.log() == Log::Membership).map(Entry::hash);
             let entry = Entry::sign(&device, vault.id(), seq, deps, payload);
             let heads = vault.heads();
             let count = vault.entries().len();
@@ -431,11 +355,7 @@ fn deliver(entries: &[Entry], seed: u64) {
 }
 
 fn data() -> Payload {
-    Payload::Data(vec![DataOp::create(
-        "login",
-        None,
-        [("password".into(), Field::new(FieldType::Secret, "test"))],
-    )])
+    Payload::Data(vec![DataOp::create("login", None, [("password".into(), Field::new(FieldType::Secret, "test"))])])
 }
 
 // Every attempted entry has a real signature. Parent choice deliberately forks
@@ -445,13 +365,7 @@ fn data() -> Payload {
 fn history(devices: usize, steps: &[(u8, u8, u8, u16)]) -> Vec<Entry> {
     let keys: Vec<_> = (1..=devices as u8).map(key).collect();
     let mut vault = load(&[genesis(&keys[0])]);
-    vault
-        .add(
-            &keys[0],
-            keys[1].device_id(),
-            consent(&keys[1], &vault, &keys[0]),
-        )
-        .unwrap();
+    vault.add(&keys[0], keys[1].device_id(), consent(&keys[1], &vault, &keys[0])).unwrap();
     let mut entries = all(&vault);
     for &(author, target, kind, branch) in steps {
         let inviter = &keys[(author as usize + 1) % devices];
@@ -466,9 +380,7 @@ fn history(devices: usize, steps: &[(u8, u8, u8, u16)]) -> Vec<Entry> {
                 device: target.device_id(),
                 last_seen_seq: (branch % 3).checked_sub(1).map(u64::from),
             }),
-            2 => Payload::Membership(MembershipOp::Rename {
-                name: format!("name-{branch}"),
-            }),
+            2 => Payload::Membership(MembershipOp::Rename { name: format!("name-{branch}") }),
             3 => data(),
             _ => Payload::Membership(MembershipOp::Add {
                 device: target.device_id(),
@@ -476,31 +388,13 @@ fn history(devices: usize, steps: &[(u8, u8, u8, u16)]) -> Vec<Entry> {
             }),
         };
         let forged = kind % 5 == 4;
-        let log = LogId {
-            author: author.device_id(),
-            log: payload.log(),
-        };
-        let possible: Vec<_> = entries
-            .iter()
-            .filter(|e| log.log == Log::Data || e.log() == Log::Membership)
-            .collect();
+        let log = LogId { author: author.device_id(), log: payload.log() };
+        let possible: Vec<_> = entries.iter().filter(|e| log.log == Log::Data || e.log() == Log::Membership).collect();
         let parent = possible[branch as usize % possible.len()];
         let previous = entries.iter().rev().find(|e| e.log_id() == log);
-        let deps: BTreeSet<_> = std::iter::once(parent.hash())
-            .chain(previous.map(Entry::hash))
-            .collect();
-        let entry = Entry::sign(
-            author,
-            vault.id(),
-            previous.map_or(0, |e| e.seq() + 1),
-            deps,
-            payload,
-        );
-        let expected = if forged {
-            Err(Error::InvalidConsent)
-        } else {
-            Graph::new(&entries).accepts(&entry)
-        };
+        let deps: BTreeSet<_> = std::iter::once(parent.hash()).chain(previous.map(Entry::hash)).collect();
+        let entry = Entry::sign(author, vault.id(), previous.map_or(0, |e| e.seq() + 1), deps, payload);
+        let expected = if forged { Err(Error::InvalidConsent) } else { Graph::new(&entries).accepts(&entry) };
         assert_eq!(vault.apply(entry.clone()), expected);
         if expected.is_ok() {
             entries.push(entry);
@@ -511,10 +405,7 @@ fn history(devices: usize, steps: &[(u8, u8, u8, u16)]) -> Vec<Entry> {
 }
 
 fn cases() -> u32 {
-    std::env::var("FLICKS_MEMBERSHIP_CASES")
-        .ok()
-        .map(|n| n.parse().expect("case count"))
-        .unwrap_or(16)
+    std::env::var("FLICKS_MEMBERSHIP_CASES").ok().map(|n| n.parse().expect("case count")).unwrap_or(16)
 }
 
 proptest! {
@@ -582,9 +473,7 @@ fn exhaustive_small_histories() {
             self.models
                 .borrow_mut()
                 .entry(key)
-                .or_insert_with(|| {
-                    model(&past.iter().map(|&i| entries[i].clone()).collect::<Vec<_>>())
-                })
+                .or_insert_with(|| model(&past.iter().map(|&i| entries[i].clone()).collect::<Vec<_>>()))
                 .clone()
         }
 
@@ -608,18 +497,11 @@ fn exhaustive_small_histories() {
                         let seq = clock.entry(e.log_id()).or_insert(0);
                         *seq = (*seq).max(e.seq());
                     }
-                    crate::vault::Node {
-                        entry: entry.clone(),
-                        depth: graph.depth[i] as u64,
-                        clock,
-                    }
+                    crate::vault::Node { entry: entry.clone(), depth: graph.depth[i] as u64, clock }
                 })
                 .collect();
             let actual = crate::membership::resolve(&self.vault, nodes.iter().collect());
-            assert_eq!(
-                actual.members().copied().collect::<BTreeSet<_>>(),
-                expected.members
-            );
+            assert_eq!(actual.members().copied().collect::<BTreeSet<_>>(), expected.members);
             assert_eq!(actual.name(), expected.name);
             for key in &self.keys {
                 let device = key.device_id();
@@ -627,10 +509,7 @@ fn exhaustive_small_histories() {
                     assert_eq!(
                         actual.counts(&device, seq),
                         expected.members.contains(&device)
-                            || expected
-                                .cutoffs
-                                .get(&device)
-                                .is_some_and(|c| c.is_some_and(|cut| seq <= cut))
+                            || expected.cutoffs.get(&device).is_some_and(|c| c.is_some_and(|cut| seq <= cut))
                     );
                 }
             }
@@ -644,19 +523,12 @@ fn exhaustive_small_histories() {
                 let e = graph.entries[i];
                 order(graph.depth[i], &e.author(), e.deps(), e.payload())
             });
-            let membership: Vec<_> = (0..entries.len())
-                .filter(|&i| entries[i].log() == Log::Membership)
-                .collect();
+            let membership: Vec<_> = (0..entries.len()).filter(|&i| entries[i].log() == Log::Membership).collect();
             let mut candidates = Vec::new();
             for mask in 1usize..1 << membership.len() {
-                let parents: Vec<_> = (0..membership.len())
-                    .filter(|bit| mask & (1 << bit) != 0)
-                    .map(|bit| membership[bit])
-                    .collect();
-                if parents
-                    .iter()
-                    .any(|&i| parents.iter().any(|&j| graph.past[j].contains(&i)))
-                {
+                let parents: Vec<_> =
+                    (0..membership.len()).filter(|bit| mask & (1 << bit) != 0).map(|bit| membership[bit]).collect();
+                if parents.iter().any(|&i| parents.iter().any(|&j| graph.past[j].contains(&i))) {
                     continue;
                 }
                 let ancestors = graph.closure(parents.iter().map(|&i| entries[i].hash()));
@@ -666,9 +538,7 @@ fn exhaustive_small_histories() {
                         continue;
                     }
                     let mut payloads = vec![
-                        Payload::Membership(MembershipOp::Rename {
-                            name: format!("name-{}", entries.len()),
-                        }),
+                        Payload::Membership(MembershipOp::Rename { name: format!("name-{}", entries.len()) }),
                         data(),
                     ];
                     for target in &self.keys {
@@ -679,11 +549,8 @@ fn exhaustive_small_histories() {
                             }));
                         }
                         // Rejected removals differ in nothing that matters.
-                        let cutoffs: &[_] = if state.members.contains(&target.device_id()) {
-                            &[None, Some(0)]
-                        } else {
-                            &[None]
-                        };
+                        let cutoffs: &[_] =
+                            if state.members.contains(&target.device_id()) { &[None, Some(0)] } else { &[None] };
                         for &last_seen_seq in cutoffs {
                             payloads.push(Payload::Membership(MembershipOp::Remove {
                                 device: target.device_id(),
@@ -693,27 +560,16 @@ fn exhaustive_small_histories() {
                     }
                     for payload in payloads {
                         let log = payload.log();
-                        let previous = entries.iter().rposition(|e| {
-                            e.log_id()
-                                == LogId {
-                                    author: author.device_id(),
-                                    log,
-                                }
-                        });
+                        let previous =
+                            entries.iter().rposition(|e| e.log_id() == LogId { author: author.device_id(), log });
                         // The public API requires the previous entry as a direct
                         // dep. Keep membership parents exact; data entries also
                         // build on the author's previous data entry.
-                        if log == Log::Membership
-                            && previous.is_some_and(|p| !ancestors.contains(&p))
-                        {
+                        if log == Log::Membership && previous.is_some_and(|p| !ancestors.contains(&p)) {
                             continue;
                         }
-                        let deps: BTreeSet<_> = parents
-                            .iter()
-                            .copied()
-                            .chain(previous)
-                            .map(|i| entries[i].hash())
-                            .collect();
+                        let deps: BTreeSet<_> =
+                            parents.iter().copied().chain(previous).map(|i| entries[i].hash()).collect();
                         let depth = deps
                             .iter()
                             .map(|hash| {
@@ -724,9 +580,7 @@ fn exhaustive_small_histories() {
                             .unwrap();
                         let deps_list: Vec<_> = deps.iter().copied().collect();
                         let author_id = author.device_id();
-                        if last.as_ref().is_some_and(|last| {
-                            order(depth, &author_id, &deps_list, &payload) <= *last
-                        }) {
+                        if last.as_ref().is_some_and(|last| order(depth, &author_id, &deps_list, &payload) <= *last) {
                             continue;
                         }
                         let candidate = (author_id, previous, deps, payload);
@@ -746,14 +600,10 @@ fn exhaustive_small_histories() {
                         // A data entry's previous write can reveal its
                         // author's removal; such entries are not explored.
                         _ if !state.members.contains(&author) => return None,
-                        Payload::Membership(MembershipOp::Add { device, .. })
-                            if state.cutoffs.contains_key(device) =>
-                        {
+                        Payload::Membership(MembershipOp::Add { device, .. }) if state.cutoffs.contains_key(device) => {
                             Err(Error::AddRemovedDevice)
                         }
-                        Payload::Membership(MembershipOp::Remove { device, .. })
-                            if !state.members.contains(device) =>
-                        {
+                        Payload::Membership(MembershipOp::Remove { device, .. }) if !state.members.contains(device) => {
                             Err(Error::RemoveNonMember)
                         }
                         _ => Ok(true),
@@ -795,13 +645,7 @@ fn exhaustive_small_histories() {
 
     let keys: Vec<_> = (1..=3).map(key).collect();
     let mut invited = load(&[genesis(&keys[0])]);
-    invited
-        .add(
-            &keys[0],
-            keys[1].device_id(),
-            consent(&keys[1], &invited, &keys[0]),
-        )
-        .unwrap();
+    invited.add(&keys[0], keys[1].device_id(), consent(&keys[1], &invited, &keys[0])).unwrap();
     let invited = all(&invited);
     let consents = keys
         .iter()
@@ -814,26 +658,14 @@ fn exhaustive_small_histories() {
             })
         })
         .collect();
-    let mut search = Search {
-        consents,
-        keys,
-        vault: invited[0].vault(),
-        histories: 0,
-        models: RefCell::default(),
-        start: 0,
-    };
-    let depth = std::env::var("FLICKS_MEMBERSHIP_DEPTH")
-        .ok()
-        .map(|n| n.parse().expect("depth"))
-        .unwrap_or(3);
+    let mut search =
+        Search { consents, keys, vault: invited[0].vault(), histories: 0, models: RefCell::default(), start: 0 };
+    let depth = std::env::var("FLICKS_MEMBERSHIP_DEPTH").ok().map(|n| n.parse().expect("depth")).unwrap_or(3);
     for root in [&invited[..1], &invited[..]] {
         search.start = root.len();
         search.visit(&mut root.to_vec(), &mut load(root), depth);
     }
-    eprintln!(
-        "exhaustive: {} histories, up to {depth} entries after the genesis or its first Add",
-        search.histories
-    );
+    eprintln!("exhaustive: {} histories, up to {depth} entries after the genesis or its first Add", search.histories);
 }
 
 // Run in release: `cargo test -p flicks-core --release -- --ignored large_vault`.
@@ -847,9 +679,7 @@ fn large_vault_loads_quickly() {
     let mut vault = load(&[genesis(&keys[0])]);
     let started = std::time::Instant::now();
     for k in &keys[1..20] {
-        vault
-            .add(&keys[0], k.device_id(), consent(k, &vault, &keys[0]))
-            .unwrap();
+        vault.add(&keys[0], k.device_id(), consent(k, &vault, &keys[0])).unwrap();
     }
     let mut writers: Vec<usize> = (0..20).collect();
     for i in 0..5000 {
@@ -862,18 +692,13 @@ fn large_vault_loads_quickly() {
             let gone = writers.remove(writers.len() - 1);
             vault.remove(&keys[0], keys[gone].device_id()).unwrap();
             let new = &keys[20 + i / 500];
-            vault
-                .add(&keys[0], new.device_id(), consent(new, &vault, &keys[0]))
-                .unwrap();
+            vault.add(&keys[0], new.device_id(), consent(new, &vault, &keys[0])).unwrap();
             writers.insert(0, 20 + i / 500);
         }
     }
     let built = started.elapsed();
     let entries = all(&vault);
-    let membership = entries
-        .iter()
-        .filter(|e| e.log() == Log::Membership)
-        .count();
+    let membership = entries.iter().filter(|e| e.log() == Log::Membership).count();
     let started = std::time::Instant::now();
     let loaded = load(&entries);
     let elapsed = started.elapsed();
@@ -894,25 +719,18 @@ fn large_vault_loads_quickly() {
 fn sockpuppet_bypass() {
     let (a, b, c) = (key(1), key(2), key(3));
     let mut honest = load(&[genesis(&a)]);
-    honest
-        .add(&a, b.device_id(), consent(&b, &honest, &a))
-        .unwrap();
+    honest.add(&a, b.device_id(), consent(&b, &honest, &a)).unwrap();
     let mut thief = load(&all(&honest));
     // Delay A's removal beyond the attack's depth, avoiding hash-order luck.
     honest.rename(&a, "one").unwrap();
     honest.rename(&a, "two").unwrap();
     honest.remove(&a, b.device_id()).unwrap();
-    thief
-        .add(&b, c.device_id(), consent(&c, &thief, &b))
-        .unwrap();
+    thief.add(&b, c.device_id(), consent(&c, &thief, &b)).unwrap();
     thief.remove(&c, a.device_id()).unwrap();
     for entry in thief.entries() {
         honest.apply(entry.clone()).unwrap();
     }
-    assert!(
-        honest.is_member(&a.device_id()),
-        "sockpuppet evicted creator"
-    );
+    assert!(honest.is_member(&a.device_id()), "sockpuppet evicted creator");
     assert!(!honest.is_member(&b.device_id()));
     assert!(!honest.is_member(&c.device_id()));
 }
@@ -935,14 +753,7 @@ fn three_way_cycle() {
     va.rename(&a, "a2").unwrap();
     va.remove(&a, b.device_id()).unwrap();
     let branches = [&va, &vb, &vc];
-    for order in [
-        [0, 1, 2],
-        [0, 2, 1],
-        [1, 0, 2],
-        [1, 2, 0],
-        [2, 0, 1],
-        [2, 1, 0],
-    ] {
+    for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         let mut merged = load(&entries);
         for i in order {
             for entry in branches[i].entries() {
@@ -960,22 +771,13 @@ fn three_way_cycle() {
 fn junior_can_remove_creator_but_cannot_race_senior_survivor() {
     let (a, b, c, d) = (key(1), key(2), key(3), key(4));
     let mut honest = load(&[genesis(&a)]);
-    honest
-        .add(&a, b.device_id(), consent(&b, &honest, &a))
-        .unwrap();
-    honest
-        .add(&a, c.device_id(), consent(&c, &honest, &a))
-        .unwrap();
+    honest.add(&a, b.device_id(), consent(&b, &honest, &a)).unwrap();
+    honest.add(&a, c.device_id(), consent(&c, &honest, &a)).unwrap();
     honest.remove(&b, a.device_id()).unwrap();
-    assert!(
-        !honest.is_member(&a.device_id()),
-        "seniority is not immunity"
-    );
+    assert!(!honest.is_member(&a.device_id()), "seniority is not immunity");
     let mut thief = load(&all(&honest));
     honest.remove(&b, c.device_id()).unwrap();
-    thief
-        .add(&c, d.device_id(), consent(&d, &thief, &c))
-        .unwrap();
+    thief.add(&c, d.device_id(), consent(&d, &thief, &c)).unwrap();
     thief.remove(&d, b.device_id()).unwrap();
     for entry in thief.entries() {
         honest.apply(entry.clone()).unwrap();
@@ -987,21 +789,13 @@ fn junior_can_remove_creator_but_cannot_race_senior_survivor() {
 fn removal_rejects_acknowledged_writes_and_neutralizes_hidden_parents() {
     let (a, b, c) = (key(1), key(2), key(3));
     let mut vault = load(&[genesis(&a)]);
-    let admission = vault
-        .add(&a, b.device_id(), consent(&b, &vault, &a))
-        .unwrap();
+    let admission = vault.add(&a, b.device_id(), consent(&b, &vault, &a)).unwrap();
     let remove = vault.remove(&a, b.device_id()).unwrap();
     let mut entries = all(&vault);
     for payload in [
         data(),
-        Payload::Membership(MembershipOp::Add {
-            device: c.device_id(),
-            consent: consent(&c, &vault, &b),
-        }),
-        Payload::Membership(MembershipOp::Remove {
-            device: a.device_id(),
-            last_seen_seq: None,
-        }),
+        Payload::Membership(MembershipOp::Add { device: c.device_id(), consent: consent(&c, &vault, &b) }),
+        Payload::Membership(MembershipOp::Remove { device: a.device_id(), last_seen_seq: None }),
     ] {
         let entry = Entry::sign(&b, vault.id(), 0, [remove.hash()], payload);
         assert_eq!(vault.apply(entry), Err(Error::NotMember));
@@ -1012,10 +806,7 @@ fn removal_rejects_acknowledged_writes_and_neutralizes_hidden_parents() {
         vault.id(),
         0,
         [admission.hash()],
-        Payload::Membership(MembershipOp::Add {
-            device: c.device_id(),
-            consent: consent(&c, &vault, &b),
-        }),
+        Payload::Membership(MembershipOp::Add { device: c.device_id(), consent: consent(&c, &vault, &b) }),
     );
     for entry in [hidden_write, hidden_add.clone()] {
         assert_eq!(vault.apply(entry.clone()), Ok(true));
@@ -1025,13 +816,7 @@ fn removal_rejects_acknowledged_writes_and_neutralizes_hidden_parents() {
     assert!(vault.items().is_empty());
     // Merely having an Add in the past is not sufficient: the past resolves it
     // as cut by A, so C's claim of authority must fail before storage.
-    let child = Entry::sign(
-        &c,
-        vault.id(),
-        0,
-        [remove.hash(), hidden_add.hash()],
-        data(),
-    );
+    let child = Entry::sign(&c, vault.id(), 0, [remove.hash(), hidden_add.hash()], data());
     assert_eq!(vault.apply(child), Err(Error::NotMember));
     for seed in [1, 7, 123] {
         deliver(&entries, seed);
@@ -1042,18 +827,12 @@ fn removal_rejects_acknowledged_writes_and_neutralizes_hidden_parents() {
 fn cut_admission_falls_back_to_surviving_add() {
     let (a, b, c) = (key(1), key(2), key(3));
     let mut vault = load(&[genesis(&a)]);
-    vault
-        .add(&a, b.device_id(), consent(&b, &vault, &a))
-        .unwrap();
+    vault.add(&a, b.device_id(), consent(&b, &vault, &a)).unwrap();
     let mut thief = load(&all(&vault));
-    let add = thief
-        .add(&b, c.device_id(), consent(&c, &thief, &b))
-        .unwrap();
+    let add = thief.add(&b, c.device_id(), consent(&c, &thief, &b)).unwrap();
     vault.remove(&a, b.device_id()).unwrap();
     vault.rename(&a, "later").unwrap();
-    vault
-        .add(&a, c.device_id(), consent(&c, &vault, &a))
-        .unwrap();
+    vault.add(&a, c.device_id(), consent(&c, &vault, &a)).unwrap();
     vault.apply(add).unwrap();
     assert!(vault.is_member(&c.device_id()));
     assert_state(&vault, &all(&vault));
@@ -1065,27 +844,15 @@ fn cut_admission_falls_back_to_surviving_add() {
 fn lifted_consent_cannot_back_another_add() {
     let (a, t, n) = (key(1), key(2), key(3));
     let mut vault = load(&[genesis(&a)]);
-    let add_t = vault
-        .add(&a, t.device_id(), consent(&t, &vault, &a))
-        .unwrap();
-    let add_n = vault
-        .add(&a, n.device_id(), consent(&n, &vault, &a))
-        .unwrap();
-    let Payload::Membership(MembershipOp::Add {
-        consent: lifted, ..
-    }) = add_n.payload()
-    else {
-        unreachable!()
-    };
+    let add_t = vault.add(&a, t.device_id(), consent(&t, &vault, &a)).unwrap();
+    let add_n = vault.add(&a, n.device_id(), consent(&n, &vault, &a)).unwrap();
+    let Payload::Membership(MembershipOp::Add { consent: lifted, .. }) = add_n.payload() else { unreachable!() };
     let forged = Entry::sign(
         &t,
         vault.id(),
         0,
         [add_t.hash()],
-        Payload::Membership(MembershipOp::Add {
-            device: n.device_id(),
-            consent: *lifted,
-        }),
+        Payload::Membership(MembershipOp::Add { device: n.device_id(), consent: *lifted }),
     );
     assert_eq!(vault.apply(forged), Err(Error::InvalidConsent));
 }
@@ -1097,24 +864,17 @@ fn lifted_consent_cannot_back_another_add() {
 fn duplicate_add_never_strips_membership() {
     let (a, t, n) = (key(1), key(2), key(3));
     let mut vault = load(&[genesis(&a)]);
-    let add_t = vault
-        .add(&a, t.device_id(), consent(&t, &vault, &a))
-        .unwrap();
+    let add_t = vault.add(&a, t.device_id(), consent(&t, &vault, &a)).unwrap();
     let early = Entry::sign(
         &t,
         vault.id(),
         0,
         [add_t.hash()],
-        Payload::Membership(MembershipOp::Add {
-            device: n.device_id(),
-            consent: consent(&n, &vault, &t),
-        }),
+        Payload::Membership(MembershipOp::Add { device: n.device_id(), consent: consent(&n, &vault, &t) }),
     );
     vault.rename(&a, "x").unwrap();
     vault.rename(&a, "y").unwrap();
-    vault
-        .add(&a, n.device_id(), consent(&n, &vault, &a))
-        .unwrap();
+    vault.add(&a, n.device_id(), consent(&n, &vault, &a)).unwrap();
     vault.commit(&n, data()).unwrap();
     vault.remove(&a, t.device_id()).unwrap();
     vault.apply(early).unwrap();
@@ -1130,21 +890,11 @@ fn duplicate_add_never_strips_membership() {
 fn removing_a_non_member_is_rejected() {
     let (a, b, c) = (key(1), key(2), key(3));
     let mut vault = load(&[genesis(&a)]);
-    vault
-        .add(&a, b.device_id(), consent(&b, &vault, &a))
-        .unwrap();
-    assert_eq!(
-        vault.remove(&a, c.device_id()),
-        Err(Error::RemoveNonMember),
-        "never added"
-    );
+    vault.add(&a, b.device_id(), consent(&b, &vault, &a)).unwrap();
+    assert_eq!(vault.remove(&a, c.device_id()), Err(Error::RemoveNonMember), "never added");
     vault.remove(&a, b.device_id()).unwrap();
     let heads = vault.heads();
-    assert_eq!(
-        vault.remove(&a, b.device_id()),
-        Err(Error::RemoveNonMember),
-        "already removed"
-    );
+    assert_eq!(vault.remove(&a, b.device_id()), Err(Error::RemoveNonMember), "already removed");
     assert_eq!(
         vault.add(&a, b.device_id(), consent(&b, &vault, &a)),
         Err(Error::AddRemovedDevice),
@@ -1157,9 +907,7 @@ fn removing_a_non_member_is_rejected() {
 fn known_limitation_removed_senior_returns_with_hidden_parents() {
     let (a, b) = (key(1), key(2));
     let mut vault = load(&[genesis(&a)]);
-    let add_b = vault
-        .add(&a, b.device_id(), consent(&b, &vault, &a))
-        .unwrap();
+    let add_b = vault.add(&a, b.device_id(), consent(&b, &vault, &a)).unwrap();
     vault.remove(&b, a.device_id()).unwrap();
     assert!(!vault.is_member(&a.device_id()));
     let hidden = Entry::sign(
@@ -1167,10 +915,7 @@ fn known_limitation_removed_senior_returns_with_hidden_parents() {
         vault.id(),
         2,
         [add_b.hash()],
-        Payload::Membership(MembershipOp::Remove {
-            device: b.device_id(),
-            last_seen_seq: None,
-        }),
+        Payload::Membership(MembershipOp::Remove { device: b.device_id(), last_seen_seq: None }),
     );
     vault.apply(hidden).unwrap();
     // A, senior to B, wins the race it staged with old parents.
@@ -1183,32 +928,21 @@ fn known_limitation_removed_senior_returns_with_hidden_parents() {
 fn known_limitation_cut_first_add_keeps_seniority() {
     let (a, b, h, c, p) = (key(1), key(2), key(3), key(4), key(5));
     let mut vault = load(&[genesis(&a)]);
-    let add_b = vault
-        .add(&a, b.device_id(), consent(&b, &vault, &a))
-        .unwrap();
+    let add_b = vault.add(&a, b.device_id(), consent(&b, &vault, &a)).unwrap();
     // B's hidden Add of P sits just below B, above H and C.
     let hidden = Entry::sign(
         &b,
         vault.id(),
         0,
         [add_b.hash()],
-        Payload::Membership(MembershipOp::Add {
-            device: p.device_id(),
-            consent: consent(&p, &vault, &b),
-        }),
+        Payload::Membership(MembershipOp::Add { device: p.device_id(), consent: consent(&p, &vault, &b) }),
     );
     vault.rename(&a, "x").unwrap();
-    vault
-        .add(&a, h.device_id(), consent(&h, &vault, &a))
-        .unwrap();
-    vault
-        .add(&a, c.device_id(), consent(&c, &vault, &a))
-        .unwrap();
+    vault.add(&a, h.device_id(), consent(&h, &vault, &a)).unwrap();
+    vault.add(&a, c.device_id(), consent(&c, &vault, &a)).unwrap();
     vault.remove(&a, b.device_id()).unwrap();
     vault.apply(hidden).unwrap();
-    vault
-        .add(&c, p.device_id(), consent(&p, &vault, &c))
-        .unwrap();
+    vault.add(&c, p.device_id(), consent(&p, &vault, &c)).unwrap();
     let mut puppet = load(&all(&vault));
     vault.remove(&h, p.device_id()).unwrap();
     puppet.remove(&p, h.device_id()).unwrap();

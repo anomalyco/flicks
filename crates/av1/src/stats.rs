@@ -21,7 +21,15 @@ pub enum Stage {
 
 impl Stage {
     pub const COUNT: usize = 7;
-    pub const ALL: [Stage; Stage::COUNT] = [Stage::Setup, Stage::Tiles, Stage::LoopFilter, Stage::Cdef, Stage::Superres, Stage::Restoration, Stage::Output];
+    pub const ALL: [Stage; Stage::COUNT] = [
+        Stage::Setup,
+        Stage::Tiles,
+        Stage::LoopFilter,
+        Stage::Cdef,
+        Stage::Superres,
+        Stage::Restoration,
+        Stage::Output,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {

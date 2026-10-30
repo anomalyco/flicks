@@ -83,7 +83,11 @@ fn dc_nxn(e: &Edge, n: i32, a: Avail) -> i32 {
 
 /// Diagonal down-left sample (mode 3).
 fn diag_down_left(e: &Edge, n: i32, x: i32, y: i32) -> i32 {
-    if x == n - 1 && y == n - 1 { (e.t(2 * n - 2) + 3 * e.t(2 * n - 1) + 2) >> 2 } else { (e.t(x + y) + 2 * e.t(x + y + 1) + e.t(x + y + 2) + 2) >> 2 }
+    if x == n - 1 && y == n - 1 {
+        (e.t(2 * n - 2) + 3 * e.t(2 * n - 1) + 2) >> 2
+    } else {
+        (e.t(x + y) + 2 * e.t(x + y + 1) + e.t(x + y + 2) + 2) >> 2
+    }
 }
 
 /// Diagonal down-right sample (mode 4).
@@ -176,7 +180,8 @@ pub fn pred8x8(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, a:
     let p = load_edge(plane, stride, x, y, 8, a);
     let mut f = p;
     if a.top {
-        f.top[0] = if a.top_left { (p.tl + 2 * p.top[0] + p.top[1] + 2) >> 2 } else { (3 * p.top[0] + p.top[1] + 2) >> 2 };
+        f.top[0] =
+            if a.top_left { (p.tl + 2 * p.top[0] + p.top[1] + 2) >> 2 } else { (3 * p.top[0] + p.top[1] + 2) >> 2 };
         for i in 1..15 {
             f.top[i] = (p.top[i - 1] + 2 * p.top[i] + p.top[i + 1] + 2) >> 2;
         }
@@ -191,7 +196,8 @@ pub fn pred8x8(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, a:
         };
     }
     if a.left {
-        f.left[0] = if a.top_left { (p.tl + 2 * p.left[0] + p.left[1] + 2) >> 2 } else { (3 * p.left[0] + p.left[1] + 2) >> 2 };
+        f.left[0] =
+            if a.top_left { (p.tl + 2 * p.left[0] + p.left[1] + 2) >> 2 } else { (3 * p.left[0] + p.left[1] + 2) >> 2 };
         for i in 1..7 {
             f.left[i] = (p.left[i - 1] + 2 * p.left[i] + p.left[i + 1] + 2) >> 2;
         }

@@ -85,7 +85,11 @@ impl<F> Default for Dpb<F> {
 
 impl<F: Clone> Dpb<F> {
     fn bump(&mut self, outs: &mut Vec<Output<F>>) -> bool {
-        let Some(i) = (0..self.entries.len()).filter(|&i| self.entries[i].needed_for_output).min_by_key(|&i| self.entries[i].poc) else { return false };
+        let Some(i) =
+            (0..self.entries.len()).filter(|&i| self.entries[i].needed_for_output).min_by_key(|&i| self.entries[i].poc)
+        else {
+            return false;
+        };
         let e = &mut self.entries[i];
         e.needed_for_output = false;
         outs.push(Output { frame: e.frame.clone(), poc: e.poc, meta: e.meta.clone() });
@@ -181,8 +185,9 @@ impl<F: Clone> Dpb<F> {
             if msb_present {
                 p += poc - (cycle as i32).wrapping_mul(max_poc_lsb) - (poc & (max_poc_lsb - 1));
             }
-            let found =
-                self.entries.iter().position(|e| e.marking != Marking::Unused && if msb_present { e.poc == p } else { (e.poc & (max_poc_lsb - 1)) == p });
+            let found = self.entries.iter().position(|e| {
+                e.marking != Marking::Unused && if msb_present { e.poc == p } else { (e.poc & (max_poc_lsb - 1)) == p }
+            });
             lt_idx.push((found, p, used, msb_present));
         }
         // Short-term entries.
@@ -259,7 +264,8 @@ pub fn build_ref_lists<F: Clone>(sh: &SliceHeader, rps: &RefPicSet<F>) -> Result
     for l in 0..if sh.is_b() { 2 } else { 1 } {
         let n = (sh.num_ref_idx[l] as usize).max(total);
         let mut temp = Vec::with_capacity(n);
-        let (first, second) = if l == 0 { (&rps.st_curr_before, &rps.st_curr_after) } else { (&rps.st_curr_after, &rps.st_curr_before) };
+        let (first, second) =
+            if l == 0 { (&rps.st_curr_before, &rps.st_curr_after) } else { (&rps.st_curr_after, &rps.st_curr_before) };
         while temp.len() < n {
             for r in first.iter().chain(second.iter()).chain(rps.lt_curr.iter()) {
                 if temp.len() < n {

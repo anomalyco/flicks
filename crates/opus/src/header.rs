@@ -98,7 +98,11 @@ impl OpusHead {
             return Err(Error::InvalidHeader("bad channel count or mapping length"));
         }
         if self.mapping_family == 0 {
-            if self.channels > 2 || self.streams != 1 || self.coupled_streams != self.channels - 1 || self.mapping.iter().copied().ne(0..self.channels as u8) {
+            if self.channels > 2
+                || self.streams != 1
+                || self.coupled_streams != self.channels - 1
+                || self.mapping.iter().copied().ne(0..self.channels as u8)
+            {
                 return Err(Error::InvalidHeader("invalid family 0 mapping"));
             }
             return Ok(());
@@ -122,7 +126,14 @@ impl OpusHead {
         Ok(())
     }
 
-    fn build(channels: usize, pre_skip: u16, input_sample_rate: u32, output_gain: i16, family: u8, rest: &[u8]) -> Result<OpusHead> {
+    fn build(
+        channels: usize,
+        pre_skip: u16,
+        input_sample_rate: u32,
+        output_gain: i16,
+        family: u8,
+        rest: &[u8],
+    ) -> Result<OpusHead> {
         if channels == 0 {
             return Err(Error::InvalidHeader("zero channels"));
         }
@@ -152,7 +163,16 @@ impl OpusHead {
             }
             (streams, coupled, mapping)
         };
-        let head = OpusHead { channels, pre_skip, input_sample_rate, output_gain, mapping_family: family, streams, coupled_streams: coupled, mapping };
+        let head = OpusHead {
+            channels,
+            pre_skip,
+            input_sample_rate,
+            output_gain,
+            mapping_family: family,
+            streams,
+            coupled_streams: coupled,
+            mapping,
+        };
         head.validate()?;
         Ok(head)
     }

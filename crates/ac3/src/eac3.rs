@@ -277,7 +277,14 @@ pub(crate) struct FrameInfo {
 
 impl FrameInfo {
     /// Read the audio frame. `words` is the syncframe size in 16-bit words.
-    pub(crate) fn read(r: &mut Bits, bsi: &Bsi, acmod: usize, lfeon: bool, nblocks: usize, words: usize) -> Result<FrameInfo> {
+    pub(crate) fn read(
+        r: &mut Bits,
+        bsi: &Bsi,
+        acmod: usize,
+        lfeon: bool,
+        nblocks: usize,
+        words: usize,
+    ) -> Result<FrameInfo> {
         let nf = NFCHANS[acmod & 7];
         let six = bsi.numblkscod == 3;
         let (expstre, ahte) = if six { (r.bit(), r.bit()) } else { (true, false) };
@@ -513,7 +520,13 @@ impl Spx {
     /// Synthesize the extension region of one channel's coefficients (§E3.6.4): translate the
     /// low band up, notch-filter the borders when attenuation is on, blend with `noise` (zero
     /// mean, unit variance) scaled to the band's energy, and scale by the coordinates.
-    pub(crate) fn synthesize(&self, ch: usize, atten: Option<usize>, tc: &mut [f32; 256], mut noise: impl FnMut() -> f32) {
+    pub(crate) fn synthesize(
+        &self,
+        ch: usize,
+        atten: Option<usize>,
+        tc: &mut [f32; 256],
+        mut noise: impl FnMut() -> f32,
+    ) {
         let copystart = spx_band_bin(self.strtf);
         let copyend = self.begin_bin();
         let sizes = &self.sizes[..self.nbands];
@@ -604,7 +617,10 @@ mod tests {
     fn default_band_structures() {
         assert_eq!(DEFAULT_CPLBNDSTRC.iter().filter(|&&b| b).count(), 8);
         assert!(DEFAULT_CPLBNDSTRC[8] && !DEFAULT_CPLBNDSTRC[9] && !DEFAULT_CPLBNDSTRC[12] && DEFAULT_CPLBNDSTRC[17]);
-        assert_eq!(DEFAULT_SPXBNDSTRC.iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i).collect::<Vec<_>>(), vec![8, 10, 12, 14, 16]);
+        assert_eq!(
+            DEFAULT_SPXBNDSTRC.iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i).collect::<Vec<_>>(),
+            vec![8, 10, 12, 14, 16]
+        );
         // every frame-based strategy sends new exponents in block 0
         assert!(FRAME_EXPSTR.iter().all(|s| s[0] != 0));
     }

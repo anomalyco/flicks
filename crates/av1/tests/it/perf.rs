@@ -27,7 +27,9 @@ fn load_average() -> String {
     if let Some(o) = out.filter(|o| o.status.success()) {
         return String::from_utf8_lossy(&o.stdout).trim().trim_matches(|c| c == '{' || c == '}').trim().to_string();
     }
-    std::fs::read_to_string("/proc/loadavg").map(|s| s.split_whitespace().take(3).collect::<Vec<_>>().join(" ")).unwrap_or_else(|_| "?".into())
+    std::fs::read_to_string("/proc/loadavg")
+        .map(|s| s.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+        .unwrap_or_else(|_| "?".into())
 }
 
 struct Run {
@@ -112,7 +114,9 @@ fn stage_line(label: &str, stats: &DecodeStats) -> String {
 #[test]
 #[ignore]
 fn decode_throughput() {
-    let p = |crf: &'static str, params: &'static str| -> Vec<&'static str> { vec!["-preset", "8", "-crf", crf, "-svtav1-params", params] };
+    let p = |crf: &'static str, params: &'static str| -> Vec<&'static str> {
+        vec!["-preset", "8", "-crf", crf, "-svtav1-params", params]
+    };
     let src = "testsrc2=s=1920x1080:r=25,noise=alls=6:allf=t";
     bench(&Spec::new("perf_1080p_intra", src, 10, "yuv420p", &p("30", "keyint=1")));
     bench(&Spec::new("perf_1080p_gop", src, 60, "yuv420p", &p("30", "keyint=60")));
@@ -124,5 +128,11 @@ fn decode_throughput() {
     // frames cannot overlap, so a frame's own parallelism decides the speed.
     bench(&Spec::new("perf_1080p_lowdelay", src, 60, "yuv420p", &p("30", "keyint=60:pred-struct=1")));
     // One tile at 2160p: the post-filters' row bands are most of the parallelism there.
-    bench(&Spec::new("perf_2160p_gop", "testsrc2=s=3840x2160:r=25,noise=alls=6:allf=t", 30, "yuv420p", &p("30", "keyint=30")));
+    bench(&Spec::new(
+        "perf_2160p_gop",
+        "testsrc2=s=3840x2160:r=25,noise=alls=6:allf=t",
+        30,
+        "yuv420p",
+        &p("30", "keyint=30"),
+    ));
 }

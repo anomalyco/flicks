@@ -24,10 +24,7 @@ impl Dev {
     fn invite_with_entry(&mut self) -> (Dev, Entry) {
         let secret = DeviceSecret::generate();
         let consent = secret.join_consent(&self.vault.id(), &self.secret.device_id());
-        let add = self
-            .vault
-            .add(&self.secret, secret.device_id(), consent)
-            .unwrap();
+        let add = self.vault.add(&self.secret, secret.device_id(), consent).unwrap();
         let vault = Vault::load(self.vault.entries().into_iter().cloned()).unwrap();
         (Dev { secret, vault }, add)
     }
@@ -43,9 +40,7 @@ impl Dev {
 
     fn login_entry(&mut self, password: &str) -> (ItemId, Entry) {
         let fields = [("password".into(), secret(password))];
-        self.vault
-            .create_item(&self.secret, "login", None, fields)
-            .unwrap()
+        self.vault.create_item(&self.secret, "login", None, fields).unwrap()
     }
 
     fn login(&mut self, password: &str) -> ItemId {
@@ -55,10 +50,7 @@ impl Dev {
     /// Signs `ops` as this device's next data entry, based on everything it
     /// holds, without the commit-time checks, and applies it.
     fn raw(&mut self, ops: Vec<DataOp>) -> Entry {
-        let log = LogId {
-            author: self.id(),
-            log: Log::Data,
-        };
+        let log = LogId { author: self.id(), log: Log::Data };
         let seq = self.vault.heads().get(&log).map_or(0, |seq| seq + 1);
         let deps: Vec<Hash> = self.vault.entries().iter().map(|e| e.hash()).collect();
         let entry = Entry::sign(&self.secret, self.vault.id(), seq, deps, Payload::Data(ops));
@@ -80,10 +72,7 @@ fn secret(value: &str) -> Field {
 }
 
 fn login_field(name: &str, value: &str) -> Field {
-    let kind = schema("login")
-        .unwrap()
-        .field(name)
-        .map_or(FieldType::Text, |f| f.kind.clone());
+    let kind = schema("login").unwrap().field(name).map_or(FieldType::Text, |f| f.kind.clone());
     Field::new(kind, value)
 }
 
@@ -163,17 +152,13 @@ fn assert_order_independent(entries: &[Entry], items: &[ItemId]) -> Vault {
     for _ in 0..6 {
         let mut order = rest.to_vec();
         for i in (1..order.len()).rev() {
-            seed = seed
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             order.swap(i, (seed >> 33) as usize % (i + 1));
         }
         orders.push(order);
     }
-    let vaults: Vec<Vault> = orders
-        .into_iter()
-        .map(|order| apply_in_order([vec![genesis.clone()], order].concat()))
-        .collect();
+    let vaults: Vec<Vault> =
+        orders.into_iter().map(|order| apply_in_order([vec![genesis.clone()], order].concat())).collect();
     let expected = snapshot(&vaults[0], items);
     for vault in &vaults[1..] {
         assert_eq!(snapshot(vault, items), expected);
@@ -212,27 +197,16 @@ fn rejects_tampered_entries() {
     let mut body = entry.encode();
     let at = body.windows(7).position(|w| w == b"hunter2").unwrap();
     body[at] = b'H';
-    assert_eq!(
-        fresh.apply(Entry::decode(&body).unwrap()),
-        Err(Error::BadSignature)
-    );
+    assert_eq!(fresh.apply(Entry::decode(&body).unwrap()), Err(Error::BadSignature));
 
     let mut signature = entry.encode();
     let last = signature.len() - 1;
     signature[last] ^= 0x01;
-    assert_eq!(
-        fresh.apply(Entry::decode(&signature).unwrap()),
-        Err(Error::BadSignature)
-    );
+    assert_eq!(fresh.apply(Entry::decode(&signature).unwrap()), Err(Error::BadSignature));
 
     // Re-signed by someone else under the original author's name is impossible:
     // signing always uses the signer's own id.
-    let forged = data_entry(
-        &DeviceSecret::generate(),
-        &fresh,
-        0,
-        vec![genesis_hash(&fresh)],
-    );
+    let forged = data_entry(&DeviceSecret::generate(), &fresh, 0, vec![genesis_hash(&fresh)]);
     assert_ne!(forged.author(), a.id());
 
     assert_eq!(fresh.apply(entry.clone()), Ok(true));
@@ -246,10 +220,7 @@ fn rejects_tampered_genesis() {
     let mut bytes = genesis.encode();
     let last = bytes.len() - 1;
     bytes[last] ^= 0x01;
-    assert_eq!(
-        Vault::from_genesis(Entry::decode(&bytes).unwrap()).err(),
-        Some(Error::BadSignature)
-    );
+    assert_eq!(Vault::from_genesis(Entry::decode(&bytes).unwrap()).err(), Some(Error::BadSignature));
     let fake = Entry::sign(
         &secret,
         genesis.vault(),
@@ -270,13 +241,7 @@ fn rejects_seq_gaps_and_forks() {
     let (item, e0) = a.login_entry("0");
     let e1 = a.set(item, "f", "1");
     let mut fresh = Vault::from_genesis(a.vault.entries()[0].clone()).unwrap();
-    assert_eq!(
-        fresh.apply(e1.clone()),
-        Err(Error::SeqGap {
-            expected: 0,
-            got: 1
-        })
-    );
+    assert_eq!(fresh.apply(e1.clone()), Err(Error::SeqGap { expected: 0, got: 1 }));
     fresh.apply(e0.clone()).unwrap();
     fresh.apply(e1).unwrap();
     let fork = data_entry(&a.secret, &fresh, 0, vec![genesis_hash(&fresh)]);
@@ -291,10 +256,7 @@ fn rejects_missing_deps() {
     let (_, a0) = a.login_entry("a");
     sync(&a, &mut b);
     let (_, b0) = b.login_entry("b");
-    assert_eq!(
-        c.apply(b0.clone()),
-        Err(Error::MissingDeps(vec![a0.hash()]))
-    );
+    assert_eq!(c.apply(b0.clone()), Err(Error::MissingDeps(vec![a0.hash()])));
     c.apply(a0).unwrap();
     c.apply(b0).unwrap();
 }
@@ -312,17 +274,8 @@ fn membership_entries_cannot_depend_on_data() {
     let mut a = Dev::create();
     let (_, d0) = a.login_entry("0");
     let joiner = DeviceSecret::generate();
-    let op = MembershipOp::Add {
-        device: joiner.device_id(),
-        consent: joiner.join_consent(&a.vault.id(), &a.id()),
-    };
-    let entry = Entry::sign(
-        &a.secret,
-        a.vault.id(),
-        1,
-        [genesis_hash(&a.vault), d0.hash()],
-        Payload::Membership(op),
-    );
+    let op = MembershipOp::Add { device: joiner.device_id(), consent: joiner.join_consent(&a.vault.id(), &a.id()) };
+    let entry = Entry::sign(&a.secret, a.vault.id(), 1, [genesis_hash(&a.vault), d0.hash()], Payload::Membership(op));
     assert_eq!(a.vault.apply(entry), Err(Error::InvalidDeps));
 }
 
@@ -339,13 +292,7 @@ fn rejects_non_member_authors() {
         device: outsider.device_id(),
         consent: outsider.join_consent(&a.vault.id(), &outsider.device_id()),
     };
-    let entry = Entry::sign(
-        &outsider,
-        a.vault.id(),
-        0,
-        [genesis],
-        Payload::Membership(self_add),
-    );
+    let entry = Entry::sign(&outsider, a.vault.id(), 0, [genesis], Payload::Membership(self_add));
     assert_eq!(a.vault.apply(entry), Err(Error::NotMember));
 
     let op = DataOp::set(ItemId::random(), "f", text("v"));
@@ -358,28 +305,15 @@ fn rejects_wrong_vault_bad_consent_and_second_genesis() {
     let mut a = Dev::create();
     let other = Dev::create();
     let entry = data_entry(&a.secret, &other.vault, 0, vec![genesis_hash(&other.vault)]);
-    assert!(matches!(
-        a.vault.apply(entry),
-        Err(Error::WrongVault { .. })
-    ));
+    assert!(matches!(a.vault.apply(entry), Err(Error::WrongVault { .. })));
 
     let joiner = DeviceSecret::generate();
     let wrong = joiner.join_consent(&other.vault.id(), &a.id());
-    assert_eq!(
-        a.vault.add(&a.secret, joiner.device_id(), wrong),
-        Err(Error::InvalidConsent)
-    );
+    assert_eq!(a.vault.add(&a.secret, joiner.device_id(), wrong), Err(Error::InvalidConsent));
     assert!(!a.vault.is_member(&joiner.device_id()));
 
-    let create = MembershipOp::Create {
-        device: a.id(),
-        nonce: [3; 32],
-        name: "personal".into(),
-    };
-    assert_eq!(
-        a.vault.commit(&a.secret, Payload::Membership(create)),
-        Err(Error::InvalidGenesis)
-    );
+    let create = MembershipOp::Create { device: a.id(), nonce: [3; 32], name: "personal".into() };
+    assert_eq!(a.vault.commit(&a.secret, Payload::Membership(create)), Err(Error::InvalidGenesis));
 }
 
 // ---- is_member --------------------------------------------------------------
@@ -428,19 +362,11 @@ fn is_member_removed_device_cannot_be_re_added() {
     assert!(c.vault.was_removed(&b.id()));
 
     assert_eq!(
-        a.vault.add(
-            &a.secret,
-            b.id(),
-            b.secret.join_consent(&a.vault.id(), &a.id()),
-        ),
+        a.vault.add(&a.secret, b.id(), b.secret.join_consent(&a.vault.id(), &a.id()),),
         Err(Error::AddRemovedDevice)
     );
     assert_eq!(
-        c.vault.add(
-            &c.secret,
-            b.id(),
-            b.secret.join_consent(&c.vault.id(), &c.id()),
-        ),
+        c.vault.add(&c.secret, b.id(), b.secret.join_consent(&c.vault.id(), &c.id()),),
         Err(Error::AddRemovedDevice)
     );
     assert!(!a.vault.is_member(&b.id()));
@@ -452,13 +378,7 @@ fn is_member_removed_device_cannot_be_re_added() {
     let mut f = d.invite();
     sync(&d, &mut e);
     d.remove(e.id());
-    f.vault
-        .add(
-            &f.secret,
-            e.id(),
-            e.secret.join_consent(&d.vault.id(), &f.id()),
-        )
-        .unwrap();
+    f.vault.add(&f.secret, e.id(), e.secret.join_consent(&d.vault.id(), &f.id())).unwrap();
     sync_both(&mut d, &mut f);
     assert!(!d.vault.is_member(&e.id()));
     assert!(!f.vault.is_member(&e.id()));
@@ -584,10 +504,7 @@ fn is_member_removal_seen_before_counter_removal_is_final() {
         b.vault.id(),
         0,
         b.vault.entries().iter().map(|e| e.hash()),
-        Payload::Membership(MembershipOp::Remove {
-            device: a.id(),
-            last_seen_seq: None,
-        }),
+        Payload::Membership(MembershipOp::Remove { device: a.id(), last_seen_seq: None }),
     );
     assert_eq!(b.vault.apply(rogue), Err(Error::NotMember));
     sync(&b, &mut a);
@@ -638,9 +555,7 @@ fn concurrent_renames_pick_hash_winner_in_any_order() {
         c.vault.rename(&c.secret, "from-c").unwrap(),
     ];
     let winner = renames.iter().max_by_key(|e| e.hash()).unwrap();
-    let Payload::Membership(MembershipOp::Rename { name }) = winner.payload() else {
-        unreachable!()
-    };
+    let Payload::Membership(MembershipOp::Rename { name }) = winner.payload() else { unreachable!() };
     let vault = assert_order_independent(&all_entries(&[&a, &b, &c]), &[]);
     assert_eq!(vault.name(), name);
     sync_both(&mut a, &mut b);
@@ -673,10 +588,7 @@ fn invalid_names_are_rejected() {
     let mut a = Dev::create();
     assert_eq!(a.vault.rename(&a.secret, "Bad"), Err(Error::InvalidName));
     let bad = Payload::Membership(MembershipOp::Rename { name: "no!".into() });
-    assert_eq!(
-        a.vault.commit(&a.secret, bad.clone()),
-        Err(Error::InvalidName)
-    );
+    assert_eq!(a.vault.commit(&a.secret, bad.clone()), Err(Error::InvalidName));
     let entry = Entry::sign(&a.secret, a.vault.id(), 1, [genesis_hash(&a.vault)], bad);
     assert_eq!(a.vault.apply(entry), Err(Error::InvalidName));
     assert_eq!(a.vault.name(), "personal");
@@ -684,24 +596,15 @@ fn invalid_names_are_rejected() {
     // A genesis that is valid apart from its name.
     let device = secret.device_id();
     let (_, good) = Vault::create(&secret, "ok").unwrap();
-    let Payload::Membership(MembershipOp::Create { nonce, .. }) = good.payload() else {
-        unreachable!()
-    };
+    let Payload::Membership(MembershipOp::Create { nonce, .. }) = good.payload() else { unreachable!() };
     let bad_genesis = Entry::sign(
         &secret,
         good.vault(),
         0,
         [],
-        Payload::Membership(MembershipOp::Create {
-            device,
-            nonce: *nonce,
-            name: "UPPER".into(),
-        }),
+        Payload::Membership(MembershipOp::Create { device, nonce: *nonce, name: "UPPER".into() }),
     );
-    assert_eq!(
-        Vault::from_genesis(bad_genesis).err(),
-        Some(Error::InvalidName)
-    );
+    assert_eq!(Vault::from_genesis(bad_genesis).err(), Some(Error::InvalidName));
 }
 
 #[test]
@@ -713,16 +616,8 @@ fn one_device_key_across_vaults() {
     // Consent for one vault cannot be reused in another.
     let joiner = DeviceSecret::generate();
     let consent = joiner.join_consent(&a.vault.id(), &secret.device_id());
-    assert_eq!(
-        work.add(&secret, joiner.device_id(), consent),
-        Err(Error::InvalidConsent)
-    );
-    work.add(
-        &secret,
-        joiner.device_id(),
-        joiner.join_consent(&work.id(), &secret.device_id()),
-    )
-    .unwrap();
+    assert_eq!(work.add(&secret, joiner.device_id(), consent), Err(Error::InvalidConsent));
+    work.add(&secret, joiner.device_id(), joiner.join_consent(&work.id(), &secret.device_id())).unwrap();
     assert!(work.is_member(&joiner.device_id()));
     assert!(!a.vault.is_member(&joiner.device_id()));
     assert_eq!((a.vault.name(), work.name()), ("personal", "work"));
@@ -733,14 +628,8 @@ fn one_device_key_across_vaults() {
 #[test]
 fn items_set_delete_and_restore() {
     let mut a = Dev::create();
-    let fields = [
-        ("username".into(), text("dax")),
-        ("password".into(), secret("one")),
-    ];
-    let (item, _) = a
-        .vault
-        .create_item(&a.secret, "login", None, fields)
-        .unwrap();
+    let fields = [("username".into(), text("dax")), ("password".into(), secret("one"))];
+    let (item, _) = a.vault.create_item(&a.secret, "login", None, fields).unwrap();
     a.set(item, "password", "two");
     let got = a.vault.item(&item).unwrap();
     assert_eq!(got.kind, "login");
@@ -763,12 +652,7 @@ fn items_set_delete_and_restore() {
 
     let statuses: Vec<VersionStatus> = a.vault.history(&item).iter().map(|v| v.status).collect();
     use VersionStatus::*;
-    assert_eq!(
-        statuses,
-        [
-            Superseded, Superseded, Current, Current, Superseded, Current
-        ]
-    );
+    assert_eq!(statuses, [Superseded, Superseded, Current, Current, Superseded, Current]);
 }
 
 #[test]
@@ -794,30 +678,20 @@ fn create_items_batches_entries_and_is_all_or_nothing() {
             None,
             [
                 ("password".to_string(), secret(password)),
-                (
-                    "notes".to_string(),
-                    Field::new(FieldType::Note, big.clone()),
-                ),
+                ("notes".to_string(), Field::new(FieldType::Note, big.clone())),
             ],
         )
     };
     let items: Vec<_> = (0..10).map(|i| login(&i.to_string())).collect();
     let (ids, entries) = a.vault.create_items(&a.secret, items).unwrap();
     assert_eq!(ids.len(), 10);
-    assert!(
-        (3..10).contains(&entries.len()),
-        "{} entries",
-        entries.len()
-    );
+    assert!((3..10).contains(&entries.len()), "{} entries", entries.len());
     assert_eq!(value(&a.vault.item(&ids[9]).unwrap(), "password"), "9");
     assert_eq!(a.vault.items().len(), 10);
 
     let mut items: Vec<_> = (0..10).map(|i| login(&i.to_string())).collect();
     items.push(DataOp::create("card", None, []));
-    assert_eq!(
-        a.vault.create_items(&a.secret, items).unwrap_err(),
-        Error::Item(ItemError::MissingField("number"))
-    );
+    assert_eq!(a.vault.create_items(&a.secret, items).unwrap_err(), Error::Item(ItemError::MissingField("number")));
     assert_eq!(a.vault.items().len(), 10);
 }
 
@@ -826,11 +700,7 @@ fn schema_is_enforced_at_commit() {
     let mut a = Dev::create();
     let item_err = |e: ItemError| Err(Error::Item(e));
     let create = |kind: &str, fields: Vec<(&str, Field)>| {
-        DataOp::create(
-            kind,
-            None,
-            fields.into_iter().map(|(n, f)| (n.to_string(), f)),
-        )
+        DataOp::create(kind, None, fields.into_iter().map(|(n, f)| (n.to_string(), f)))
     };
     let card = |fields: Vec<(&str, Field)>| {
         let mut all = vec![("number", secret("4242424242424242"))];
@@ -838,58 +708,30 @@ fn schema_is_enforced_at_commit() {
         create("card", all)
     };
     let cases = [
-        (
-            create("wifi", vec![("password", secret("x"))]),
-            ItemError::UnknownType("wifi".into()),
-        ),
-        (
-            create("ssh", vec![("public-key", text("ssh-ed25519 AAAA"))]),
-            ItemError::MissingField("private-key"),
-        ),
-        (
-            create("card", vec![("cvv", secret("123"))]),
-            ItemError::MissingField("number"),
-        ),
+        (create("wifi", vec![("password", secret("x"))]), ItemError::UnknownType("wifi".into())),
+        (create("ssh", vec![("public-key", text("ssh-ed25519 AAAA"))]), ItemError::MissingField("private-key")),
+        (create("card", vec![("cvv", secret("123"))]), ItemError::MissingField("number")),
         (
             create(
                 "passkey",
-                vec![
-                    ("rp-id", text("example.com")),
-                    ("credential-id", text("AAAA")),
-                    ("user-handle", text("a2l0")),
-                ],
+                vec![("rp-id", text("example.com")), ("credential-id", text("AAAA")), ("user-handle", text("a2l0"))],
             ),
             ItemError::MissingField("private-key"),
         ),
         (
             create("login", vec![("password", text("x"))]),
-            ItemError::WrongFieldType {
-                field: "password".into(),
-                expected: FieldType::Secret,
-            },
+            ItemError::WrongFieldType { field: "password".into(), expected: FieldType::Secret },
         ),
         (
             create("login", vec![("password", secret(""))]),
-            ItemError::InvalidValue {
-                field: "password".into(),
-                reason: "empty".into(),
-            },
+            ItemError::InvalidValue { field: "password".into(), reason: "empty".into() },
         ),
         (
-            create(
-                "login",
-                vec![("password", secret("x")), ("Bad Name", text("x"))],
-            ),
+            create("login", vec![("password", secret("x")), ("Bad Name", text("x"))]),
             ItemError::InvalidFieldName("Bad Name".into()),
         ),
         (
-            create(
-                "login",
-                vec![
-                    ("password", secret("x")),
-                    ("x", Field::new(FieldType::Other("future".into()), "v")),
-                ],
-            ),
+            create("login", vec![("password", secret("x")), ("x", Field::new(FieldType::Other("future".into()), "v"))]),
             ItemError::UnknownFieldType("future".into()),
         ),
     ];
@@ -904,37 +746,15 @@ fn schema_is_enforced_at_commit() {
         card(vec![("cvv", secret("12a"))]),
         card(vec![("expiry", Field::new(FieldType::Month, "2026-13"))]),
         card(vec![("expiry", Field::new(FieldType::Month, "26-01"))]),
-        create(
-            "login",
-            vec![
-                ("password", secret("x")),
-                ("url", Field::new(FieldType::Url, "github.com")),
-            ],
-        ),
-        create(
-            "login",
-            vec![
-                ("password", secret("x")),
-                ("mail", Field::new(FieldType::Email, "nope")),
-            ],
-        ),
+        create("login", vec![("password", secret("x")), ("url", Field::new(FieldType::Url, "github.com"))]),
+        create("login", vec![("password", secret("x")), ("mail", Field::new(FieldType::Email, "nope"))]),
     ];
     for op in invalid_values {
         let result = a.vault.write(&a.secret, vec![op.clone()]);
-        assert!(
-            matches!(result, Err(Error::Item(ItemError::InvalidValue { .. }))),
-            "{op:?}: {result:?}"
-        );
+        assert!(matches!(result, Err(Error::Item(ItemError::InvalidValue { .. }))), "{op:?}: {result:?}");
     }
-    let named = DataOp::create(
-        "login",
-        Some(" ".into()),
-        [("password".into(), secret("x"))],
-    );
-    assert_eq!(
-        a.vault.write(&a.secret, vec![named]),
-        item_err(ItemError::InvalidItemName)
-    );
+    let named = DataOp::create("login", Some(" ".into()), [("password".into(), secret("x"))]);
+    assert_eq!(a.vault.write(&a.secret, vec![named]), item_err(ItemError::InvalidItemName));
     assert!(a.vault.items().is_empty());
     assert_eq!(a.vault.entries().len(), 1, "nothing was committed");
 
@@ -955,10 +775,7 @@ fn schema_is_enforced_at_commit() {
     a.write(vec![
         create("login", vec![("username", text("dax"))]),
         create("note", vec![("notes", secret("line one\nline two"))]),
-        create(
-            "identity",
-            vec![("birthday", Field::new(FieldType::Date, "1990-02-28"))],
-        ),
+        create("identity", vec![("birthday", Field::new(FieldType::Date, "1990-02-28"))]),
     ]);
     assert!(matches!(
         a.vault.write(
@@ -972,54 +789,30 @@ fn schema_is_enforced_at_commit() {
     ));
     // Nothing at all is no item, though nothing is required.
     for kind in ["login", "note", "identity"] {
-        assert!(matches!(
-            a.vault.write(&a.secret, vec![create(kind, vec![])]),
-            Err(Error::Item(ItemError::Empty))
-        ));
+        assert!(matches!(a.vault.write(&a.secret, vec![create(kind, vec![])]), Err(Error::Item(ItemError::Empty))));
     }
 
     // Edits.
     let item = a.login("pw");
     let edits = [
-        (
-            DataOp::remove(item, "Bad Name"),
-            ItemError::InvalidFieldName("Bad Name".into()),
-        ),
-        (
-            DataOp::remove(card, "number"),
-            ItemError::RequiredField("number".into()),
-        ),
+        (DataOp::remove(item, "Bad Name"), ItemError::InvalidFieldName("Bad Name".into())),
+        (DataOp::remove(card, "number"), ItemError::RequiredField("number".into())),
         (
             DataOp::set(item, "url", text("https://x.example")),
-            ItemError::WrongFieldType {
-                field: "url".into(),
-                expected: FieldType::Url,
-            },
+            ItemError::WrongFieldType { field: "url".into(), expected: FieldType::Url },
         ),
         (
             DataOp::set(card, "number", secret("42")),
-            ItemError::InvalidValue {
-                field: "number".into(),
-                reason: "must be 12-19 digits".into(),
-            },
+            ItemError::InvalidValue { field: "number".into(), reason: "must be 12-19 digits".into() },
         ),
-        (
-            DataOp::name(item, Some("bad\nname".into())),
-            ItemError::InvalidItemName,
-        ),
-        (
-            DataOp::set(ItemId::random(), "username", text("x")),
-            ItemError::NoSuchItem,
-        ),
+        (DataOp::name(item, Some("bad\nname".into())), ItemError::InvalidItemName),
+        (DataOp::set(ItemId::random(), "username", text("x")), ItemError::NoSuchItem),
     ];
     for (op, err) in edits {
         assert_eq!(a.vault.write(&a.secret, vec![op]), item_err(err));
     }
     // One bad op rejects the whole entry.
-    let mixed = vec![
-        DataOp::set(item, "username", text("dax")),
-        DataOp::remove(card, "number"),
-    ];
+    let mixed = vec![DataOp::set(item, "username", text("dax")), DataOp::remove(card, "number")];
     assert!(a.vault.write(&a.secret, mixed).is_err());
     assert!(!a.vault.item(&item).unwrap().fields.contains_key("username"));
     // Extra fields may change type; removing optional fields is fine.
@@ -1044,25 +837,15 @@ fn invalid_ops_are_ignored_at_apply_in_any_order() {
         DataOp::set(item, "url", Field::new(FieldType::Url, "not a url")),
         DataOp::name(item, Some(String::new())),
         DataOp::name(item, Some("Work".into())),
-        DataOp::set(
-            item,
-            "x",
-            Field::new(FieldType::Other("future".into()), "v"),
-        ),
+        DataOp::set(item, "x", Field::new(FieldType::Other("future".into()), "v")),
     ]);
     let created = b.raw(vec![
         DataOp::create("wifi", None, [("password".into(), secret("x"))]),
         DataOp::create("card", None, [("cvv".into(), secret("123"))]),
-        DataOp::create(
-            "card",
-            None,
-            [("number".into(), secret("4111111111111111"))],
-        ),
+        DataOp::create("card", None, [("number".into(), secret("4111111111111111"))]),
         DataOp::set(item, "otp", Field::new(FieldType::Otp, "JBSWY3DPEHPK3PXP")),
     ]);
-    let ids: Vec<ItemId> = (0..3)
-        .map(|i| ItemId::of_create(&created.hash(), i))
-        .collect();
+    let ids: Vec<ItemId> = (0..3).map(|i| ItemId::of_create(&created.hash(), i)).collect();
     // c edits b's card without having seen its creation: ignored even when
     // the creation happens to be applied first.
     c.raw(vec![
@@ -1100,32 +883,18 @@ fn name_set_and_clear_resolve_like_fields() {
     let mut a = Dev::create();
     let mut b = a.invite();
     let fields = [("password".into(), secret("p"))];
-    let (item, _) = a
-        .vault
-        .create_item(&a.secret, "login", Some("Personal".into()), fields)
-        .unwrap();
+    let (item, _) = a.vault.create_item(&a.secret, "login", Some("Personal".into()), fields).unwrap();
     sync(&a, &mut b);
-    assert_eq!(
-        b.vault.item(&item).unwrap().name.as_deref(),
-        Some("Personal")
-    );
+    assert_eq!(b.vault.item(&item).unwrap().name.as_deref(), Some("Personal"));
 
     let clear = a.write(vec![DataOp::name(item, None)]);
     let set = b.write(vec![DataOp::name(item, Some("Work".into()))]);
     sync_both(&mut a, &mut b);
-    let expected = if clear.hash() > set.hash() {
-        None
-    } else {
-        Some("Work")
-    };
+    let expected = if clear.hash() > set.hash() { None } else { Some("Work") };
     let vault = assert_order_independent(&all_entries(&[&a, &b]), &[item]);
     for vault in [&vault, &a.vault, &b.vault] {
         assert_eq!(vault.item(&item).unwrap().name.as_deref(), expected);
-        let conflicted = vault
-            .history(&item)
-            .into_iter()
-            .filter(|v| v.status == VersionStatus::Conflicted)
-            .count();
+        let conflicted = vault.history(&item).into_iter().filter(|v| v.status == VersionStatus::Conflicted).count();
         assert_eq!(conflicted, 1);
     }
 
@@ -1144,11 +913,7 @@ fn field_type_travels_with_the_winning_value() {
     let item = a.login("p");
     let mut b = a.invite();
     let ea = a.write(vec![DataOp::set(item, "extra", text("plain"))]);
-    let eb = b.write(vec![DataOp::set(
-        item,
-        "extra",
-        Field::new(FieldType::Email, "x@y.example"),
-    )]);
+    let eb = b.write(vec![DataOp::set(item, "extra", Field::new(FieldType::Email, "x@y.example"))]);
     sync_both(&mut a, &mut b);
     let (winner, loser) = if ea.hash() > eb.hash() {
         (text("plain"), Field::new(FieldType::Email, "x@y.example"))
@@ -1159,11 +924,7 @@ fn field_type_travels_with_the_winning_value() {
         assert_eq!(vault.item(&item).unwrap().fields["extra"], winner);
         let history = vault.history(&item);
         let find = |f: &Field| {
-            history
-                .iter()
-                .find(|v| matches!(&v.change, Change::Set { value, .. } if value == f))
-                .unwrap()
-                .status
+            history.iter().find(|v| matches!(&v.change, Change::Set { value, .. } if value == f)).unwrap().status
         };
         assert_eq!(find(&winner), VersionStatus::Current);
         assert_eq!(find(&loser), VersionStatus::Conflicted);
@@ -1180,17 +941,9 @@ fn edit_based_on_previous_value_replaces_it() {
         sync(&a, &mut b);
         b.set(item, "password", &format!("b{round}"));
         sync(&b, &mut a);
-        assert_eq!(
-            value(&a.vault.item(&item).unwrap(), "password"),
-            format!("b{round}")
-        );
+        assert_eq!(value(&a.vault.item(&item).unwrap(), "password"), format!("b{round}"));
     }
-    assert!(
-        a.vault
-            .history(&item)
-            .iter()
-            .all(|v| v.status != VersionStatus::Conflicted)
-    );
+    assert!(a.vault.history(&item).iter().all(|v| v.status != VersionStatus::Conflicted));
 }
 
 #[test]
@@ -1204,26 +957,16 @@ fn concurrent_edits_pick_hash_winner_and_keep_loser() {
     let eb = b.set(item, "password", "from-b");
     sync_both(&mut a, &mut b);
 
-    let (winner, loser) = if ea.hash() > eb.hash() {
-        (ea, eb)
-    } else {
-        (eb, ea)
-    };
+    let (winner, loser) = if ea.hash() > eb.hash() { (ea, eb) } else { (eb, ea) };
     let set_value = |e: &Entry| match e.payload() {
         Payload::Data(ops) => match &ops[0] {
-            DataOp::Edit {
-                change: Change::Set { value, .. },
-                ..
-            } => value.value.clone(),
+            DataOp::Edit { change: Change::Set { value, .. }, .. } => value.value.clone(),
             _ => unreachable!(),
         },
         _ => unreachable!(),
     };
     for vault in [&a.vault, &b.vault] {
-        assert_eq!(
-            value(&vault.item(&item).unwrap(), "password"),
-            set_value(&winner)
-        );
+        assert_eq!(value(&vault.item(&item).unwrap(), "password"), set_value(&winner));
         let history = vault.history(&item);
         let status = |h: Hash| history.iter().find(|v| v.entry == h).unwrap().status;
         assert_eq!(status(winner.hash()), VersionStatus::Current);
@@ -1236,13 +979,7 @@ fn concurrent_edits_pick_hash_winner_and_keep_loser() {
     sync(&a, &mut b);
     assert_eq!(value(&b.vault.item(&item).unwrap(), "password"), "merged");
     let history = b.vault.history(&item);
-    assert_eq!(
-        history
-            .iter()
-            .filter(|v| v.status == VersionStatus::Conflicted)
-            .count(),
-        0
-    );
+    assert_eq!(history.iter().filter(|v| v.status == VersionStatus::Conflicted).count(), 0);
 }
 
 #[test]
@@ -1277,11 +1014,7 @@ fn concurrent_edits_are_order_independent() {
     a.write(vec![DataOp::delete(items[0])]);
     c.set(items[1], "notes", "c");
     let vault = assert_order_independent(&all_entries(&[&a, &b, &c]), &items);
-    let conflicted = vault
-        .history(&items[1])
-        .iter()
-        .filter(|v| v.status == VersionStatus::Conflicted)
-        .count();
+    let conflicted = vault.history(&items[1]).iter().filter(|v| v.status == VersionStatus::Conflicted).count();
     assert_eq!(conflicted, 2);
 }
 
@@ -1298,11 +1031,7 @@ fn concurrent_edit_beats_delete_item() {
         let got = vault.item(&item).unwrap();
         assert!(!got.deleted);
         assert_eq!(value(&got, "password"), "two");
-        let delete = vault
-            .history(&item)
-            .into_iter()
-            .find(|v| v.change == Change::Delete)
-            .unwrap();
+        let delete = vault.history(&item).into_iter().find(|v| v.change == Change::Delete).unwrap();
         assert_eq!(delete.status, VersionStatus::Conflicted);
     }
 }
@@ -1319,10 +1048,7 @@ fn removal_cutoff_ignores_later_entries() {
     let removal = a.remove(b.id());
     assert_eq!(
         removal.payload(),
-        &Payload::Membership(MembershipOp::Remove {
-            device: b.id(),
-            last_seen_seq: Some(0)
-        })
+        &Payload::Membership(MembershipOp::Remove { device: b.id(), last_seen_seq: Some(0) })
     );
     sync_both(&mut a, &mut b);
     sync(&a, &mut c);
@@ -1355,13 +1081,7 @@ fn removal_without_seen_entries_ignores_all() {
     let mut b = a.invite();
     let item = b.login("x");
     let removal = a.remove(b.id());
-    assert_eq!(
-        removal.payload(),
-        &Payload::Membership(MembershipOp::Remove {
-            device: b.id(),
-            last_seen_seq: None
-        })
-    );
+    assert_eq!(removal.payload(), &Payload::Membership(MembershipOp::Remove { device: b.id(), last_seen_seq: None }));
     sync(&b, &mut a);
     assert_eq!(a.vault.item(&item), None);
 }
@@ -1406,13 +1126,7 @@ fn missing_for_sends_membership_first_and_converges() {
     a.set(item, "f", "a");
     b.set(item, "g", "b");
     let joiner = DeviceSecret::generate();
-    a.vault
-        .add(
-            &a.secret,
-            joiner.device_id(),
-            joiner.join_consent(&a.vault.id(), &a.id()),
-        )
-        .unwrap();
+    a.vault.add(&a.secret, joiner.device_id(), joiner.join_consent(&a.vault.id(), &a.id())).unwrap();
     a.set(item, "h", "a");
 
     let missing = a.vault.missing_for(&b.vault.heads());
@@ -1457,10 +1171,7 @@ fn heads_encoding_round_trips() {
 #[test]
 fn a_mirror_keeps_its_source_apart_from_its_fields() {
     let mut a = Dev::create();
-    let source = |version: &str| Source {
-        id: "1password/acct/vault/item".into(),
-        version: version.into(),
-    };
+    let source = |version: &str| Source { id: "1password/acct/vault/item".into(), version: version.into() };
     let entry = a.write(vec![DataOp::create_mirror(
         "login",
         Some("GitHub".into()),
@@ -1471,12 +1182,7 @@ fn a_mirror_keeps_its_source_apart_from_its_fields() {
     let item = a.vault.item(&id).unwrap();
     assert_eq!(item.source, Some(source("1")));
     assert_eq!(item.fields.keys().collect::<Vec<_>>(), ["password"]);
-    assert!(
-        a.vault
-            .history(&id)
-            .iter()
-            .any(|v| v.change == Change::Source(Some(source("1"))))
-    );
+    assert!(a.vault.history(&id).iter().any(|v| v.change == Change::Source(Some(source("1")))));
 
     let mut b = a.invite();
     b.write(vec![DataOp::source(id, Some(source("2")))]);
@@ -1495,31 +1201,18 @@ fn a_mirror_keeps_its_source_apart_from_its_fields() {
 
 #[test]
 fn invalid_sources_are_rejected() {
-    let version = |n| Source {
-        id: "1password/a/v/i".into(),
-        version: "x".repeat(n),
-    };
+    let version = |n| Source { id: "1password/a/v/i".into(), version: "x".repeat(n) };
     assert!(crate::item::valid_source(&version(2048)));
     assert!(!crate::item::valid_source(&version(2049)));
     let mut a = Dev::create();
     let id = a.login("x");
-    let blank = Source {
-        id: String::new(),
-        version: "1".into(),
-    };
+    let blank = Source { id: String::new(), version: "1".into() };
     assert_eq!(
-        a.vault
-            .write(&a.secret, vec![DataOp::source(id, Some(blank.clone()))])
-            .unwrap_err(),
+        a.vault.write(&a.secret, vec![DataOp::source(id, Some(blank.clone()))]).unwrap_err(),
         Error::Item(ItemError::InvalidSource)
     );
     assert_eq!(
-        a.vault
-            .write(
-                &a.secret,
-                vec![DataOp::create_mirror("note", Some("n".into()), [], blank)]
-            )
-            .unwrap_err(),
+        a.vault.write(&a.secret, vec![DataOp::create_mirror("note", Some("n".into()), [], blank)]).unwrap_err(),
         Error::Item(ItemError::InvalidSource)
     );
 }

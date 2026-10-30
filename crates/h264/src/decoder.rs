@@ -332,7 +332,9 @@ impl Decoder {
         let mut found: Option<(Arc<Pps>, Arc<Sps>)> = None;
         let (sh, _, _) = SliceHeader::parse(&rbsp, hdr, |id| {
             let pps = ppss[id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("PPS {id}")))?;
-            let sps = spss[pps.sps_id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("SPS {}", pps.sps_id)))?;
+            let sps = spss[pps.sps_id as usize]
+                .as_ref()
+                .ok_or_else(|| Error::MissingParameterSet(format!("SPS {}", pps.sps_id)))?;
             found = Some((pps.clone(), sps.clone()));
             Ok((&**pps, &**sps))
         })?;
@@ -367,16 +369,18 @@ impl Decoder {
         let Some(pending) = self.pending.as_mut() else {
             return invalid("slice without a started picture");
         };
-        let refs = self
-            .dpb
-            .build_ref_lists(&sh, pending.poc.frame(), sps.max_frame_num(), |e| RefPic { frame: e.frame.clone(), long_term: e.mark == RefMark::Long })?;
+        let refs = self.dpb.build_ref_lists(&sh, pending.poc.frame(), sps.max_frame_num(), |e| RefPic {
+            frame: e.frame.clone(),
+            long_term: e.mark == RefMark::Long,
+        })?;
         if !sh.slice_type.is_intra() {
             ensure!(!refs[0].is_empty(), "no reference pictures available for inter slice");
             if sh.slice_type.is_b() {
                 ensure!(!refs[1].is_empty(), "empty RefPicList1 in B slice");
             }
         }
-        let weighted = (pps.weighted_pred && sh.slice_type.is_p()) || (pps.weighted_bipred_idc != 0 && sh.slice_type.is_b());
+        let weighted =
+            (pps.weighted_pred && sh.slice_type.is_p()) || (pps.weighted_bipred_idc != 0 && sh.slice_type.is_b());
         let temporal = sh.slice_type.is_b() && !sh.direct_spatial_mv_pred;
         let (cabac, st, mmcos, lt) = (
             pps.entropy_coding_mode,
@@ -408,7 +412,9 @@ impl Decoder {
         // Activate SPS; a resolution change flushes the DPB.
         let changed = match &self.active_sps {
             None => true,
-            Some(a) => a.width() != sps.width() || a.height() != sps.height() || a.max_dpb_frames() != sps.max_dpb_frames(),
+            Some(a) => {
+                a.width() != sps.width() || a.height() != sps.height() || a.max_dpb_frames() != sps.max_dpb_frames()
+            }
         };
         if changed && self.active_sps.is_some() {
             let mut outs = Vec::new();
@@ -438,7 +444,13 @@ impl Decoder {
                 let meta = Arc::new(output_meta(sps, pts, false));
                 let next_id = &mut self.next_id;
                 let poc_state = &mut self.poc_state;
-                let last = self.dpb.entries.iter().filter(|e| !e.non_existing).max_by_key(|e| e.frame.id).map(|e| e.frame.clone());
+                let last = self
+                    .dpb
+                    .entries
+                    .iter()
+                    .filter(|e| !e.non_existing)
+                    .max_by_key(|e| e.frame.id)
+                    .map(|e| e.frame.clone());
                 let mut make = |_fnum: u32| {
                     let id = *next_id;
                     *next_id += 1;
@@ -457,7 +469,14 @@ impl Decoder {
                 };
                 let mut upd = |fnum: u32| poc_state.update_gap_frame(fnum, sps);
                 self.shared.stats.lock().map(|mut s| s.frame_num_gaps += 1).ok();
-                self.dpb.fill_frame_num_gap(self.prev_ref_frame_num, sh.frame_num, max, sps.max_num_ref_frames as usize, &mut make, &mut upd);
+                self.dpb.fill_frame_num_gap(
+                    self.prev_ref_frame_num,
+                    sh.frame_num,
+                    max,
+                    sps.max_num_ref_frames as usize,
+                    &mut make,
+                    &mut upd,
+                );
                 self.prev_ref_frame_num = (sh.frame_num + max - 1) % max;
             }
         }
@@ -467,7 +486,8 @@ impl Decoder {
         let id = self.next_id;
         self.next_id += 1;
         let frame = Arc::new(Frame::new(id, frame_poc, mb_w, mb_h));
-        self.pending = Some(PendingPic { frame, sps: sps.clone(), first: sh.clone(), poc, pts, key: sh.idr, slices: Vec::new() });
+        self.pending =
+            Some(PendingPic { frame, sps: sps.clone(), first: sh.clone(), poc, pts, key: sh.idr, slices: Vec::new() });
         Ok(())
     }
 
@@ -484,7 +504,14 @@ impl Decoder {
         let meta = Arc::new(OutputMeta { draft, ..output_meta(&sps, pts, key) });
         let mut outs = Vec::new();
         let fpoc = frame.poc;
-        self.dpb.store_picture(&first, frame, fpoc, (sps.max_frame_num(), sps.max_num_ref_frames as usize), meta, &mut outs)?;
+        self.dpb.store_picture(
+            &first,
+            frame,
+            fpoc,
+            (sps.max_frame_num(), sps.max_num_ref_frames as usize),
+            meta,
+            &mut outs,
+        )?;
         self.emit(outs);
         Ok(())
     }

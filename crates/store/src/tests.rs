@@ -12,11 +12,7 @@ use crate::{DB_FILE, Error, KdfParams, Unlocked};
 
 // Minimum Argon2 cost so tests stay fast; the default profile is covered by
 // `default_kdf_params_roundtrip`.
-const FAST: KdfParams = KdfParams {
-    m_cost_kib: 8,
-    t_cost: 1,
-    p_cost: 1,
-};
+const FAST: KdfParams = KdfParams { m_cost_kib: 8, t_cost: 1, p_cost: 1 };
 const PASS: &[u8] = b"correct horse battery staple";
 const SECRET: [u8; 32] = [0x5a; 32];
 
@@ -29,9 +25,7 @@ fn unlock(dir: &Path) -> Unlocked {
 }
 
 fn body(n: u64) -> Vec<u8> {
-    format!("entry number {n} ")
-        .repeat(1 + (n as usize % 7))
-        .into_bytes()
+    format!("entry number {n} ").repeat(1 + (n as usize % 7)).into_bytes()
 }
 
 /// Appends one entry.
@@ -40,12 +34,7 @@ fn append(store: &Unlocked, bytes: &[u8]) -> Result<bool, Error> {
 }
 
 fn all(store: &Unlocked) -> Vec<Vec<u8>> {
-    store
-        .iter_all()
-        .unwrap()
-        .map(|r| r.map(|b| b.to_vec()))
-        .collect::<Result<_, _>>()
-        .unwrap()
+    store.iter_all().unwrap().map(|r| r.map(|b| b.to_vec())).collect::<Result<_, _>>().unwrap()
 }
 
 fn db_path(dir: &Path) -> PathBuf {
@@ -115,14 +104,8 @@ fn roundtrip() {
     store.meta_set("vault_id", b"v-123").unwrap();
     store.meta_set("theme", b"dark").unwrap();
     store.meta_set("theme", b"light").unwrap();
-    assert_eq!(
-        store.meta_get("vault_id").unwrap().unwrap().as_slice(),
-        b"v-123"
-    );
-    assert_eq!(
-        store.meta_get("theme").unwrap().unwrap().as_slice(),
-        b"light"
-    );
+    assert_eq!(store.meta_get("vault_id").unwrap().unwrap().as_slice(), b"v-123");
+    assert_eq!(store.meta_get("theme").unwrap().unwrap().as_slice(), b"light");
     assert!(store.meta_get("missing").unwrap().is_none());
 
     #[cfg(unix)]
@@ -139,10 +122,7 @@ fn roundtrip() {
     let store = unlock(&dir);
     assert_eq!(store.device_secret(), &SECRET);
     assert_eq!(all(&store), entries);
-    assert_eq!(
-        store.meta_get("vault_id").unwrap().unwrap().as_slice(),
-        b"v-123"
-    );
+    assert_eq!(store.meta_get("vault_id").unwrap().unwrap().as_slice(), b"v-123");
 }
 
 #[test]
@@ -168,10 +148,7 @@ fn batch_appends_preserve_order_and_skip_empty() {
     let added = store.append_batch([&b"two"[..], &b"three"[..]]).unwrap();
     assert_eq!(added, 2);
     assert_eq!(store.append_batch([]).unwrap(), 0);
-    assert_eq!(
-        all(&store),
-        [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
-    );
+    assert_eq!(all(&store), [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]);
 }
 
 #[test]
@@ -197,14 +174,8 @@ fn reopen_after_append() {
 fn wrong_passphrase() {
     let tmp = TempDir::new().unwrap();
     drop(init(tmp.path()));
-    assert!(matches!(
-        crate::unlock(tmp.path(), b"wrong"),
-        Err(Error::WrongPassphrase)
-    ));
-    assert!(matches!(
-        crate::unlock(tmp.path(), b""),
-        Err(Error::WrongPassphrase)
-    ));
+    assert!(matches!(crate::unlock(tmp.path(), b"wrong"), Err(Error::WrongPassphrase)));
+    assert!(matches!(crate::unlock(tmp.path(), b""), Err(Error::WrongPassphrase)));
     // A failed attempt releases the file and leaves the store usable.
     assert_eq!(unlock(tmp.path()).device_secret(), &SECRET);
 }
@@ -212,14 +183,8 @@ fn wrong_passphrase() {
 #[test]
 fn missing_store() {
     let tmp = TempDir::new().unwrap();
-    assert!(matches!(
-        crate::unlock(tmp.path(), PASS),
-        Err(Error::NotInitialized(_))
-    ));
-    assert!(matches!(
-        crate::unlock(&tmp.path().join("nope"), PASS),
-        Err(Error::NotInitialized(_))
-    ));
+    assert!(matches!(crate::unlock(tmp.path(), PASS), Err(Error::NotInitialized(_))));
+    assert!(matches!(crate::unlock(&tmp.path().join("nope"), PASS), Err(Error::NotInitialized(_))));
 }
 
 #[test]
@@ -244,10 +209,7 @@ fn init_over_existing_refused() {
 fn init_refuses_while_open() {
     let tmp = TempDir::new().unwrap();
     let _store = init(tmp.path());
-    assert!(matches!(
-        crate::init_with_params(tmp.path(), PASS, SECRET, FAST),
-        Err(Error::AlreadyExists(_))
-    ));
+    assert!(matches!(crate::init_with_params(tmp.path(), PASS, SECRET, FAST), Err(Error::AlreadyExists(_))));
 }
 
 #[test]
@@ -266,33 +228,21 @@ fn change_passphrase() {
     append(&store, b"data").unwrap();
     store.meta_set("k", b"v").unwrap();
 
-    assert!(matches!(
-        store.change_passphrase(b"not it", b"new"),
-        Err(Error::WrongPassphrase)
-    ));
+    assert!(matches!(store.change_passphrase(b"not it", b"new"), Err(Error::WrongPassphrase)));
     store.change_passphrase(PASS, b"new pass").unwrap();
     // The open handle keeps working.
     append(&store, b"more").unwrap();
     drop(store);
 
-    assert!(matches!(
-        crate::unlock(tmp.path(), PASS),
-        Err(Error::WrongPassphrase)
-    ));
+    assert!(matches!(crate::unlock(tmp.path(), PASS), Err(Error::WrongPassphrase)));
     let store = crate::unlock(tmp.path(), b"new pass").unwrap();
     assert_eq!(store.device_secret(), &SECRET);
     assert_eq!(all(&store), vec![b"data".to_vec(), b"more".to_vec()]);
     assert_eq!(store.meta_get("k").unwrap().unwrap().as_slice(), b"v");
     assert_eq!(store.kdf_params().unwrap(), FAST);
 
-    let stronger = KdfParams {
-        m_cost_kib: 64,
-        t_cost: 2,
-        p_cost: 2,
-    };
-    store
-        .change_passphrase_with_params(b"new pass", b"new pass", stronger)
-        .unwrap();
+    let stronger = KdfParams { m_cost_kib: 64, t_cost: 2, p_cost: 2 };
+    store.change_passphrase_with_params(b"new pass", b"new pass", stronger).unwrap();
     assert_eq!(store.kdf_params().unwrap(), stronger);
     drop(store);
     let store = crate::unlock(tmp.path(), b"new pass").unwrap();
@@ -361,10 +311,7 @@ fn tampered_log_entry() {
     let tmp = store_with_entries(3);
     let len = raw_value(tmp.path(), raw::LOG, 0).len();
     flip_value(tmp.path(), raw::LOG, 0, len - 1);
-    assert!(matches!(
-        unlock(tmp.path()).iter_all().unwrap().next(),
-        Some(Err(Error::Corrupt(_)))
-    ));
+    assert!(matches!(unlock(tmp.path()).iter_all().unwrap().next(), Some(Err(Error::Corrupt(_)))));
 }
 
 #[test]
@@ -372,10 +319,7 @@ fn tampered_keyset() {
     for index in [0, 30, 87] {
         let tmp = store_with_entries(1);
         flip_value(tmp.path(), raw::HEADER, "keyset", index);
-        assert!(matches!(
-            crate::unlock(tmp.path(), PASS),
-            Err(Error::WrongPassphrase)
-        ));
+        assert!(matches!(crate::unlock(tmp.path(), PASS), Err(Error::WrongPassphrase)));
     }
 }
 
@@ -399,10 +343,7 @@ fn tampered_kdf_params() {
         kdf[5] = 2;
         t.insert("kdf", kdf.as_slice()).unwrap();
     });
-    assert!(matches!(
-        crate::unlock(tmp.path(), PASS),
-        Err(Error::WrongPassphrase)
-    ));
+    assert!(matches!(crate::unlock(tmp.path(), PASS), Err(Error::WrongPassphrase)));
     // Absurd memory cost is rejected before Argon2 tries to allocate it.
     mutate_raw(tmp.path(), |txn| {
         let mut t = txn.open_table(raw::HEADER).unwrap();
@@ -410,10 +351,7 @@ fn tampered_kdf_params() {
         kdf[1..5].copy_from_slice(&u32::MAX.to_le_bytes());
         t.insert("kdf", kdf.as_slice()).unwrap();
     });
-    assert!(matches!(
-        crate::unlock(tmp.path(), PASS),
-        Err(Error::Corrupt(_))
-    ));
+    assert!(matches!(crate::unlock(tmp.path(), PASS), Err(Error::Corrupt(_))));
 }
 
 #[test]
@@ -422,10 +360,7 @@ fn tampered_meta() {
     let store = init(tmp.path());
     store.meta_set("a", b"value a").unwrap();
     store.meta_set("b", b"value b").unwrap();
-    let (blind_a, blind_b) = (
-        store.keys_for_test().meta_blind("a"),
-        store.keys_for_test().meta_blind("b"),
-    );
+    let (blind_a, blind_b) = (store.keys_for_test().meta_blind("a"), store.keys_for_test().meta_blind("b"));
     drop(store);
 
     // Swapping two values between names is detected.
@@ -459,10 +394,7 @@ fn deleted_swapped_or_truncated_entries_detected() {
     };
     let fails = |dir: &Path| {
         let store = unlock(dir);
-        store
-            .iter_all()
-            .unwrap()
-            .any(|r| matches!(r, Err(Error::Corrupt(_))))
+        store.iter_all().unwrap().any(|r| matches!(r, Err(Error::Corrupt(_))))
     };
 
     // Delete a middle entry.
@@ -478,10 +410,7 @@ fn deleted_swapped_or_truncated_entries_detected() {
         txn.open_table(raw::LOG).unwrap().remove(3).unwrap();
     });
     assert!(fails(tmp.path()));
-    assert!(matches!(
-        append(&unlock(tmp.path()), b""),
-        Err(Error::Corrupt(_))
-    ));
+    assert!(matches!(append(&unlock(tmp.path()), b""), Err(Error::Corrupt(_))));
 
     // Swap two entries.
     let tmp = setup();
@@ -512,10 +441,7 @@ fn random_bit_flips_never_yield_garbage() {
     let check = |dir: &Path| -> Result<(), Error> {
         let store = crate::unlock(dir, PASS)?;
         assert_eq!(store.device_secret(), &SECRET);
-        let got = store
-            .iter_all()?
-            .map(|r| r.map(|b| b.to_vec()))
-            .collect::<Result<Vec<_>, _>>()?;
+        let got = store.iter_all()?.map(|r| r.map(|b| b.to_vec())).collect::<Result<Vec<_>, _>>()?;
         assert_eq!(got, expected);
         if let Some(v) = store.meta_get("vault_id")? {
             assert_eq!(v.as_slice(), b"abc");
@@ -548,22 +474,14 @@ fn survives_kill_mid_write() {
     drop(init(tmp.path()));
     for round in 0..4u64 {
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "tests::crash_child",
-                "--exact",
-                "--nocapture",
-                "--test-threads=1",
-            ])
+            .args(["tests::crash_child", "--exact", "--nocapture", "--test-threads=1"])
             .env("FLICKS_STORE_CRASH_DIR", tmp.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        assert!(
-            lines.any(|l| l.unwrap().contains("crash-child-writing")),
-            "child never started"
-        );
+        assert!(lines.any(|l| l.unwrap().contains("crash-child-writing")), "child never started");
         std::thread::sleep(Duration::from_millis(30 + round * 40));
         child.kill().unwrap();
         child.wait().unwrap();
@@ -574,10 +492,7 @@ fn survives_kill_mid_write() {
             assert_eq!(b, &body(n as u64));
         }
     }
-    assert!(
-        !all(&unlock(tmp.path())).is_empty(),
-        "child never committed anything"
-    );
+    assert!(!all(&unlock(tmp.path())).is_empty(), "child never committed anything");
 }
 
 /// Helper process for `survives_kill_mid_write`; a no-op unless spawned by it.
@@ -617,20 +532,13 @@ fn kdf_header_encoding() {
     // Different salts give different keys for the same passphrase.
     let other = KdfHeader::generate(FAST).unwrap();
     assert_ne!(*header.derive(PASS).unwrap(), *other.derive(PASS).unwrap());
-    assert_eq!(
-        *header.derive(PASS).unwrap(),
-        *decoded.derive(PASS).unwrap()
-    );
+    assert_eq!(*header.derive(PASS).unwrap(), *decoded.derive(PASS).unwrap());
     assert!(matches!(
         crate::init_with_params(
             Path::new("/nonexistent/never"),
             PASS,
             SECRET,
-            KdfParams {
-                m_cost_kib: 1,
-                t_cost: 1,
-                p_cost: 1
-            },
+            KdfParams { m_cost_kib: 1, t_cost: 1, p_cost: 1 },
         ),
         Err(Error::InvalidKdfParams(_))
     ));
@@ -648,38 +556,23 @@ fn biometric_roundtrip_and_invalidation() {
 
     let key = crate::generate_biometric_key().unwrap();
     let token = b"opaque-se-token-v1";
-    assert!(matches!(
-        store.set_biometric(&key, b""),
-        Err(Error::InvalidBiometric)
-    ));
+    assert!(matches!(store.set_biometric(&key, b""), Err(Error::InvalidBiometric)));
     store.set_biometric(&key, token).unwrap();
-    assert_eq!(
-        store.biometric_token().unwrap().as_deref(),
-        Some(&token[..])
-    );
+    assert_eq!(store.biometric_token().unwrap().as_deref(), Some(&token[..]));
     drop(store);
 
-    assert_eq!(
-        crate::biometric_token(dir).unwrap().as_deref(),
-        Some(&token[..])
-    );
+    assert_eq!(crate::biometric_token(dir).unwrap().as_deref(), Some(&token[..]));
 
     // Wrong biometric key is rejected without disturbing the slot.
     let mut wrong_key = *key;
     wrong_key[0] ^= 0x01;
-    assert!(matches!(
-        crate::unlock_biometric(dir, &wrong_key),
-        Err(Error::InvalidBiometric)
-    ));
+    assert!(matches!(crate::unlock_biometric(dir, &wrong_key), Err(Error::InvalidBiometric)));
 
     // Correct biometric key unlocks the same data_key and device_secret.
     let bio = crate::unlock_biometric(dir, &key).unwrap();
     assert_eq!(bio.device_secret(), &SECRET);
     assert_eq!(all(&bio), vec![body(0)]);
-    assert_eq!(
-        bio.meta_get("k").unwrap().as_deref().map(Vec::as_slice),
-        Some(&b"v"[..])
-    );
+    assert_eq!(bio.meta_get("k").unwrap().as_deref().map(Vec::as_slice), Some(&b"v"[..]));
     assert!(append(&bio, &body(1)).unwrap());
     drop(bio);
 
@@ -689,10 +582,7 @@ fn biometric_roundtrip_and_invalidation() {
     let store = unlock(dir);
     store.set_biometric(&key2, token2).unwrap();
     drop(store);
-    assert!(matches!(
-        crate::unlock_biometric(dir, &key),
-        Err(Error::InvalidBiometric)
-    ));
+    assert!(matches!(crate::unlock_biometric(dir, &key), Err(Error::InvalidBiometric)));
     let bio = crate::unlock_biometric(dir, &key2).unwrap();
     assert_eq!(all(&bio), vec![body(0), body(1)]);
     // An open store checks a key the same way.
@@ -700,15 +590,11 @@ fn biometric_roundtrip_and_invalidation() {
     assert!(!bio.check_biometric(&key).unwrap());
 
     // Changing the passphrase wipes the biometric slot atomically.
-    bio.change_passphrase_with_params(PASS, b"new passphrase", FAST)
-        .unwrap();
+    bio.change_passphrase_with_params(PASS, b"new passphrase", FAST).unwrap();
     assert!(bio.biometric_token().unwrap().is_none());
     drop(bio);
     assert!(crate::biometric_token(dir).unwrap().is_none());
-    assert!(matches!(
-        crate::unlock_biometric(dir, &key2),
-        Err(Error::InvalidBiometric)
-    ));
+    assert!(matches!(crate::unlock_biometric(dir, &key2), Err(Error::InvalidBiometric)));
 
     // Re-enrolling and clearing while locked removes the slot.
     let store = crate::unlock(dir, b"new passphrase").unwrap();
@@ -732,44 +618,25 @@ fn biometric_tamper_and_incomplete_header_rejected() {
     // Tampering with the token breaks the AEAD AAD on keyset.biometric.
     mutate_raw(dir, |txn| {
         let mut t = txn.open_table(raw::HEADER).unwrap();
-        t.insert(raw::H_BIOMETRIC_TOKEN, &b"se-token-tampered"[..])
-            .unwrap();
+        t.insert(raw::H_BIOMETRIC_TOKEN, &b"se-token-tampered"[..]).unwrap();
     });
-    assert!(matches!(
-        crate::unlock_biometric(dir, &key),
-        Err(Error::InvalidBiometric)
-    ));
+    assert!(matches!(crate::unlock_biometric(dir, &key), Err(Error::InvalidBiometric)));
 
     // Restore token and flip a byte in keyset.biometric ciphertext.
     mutate_raw(dir, |txn| {
         let mut t = txn.open_table(raw::HEADER).unwrap();
-        t.insert(raw::H_BIOMETRIC_TOKEN, &b"se-token-bytes"[..])
-            .unwrap();
-        let mut ks = t
-            .get(raw::H_KEYSET_BIOMETRIC)
-            .unwrap()
-            .unwrap()
-            .value()
-            .to_vec();
+        t.insert(raw::H_BIOMETRIC_TOKEN, &b"se-token-bytes"[..]).unwrap();
+        let mut ks = t.get(raw::H_KEYSET_BIOMETRIC).unwrap().unwrap().value().to_vec();
         ks[0] ^= 0xff;
         t.insert(raw::H_KEYSET_BIOMETRIC, ks.as_slice()).unwrap();
     });
-    assert!(matches!(
-        crate::unlock_biometric(dir, &key),
-        Err(Error::InvalidBiometric)
-    ));
+    assert!(matches!(crate::unlock_biometric(dir, &key), Err(Error::InvalidBiometric)));
 
     // Removing only one of the two biometric header keys is detected as corruption.
     mutate_raw(dir, |txn| {
         let mut t = txn.open_table(raw::HEADER).unwrap();
         t.remove(raw::H_BIOMETRIC_TOKEN).unwrap();
     });
-    assert!(matches!(
-        crate::biometric_token(dir),
-        Err(Error::Corrupt(_))
-    ));
-    assert!(matches!(
-        crate::unlock_biometric(dir, &key),
-        Err(Error::Corrupt(_))
-    ));
+    assert!(matches!(crate::biometric_token(dir), Err(Error::Corrupt(_))));
+    assert!(matches!(crate::unlock_biometric(dir, &key), Err(Error::Corrupt(_))));
 }

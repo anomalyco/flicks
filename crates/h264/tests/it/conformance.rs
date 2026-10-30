@@ -72,7 +72,8 @@ fn draft_mode_changes_only_flagged_non_reference_pictures() {
         let (w, h) = (f.width as usize, f.height as usize);
         let fsize = w * h + 2 * w.div_ceil(2) * h.div_ceil(2);
         for threads in [1, 0] {
-            let pics = common::decode_file_opts(&h264, threads, true).unwrap_or_else(|(au, e, _)| panic!("{name}: error at {au}: {e}"));
+            let pics = common::decode_file_opts(&h264, threads, true)
+                .unwrap_or_else(|(au, e, _)| panic!("{name}: error at {au}: {e}"));
             common::check_pts(&pics).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(pics.len() * fsize, reference.len(), "{name}: picture count");
             let (mut draft, mut changed) = (0, 0);
@@ -157,8 +158,15 @@ fn concurrent_fixture_publication_is_safe() {
     }
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let name = Box::leak(format!("concurrent_fixture_{}_{stamp}", std::process::id()).into_boxed_str());
-    let fixture =
-        common::Fixture { name, source: "testsrc2", width: 64, height: 48, frames: 2, filter: "", args: &["-preset", "ultrafast", "-x264-params", "keyint=1"] };
+    let fixture = common::Fixture {
+        name,
+        source: "testsrc2",
+        width: 64,
+        height: 48,
+        frames: 2,
+        filter: "",
+        args: &["-preset", "ultrafast", "-x264-params", "keyint=1"],
+    };
     let open_published = |path: &std::path::Path| {
         let mut options = std::fs::OpenOptions::new();
         options.read(true);

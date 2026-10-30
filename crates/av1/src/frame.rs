@@ -166,7 +166,14 @@ pub struct FrameBuf {
 impl FrameBuf {
     /// Allocate a frame for a coded area of `width` x `height` luma samples (rounded up to the
     /// 128x128 superblock grid plus 160 samples of slack for blocks extending past the edge).
-    pub fn new(width: usize, height: usize, num_planes: usize, subsampling_x: usize, subsampling_y: usize, bit_depth: u8) -> FrameBuf {
+    pub fn new(
+        width: usize,
+        height: usize,
+        num_planes: usize,
+        subsampling_x: usize,
+        subsampling_y: usize,
+        bit_depth: u8,
+    ) -> FrameBuf {
         let aw = width.div_ceil(128) * 128 + 160;
         let ah = height.div_ceil(128) * 128 + 160;
         let mut planes: [Plane; 3] = Default::default();
@@ -312,7 +319,10 @@ impl MiInfo {
 
     #[inline(always)]
     pub fn idx(&self, row: usize, col: usize) -> usize {
-        debug_assert!(col >= self.ox && col < self.ox + self.stride && row >= self.oy, "mode info ({row}, {col}) outside the stored region");
+        debug_assert!(
+            col >= self.ox && col < self.ox + self.stride && row >= self.oy,
+            "mode info ({row}, {col}) outside the stored region"
+        );
         (row - self.oy) * self.stride + col - self.ox
     }
 

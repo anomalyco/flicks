@@ -19,9 +19,7 @@ pub fn render_qr(data: &str, style: QrStyle) -> Result<String> {
     let mut renderer = code.render::<Dense1x2>();
     renderer.quiet_zone(true);
     if style == QrStyle::LightOnDark {
-        renderer
-            .dark_color(Dense1x2::Light)
-            .light_color(Dense1x2::Dark);
+        renderer.dark_color(Dense1x2::Light).light_color(Dense1x2::Dark);
     }
     Ok(renderer.build())
 }

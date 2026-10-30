@@ -1,5 +1,6 @@
 use super::{
-    ABS_MVD_GT0, ABS_MVD_GT1, INTER_PRED_IDC, MERGE_FLAG, MERGE_IDX, MVP_FLAG, MvField, REF_IDX, Result, Sample, SliceDecoder, SliceType, ensure, inter,
+    ABS_MVD_GT0, ABS_MVD_GT1, INTER_PRED_IDC, MERGE_FLAG, MERGE_IDX, MVP_FLAG, MvField, REF_IDX, Result, Sample,
+    SliceDecoder, SliceType, ensure, inter,
 };
 use crate::mvpred::PredBlock;
 
@@ -129,7 +130,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let bi = f.pred(0) && f.pred(1);
         let pwt = self.sh.pwt.as_ref().filter(|_| weighted);
         for c in 0..3 {
-            let (x, y, bw, bh, bd) = if c == 0 { (xp, yp, w, h, self.pic.bd_y) } else { (xp / 2, yp / 2, w / 2, h / 2, self.pic.bd_c) };
+            let (x, y, bw, bh, bd) =
+                if c == 0 { (xp, yp, w, h, self.pic.bd_y) } else { (xp / 2, yp / 2, w / 2, h / 2, self.pic.bd_c) };
             // Explicit weights equal to the default ones (weight 2^denom and offset 0 for every
             // list used, as signalled for most slices of a weighted-prediction stream) give exactly
             // the default prediction: with log2WD = denom + shift1 the weighted sums of 8-265 /

@@ -11,9 +11,10 @@ use crate::params::{Layout, Pps, Sps};
 use crate::picture::{FrameRef, RefPic, Sample};
 use crate::slice::{SliceHeader, SliceType};
 use crate::spec_tables::{
-    ABS_MVD_GT0, ABS_MVD_GT1, CBF_CHROMA, CBF_LUMA, CODED_SUB_BLOCK, CU_QP_DELTA_ABS, CU_SKIP, CU_TRANSQUANT_BYPASS, GT1, GT2, INTER_PRED_IDC, INTRA_CHROMA,
-    LAST_X_PREFIX, LAST_Y_PREFIX, MERGE_FLAG, MERGE_IDX, MVP_FLAG, PART_MODE, PRED_MODE, PREV_INTRA_LUMA, REF_IDX, RQT_ROOT_CBF, SAO_MERGE, SAO_TYPE,
-    SIG_COEFF, SPLIT_CU, SPLIT_TRANSFORM, TRANSFORM_SKIP,
+    ABS_MVD_GT0, ABS_MVD_GT1, CBF_CHROMA, CBF_LUMA, CODED_SUB_BLOCK, CU_QP_DELTA_ABS, CU_SKIP, CU_TRANSQUANT_BYPASS,
+    GT1, GT2, INTER_PRED_IDC, INTRA_CHROMA, LAST_X_PREFIX, LAST_Y_PREFIX, MERGE_FLAG, MERGE_IDX, MVP_FLAG, PART_MODE,
+    PRED_MODE, PREV_INTRA_LUMA, REF_IDX, RQT_ROOT_CBF, SAO_MERGE, SAO_TYPE, SIG_COEFF, SPLIT_CU, SPLIT_TRANSFORM,
+    TRANSFORM_SKIP,
 };
 use crate::tables::{CTX_IDX_MAP, LEVEL_SCALE, SCAN_4, qpc_420, scan_order};
 use crate::transform;
@@ -145,7 +146,13 @@ pub struct PicState<S> {
 }
 
 impl<S: Sample> PicState<S> {
-    pub fn new(frame: FrameRef, sps: Arc<Sps>, pps: Arc<Pps>, layout: Arc<Layout>, scaling: Option<Arc<Vec<Vec<u8>>>>) -> Self {
+    pub fn new(
+        frame: FrameRef,
+        sps: Arc<Sps>,
+        pps: Arc<Pps>,
+        layout: Arc<Layout>,
+        scaling: Option<Arc<Vec<Vec<u8>>>>,
+    ) -> Self {
         let (width, height) = (sps.width as usize, sps.height as usize);
         let (cwidth, cheight) = (width / 2, height / 2);
         let (w4, h4) = (width.div_ceil(4), height.div_ceil(4));
@@ -203,10 +210,13 @@ impl<S: Sample> PicState<S> {
         if ctb_n != ctb_c {
             let tsn = self.layout.rs_to_ts[ctb_n];
             let tsc = self.layout.rs_to_ts[ctb_c];
-            tsn < tsc && self.ctb_addr[ctb_n] == addr && self.layout.tile_id[tsn as usize] == self.layout.tile_id[tsc as usize]
+            tsn < tsc
+                && self.ctb_addr[ctb_n] == addr
+                && self.layout.tile_id[tsn as usize] == self.layout.tile_id[tsc as usize]
         } else {
             let m = (1 << s) - 1;
-            morton(((xn & m) >> 2) as u32, ((yn & m) >> 2) as u32) <= morton(((xc & m) >> 2) as u32, ((yc & m) >> 2) as u32)
+            morton(((xn & m) >> 2) as u32, ((yn & m) >> 2) as u32)
+                <= morton(((xc & m) >> 2) as u32, ((yc & m) >> 2) as u32)
         }
     }
 
@@ -419,7 +429,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             // context initialisation / synchronisation (9.3.1, 9.3.2.1)
             let first_in_tile = ts == 0 || layout.tile_id[ts as usize] != layout.tile_id[ts as usize - 1];
             let wpp_row_start = self.pps.entropy_coding_sync
-                && (rs.is_multiple_of(wctb) || layout.tile_id[ts as usize] != layout.tile_id[layout.rs_to_ts[rs as usize - 1] as usize]);
+                && (rs.is_multiple_of(wctb)
+                    || layout.tile_id[ts as usize] != layout.tile_id[layout.rs_to_ts[rs as usize - 1] as usize]);
             if first_in_tile {
                 if !first {
                     init_contexts(&mut self.c.ctx, self.slice_qp, self.init_type);
@@ -451,7 +462,9 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             ensure!(!self.c.overrun(), "slice data overrun");
             // WPP storage after the second CTB of a row in a tile (9.3.1)
             if self.pps.entropy_coding_sync
-                && (rs % wctb == 1 || (rs > 1 && layout.tile_id[ts as usize] != layout.tile_id[layout.rs_to_ts[rs as usize - 2] as usize]))
+                && (rs % wctb == 1
+                    || (rs > 1
+                        && layout.tile_id[ts as usize] != layout.tile_id[layout.rs_to_ts[rs as usize - 2] as usize]))
             {
                 self.pic.wpp_ctx = Some(Box::new(self.c.ctx));
             }
@@ -467,7 +480,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             let nrs = layout.ts_to_rs[ts as usize];
             let new_tile = self.pps.tiles_enabled && layout.tile_id[ts as usize] != layout.tile_id[ts as usize - 1];
             let new_row = self.pps.entropy_coding_sync
-                && (nrs.is_multiple_of(wctb) || layout.tile_id[ts as usize] != layout.tile_id[layout.rs_to_ts[nrs as usize - 1] as usize]);
+                && (nrs.is_multiple_of(wctb)
+                    || layout.tile_id[ts as usize] != layout.tile_id[layout.rs_to_ts[nrs as usize - 1] as usize]);
             if new_tile || new_row {
                 ensure!(self.c.decode_terminate() == 1, "end_of_subset_one_bit is 0");
                 let pos = self.c.bit_pos().div_ceil(8);

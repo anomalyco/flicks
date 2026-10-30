@@ -57,11 +57,7 @@ pub(crate) fn seal(cipher: &XChaCha20Poly1305, aad: &[u8], parts: &[&[u8]]) -> R
 }
 
 /// Inverse of [`seal`]. Returns `None` if authentication fails.
-pub(crate) fn open(
-    cipher: &XChaCha20Poly1305,
-    aad: &[u8],
-    sealed: &[u8],
-) -> Option<Zeroizing<Vec<u8>>> {
+pub(crate) fn open(cipher: &XChaCha20Poly1305, aad: &[u8], sealed: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
     if sealed.len() < NONCE_LEN + TAG_LEN {
         return None;
     }
@@ -70,8 +66,6 @@ pub(crate) fn open(
     let nonce: [u8; NONCE_LEN] = nonce.try_into().ok()?;
     let tag: [u8; TAG_LEN] = tag.try_into().ok()?;
     let mut buf = Zeroizing::new(ciphertext.to_vec());
-    cipher
-        .decrypt_inout_detached(&nonce.into(), aad, buf.as_mut_slice().into(), &tag.into())
-        .ok()?;
+    cipher.decrypt_inout_detached(&nonce.into(), aad, buf.as_mut_slice().into(), &tag.into()).ok()?;
     Some(buf)
 }

@@ -36,7 +36,13 @@ fn read_bit(path: &PathBuf) -> Vec<(Vec<u8>, u32)> {
 }
 
 fn read_pcm(path: &PathBuf) -> Vec<f32> {
-    std::fs::read(path).unwrap().as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect()
+    std::fs::read(path)
+        .unwrap()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+        .collect()
 }
 
 /// Decodes a vector; returns (interleaved output, index of first range mismatch).
@@ -48,7 +54,11 @@ fn decode_vector(packets: &[(Vec<u8>, u32)], rate: u32, channels: usize, no_inv:
     let mut out = Vec::new();
     let mut mismatch = None;
     for (i, (pkt, rng)) in packets.iter().enumerate() {
-        let r = if pkt.is_empty() { dec.decode_interleaved(None, &mut out) } else { dec.decode_interleaved(Some(pkt), &mut out) };
+        let r = if pkt.is_empty() {
+            dec.decode_interleaved(None, &mut out)
+        } else {
+            dec.decode_interleaved(Some(pkt), &mut out)
+        };
         if r.is_err() {
             mismatch.get_or_insert(i);
             continue;
@@ -147,7 +157,10 @@ fn vector_diag() {
         } else {
             let p = flicks_opus::Packet::parse(pkt).unwrap();
             dec.decode_interleaved(Some(pkt), &mut out).unwrap();
-            lines.push((start, format!("{:?} {:?} st{} n{}", p.toc.mode, p.toc.bandwidth, p.toc.stereo as u8, p.frames.len())));
+            lines.push((
+                start,
+                format!("{:?} {:?} st{} n{}", p.toc.mode, p.toc.bandwidth, p.toc.stereo as u8, p.frames.len()),
+            ));
         }
     }
     let reference = read_pcm(&dir.join(format!("{name}.dec")));
@@ -155,7 +168,8 @@ fn vector_diag() {
     for s in 0..reference.len() / sec {
         let r = &reference[s * sec..(s + 1) * sec];
         let o = &out[s * sec..(s + 1) * sec];
-        let mut kinds: Vec<&String> = lines.iter().filter(|(st, _)| *st >= s * 48000 && *st < (s + 1) * 48000).map(|(_, c)| c).collect();
+        let mut kinds: Vec<&String> =
+            lines.iter().filter(|(st, _)| *st >= s * 48000 && *st < (s + 1) * 48000).map(|(_, c)| c).collect();
         kinds.dedup();
         eprintln!("{s:3}s snr {:6.1} q {:6.1} {:?}", common::snr_db(r, o), common::opus_quality(r, o, 2, 48000), kinds);
     }

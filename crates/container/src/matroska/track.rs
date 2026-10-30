@@ -343,7 +343,9 @@ mod rotation_tests {
     fn display_rotation_maps_rectangular_roll_to_clockwise_quarter_turns() {
         assert_eq!(VideoInfo::default().display_rotation(), Some(0), "no Projection: as stored");
         // ProjectionPoseRoll is counter-clockwise: -90 is a quarter turn clockwise
-        for (roll, turns) in [(0.0, 0), (-90.0, 1), (180.0, 2), (-180.0, 2), (90.0, 3), (-270.0, 3), (270.0, 1), (360.0, 0)] {
+        for (roll, turns) in
+            [(0.0, 0), (-90.0, 1), (180.0, 2), (-180.0, 2), (90.0, 3), (-270.0, 3), (270.0, 1), (360.0, 0)]
+        {
             assert_eq!(with_roll(0, 0.0, 0.0, roll).display_rotation(), Some(turns), "roll {roll}");
         }
     }
@@ -377,7 +379,13 @@ mod aspect_overflow_tests {
 
     #[test]
     fn ordinary_pixel_aspect_is_unchanged() {
-        let video = VideoInfo { pixel_width: 1920, pixel_height: 1080, display_width: Some(1440), display_height: Some(1080), ..Default::default() };
+        let video = VideoInfo {
+            pixel_width: 1920,
+            pixel_height: 1080,
+            display_width: Some(1440),
+            display_height: Some(1080),
+            ..Default::default()
+        };
         assert_eq!(video.pixel_aspect(), (3, 4));
     }
 }

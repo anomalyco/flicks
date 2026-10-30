@@ -75,16 +75,10 @@ impl<'a> Reader<'a> {
     pub(crate) fn string(&mut self) -> Result<String, DecodeError> {
         let len = self.u32()? as usize;
         let bytes = self.take(len)?;
-        Ok(std::str::from_utf8(bytes)
-            .map_err(|_| DecodeError::InvalidUtf8)?
-            .to_owned())
+        Ok(std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)?.to_owned())
     }
 
     pub(crate) fn finish(self) -> Result<(), DecodeError> {
-        if self.0.is_empty() {
-            Ok(())
-        } else {
-            Err(DecodeError::TrailingBytes)
-        }
+        if self.0.is_empty() { Ok(()) } else { Err(DecodeError::TrailingBytes) }
     }
 }

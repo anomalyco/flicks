@@ -24,7 +24,11 @@ impl Rng {
 const SEEDS: &[(&str, &str, &str)] = &[
     ("vp9_fz_default", "-c:v libvpx-vp9 -g 4 -b:v 300k -lag-in-frames 0", "yuv420p"),
     // libvpx needs 256 px per tile column, so two columns need 512 px
-    ("vp9_fz_2tiles_10bit", "-c:v libvpx-vp9 -g 6 -b:v 300k -lag-in-frames 0 -tile-columns 1 -profile:v 2 -s 512x48", "yuv420p10le"),
+    (
+        "vp9_fz_2tiles_10bit",
+        "-c:v libvpx-vp9 -g 6 -b:v 300k -lag-in-frames 0 -tile-columns 1 -profile:v 2 -s 512x48",
+        "yuv420p10le",
+    ),
     ("vp9_fz_444", "-c:v libvpx-vp9 -g 6 -b:v 300k -lag-in-frames 0 -profile:v 1", "yuv444p"),
     ("vp9_fz_altref", "-c:v libvpx-vp9 -g 6 -b:v 300k -auto-alt-ref 1 -lag-in-frames 5", "yuv420p"),
 ];
@@ -113,7 +117,9 @@ impl Depth {
             Some(rounds) => Depth { full: true, truncations: 200, rounds, rotation: 0 },
             None => {
                 let rotation = rotation();
-                eprintln!("fuzz subset rotation {rotation} (FLICKS_FUZZ_SEED={rotation} replays it; FLICKS_FUZZ_ITERS=300 runs everything)");
+                eprintln!(
+                    "fuzz subset rotation {rotation} (FLICKS_FUZZ_SEED={rotation} replays it; FLICKS_FUZZ_ITERS=300 runs everything)"
+                );
                 Depth { full: false, truncations: 200, rounds: 300, rotation }
             }
         }

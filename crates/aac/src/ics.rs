@@ -40,7 +40,13 @@ pub struct IcsInfo {
 
 impl Default for IcsInfo {
     fn default() -> Self {
-        IcsInfo { window_sequence: WindowSequence::OnlyLong, window_shape: WindowShape::Sine, max_sfb: 0, num_groups: 1, group_len: [1, 0, 0, 0, 0, 0, 0, 0] }
+        IcsInfo {
+            window_sequence: WindowSequence::OnlyLong,
+            window_shape: WindowShape::Sine,
+            max_sfb: 0,
+            num_groups: 1,
+            group_len: [1, 0, 0, 0, 0, 0, 0, 0],
+        }
     }
 }
 

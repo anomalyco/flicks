@@ -75,14 +75,26 @@ fn packet(p: &[u8]) -> std::result::Result<Packet<'_>, Bad> {
             let flags = p[5];
             discontinuity = flags & 0x80 != 0;
             if flags & 0x10 != 0 && al >= 7 {
-                let base = ((p[6] as i64) << 25) | ((p[7] as i64) << 17) | ((p[8] as i64) << 9) | ((p[9] as i64) << 1) | (p[10] as i64 >> 7);
+                let base = ((p[6] as i64) << 25)
+                    | ((p[7] as i64) << 17)
+                    | ((p[8] as i64) << 9)
+                    | ((p[9] as i64) << 1)
+                    | (p[10] as i64 >> 7);
                 let ext = (((p[10] & 1) as i64) << 8) | p[11] as i64;
                 pcr = Some(base * 300 + ext);
             }
         }
     }
     let has_payload = afc & 1 != 0;
-    Ok(Packet { pusi, pid, cc, has_payload, discontinuity, pcr, payload: if has_payload { &p[start..188] } else { &[] } })
+    Ok(Packet {
+        pusi,
+        pid,
+        cc,
+        has_payload,
+        discontinuity,
+        pcr,
+        payload: if has_payload { &p[start..188] } else { &[] },
+    })
 }
 
 /// Reassembles a PES header that may span packets; yields each packet's elementary-stream bytes.
@@ -121,7 +133,8 @@ impl PesAsm {
             let skip = (h.header_len - before).min(payload.len());
             return (Some(h), &payload[skip..]);
         }
-        if self.hdr.len() > 1024 || (self.hdr.len() >= 6 && !(self.hdr[0] == 0 && self.hdr[1] == 0 && self.hdr[2] == 1)) {
+        if self.hdr.len() > 1024 || (self.hdr.len() >= 6 && !(self.hdr[0] == 0 && self.hdr[1] == 0 && self.hdr[2] == 1))
+        {
             // not a PES packet after all: drop until the next unit start
             self.waiting = false;
             self.dropping = true;
@@ -250,7 +263,8 @@ fn language(desc: &[u8]) -> Option<String> {
 
 /// First file offset at which `packet_size`-byte packets line up (sync byte at `sync_offset`).
 fn first_sync(head: &[u8], packet_size: usize, sync_offset: usize) -> Option<usize> {
-    (0..packet_size.min(head.len())).find(|&s| (0..5).all(|k| head.get(s + sync_offset + k * packet_size) == Some(&0x47)))
+    (0..packet_size.min(head.len()))
+        .find(|&s| (0..5).all(|k| head.get(s + sync_offset + k * packet_size) == Some(&0x47)))
 }
 
 /// Find where packets line up again, searching `block` from byte `from`: the first packet start
@@ -483,7 +497,8 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         e.stream.units = std::mem::take(&mut e.split.units);
         e.stream.skipped_bytes = e.split.skipped;
         if e.split.truncated {
-            warnings.push(format!("PID {pid}: more than {} access units, the rest are not indexed", crate::es::MAX_UNITS));
+            warnings
+                .push(format!("PID {pid}: more than {} access units, the rest are not indexed", crate::es::MAX_UNITS));
         }
         streams.push(e.stream);
     }
@@ -491,7 +506,14 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
 }
 
 /// Collect unit `u` of stream `st`: from the packet at `u.pos`, the PID's elementary-stream bytes.
-pub(crate) fn read<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_offset: usize, st: &Stream, u: &Unit, out: &mut Vec<u8>) -> Result<()> {
+pub(crate) fn read<S: ByteSource + ?Sized>(
+    src: &S,
+    packet_size: usize,
+    sync_offset: usize,
+    st: &Stream,
+    u: &Unit,
+    out: &mut Vec<u8>,
+) -> Result<()> {
     let StreamId::Pid(pid) = st.id else { return Err(Error::Invalid("not a TS stream".into())) };
     let need = u.size as usize;
     let mut skip = u.offset as usize;

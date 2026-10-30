@@ -128,7 +128,15 @@ pub const FIXTURES: &[Fixture] = &[
         filter: "",
         args: &["-profile:v", "baseline", "-x264-params", "keyint=15"],
     },
-    Fixture { name: "baseline_cif_noise", source: "mandelbrot", width: 352, height: 288, frames: 25, filter: NOISE, args: &["-profile:v", "baseline"] },
+    Fixture {
+        name: "baseline_cif_noise",
+        source: "mandelbrot",
+        width: 352,
+        height: 288,
+        frames: 25,
+        filter: NOISE,
+        args: &["-profile:v", "baseline"],
+    },
     Fixture {
         name: "cavlc_b",
         source: "testsrc2",
@@ -156,10 +164,42 @@ pub const FIXTURES: &[Fixture] = &[
         filter: "fade=in:0:25",
         args: &["-profile:v", "main", "-x264-params", "cabac=0:weightp=2:bframes=2:weightb=1"],
     },
-    Fixture { name: "main_cabac_b", source: "testsrc2", width: 352, height: 288, frames: 30, filter: NOISE, args: &["-profile:v", "main"] },
-    Fixture { name: "high_720p", source: "smptehdbars", width: 1280, height: 720, frames: 10, filter: NOISE, args: &["-profile:v", "high"] },
-    Fixture { name: "high_1080p", source: "testsrc2", width: 1920, height: 1080, frames: 6, filter: "", args: &["-profile:v", "high"] },
-    Fixture { name: "crop_1918x1078", source: "testsrc2", width: 1918, height: 1078, frames: 5, filter: NOISE, args: &["-profile:v", "high"] },
+    Fixture {
+        name: "main_cabac_b",
+        source: "testsrc2",
+        width: 352,
+        height: 288,
+        frames: 30,
+        filter: NOISE,
+        args: &["-profile:v", "main"],
+    },
+    Fixture {
+        name: "high_720p",
+        source: "smptehdbars",
+        width: 1280,
+        height: 720,
+        frames: 10,
+        filter: NOISE,
+        args: &["-profile:v", "high"],
+    },
+    Fixture {
+        name: "high_1080p",
+        source: "testsrc2",
+        width: 1920,
+        height: 1080,
+        frames: 6,
+        filter: "",
+        args: &["-profile:v", "high"],
+    },
+    Fixture {
+        name: "crop_1918x1078",
+        source: "testsrc2",
+        width: 1918,
+        height: 1078,
+        frames: 5,
+        filter: NOISE,
+        args: &["-profile:v", "high"],
+    },
     Fixture {
         name: "bpyramid",
         source: "testsrc2",
@@ -295,8 +335,24 @@ pub const FIXTURES: &[Fixture] = &[
         filter: NOISE,
         args: &["-profile:v", "high", "-x264-params", "8x8dct=0"],
     },
-    Fixture { name: "qp50", source: "testsrc2", width: 352, height: 288, frames: 20, filter: NOISE, args: &["-profile:v", "high", "-qp", "50"] },
-    Fixture { name: "qp1", source: "mandelbrot", width: 352, height: 288, frames: 10, filter: NOISE, args: &["-profile:v", "high", "-qp", "1"] },
+    Fixture {
+        name: "qp50",
+        source: "testsrc2",
+        width: 352,
+        height: 288,
+        frames: 20,
+        filter: NOISE,
+        args: &["-profile:v", "high", "-qp", "50"],
+    },
+    Fixture {
+        name: "qp1",
+        source: "mandelbrot",
+        width: 352,
+        height: 288,
+        frames: 10,
+        filter: NOISE,
+        args: &["-profile:v", "high", "-qp", "1"],
+    },
     Fixture {
         name: "qp1_cavlc",
         source: "mandelbrot",
@@ -464,8 +520,11 @@ pub fn compare(pics: &[Picture], reference: &[u8], w: usize, h: usize) -> Result
             return Err(format!("frame {i}: size {}x{} != {}x{}", p.width, p.height, w, h));
         }
         let f = &reference[i * fsize..(i + 1) * fsize];
-        let planes =
-            [("Y", &p.y[..], &f[..w * h], w, h, 16), ("U", &p.u[..], &f[w * h..w * h + cw * ch], cw, ch, 8), ("V", &p.v[..], &f[w * h + cw * ch..], cw, ch, 8)];
+        let planes = [
+            ("Y", &p.y[..], &f[..w * h], w, h, 16),
+            ("U", &p.u[..], &f[w * h..w * h + cw * ch], cw, ch, 8),
+            ("V", &p.v[..], &f[w * h + cw * ch..], cw, ch, 8),
+        ];
         for (name, got, exp, pw, ph, mbs) in planes {
             if got != exp {
                 let mut first = None;
@@ -515,10 +574,14 @@ pub fn check_fixture(name: &str) -> Result<bool, String> {
             Err((au, e, partial)) => {
                 // still report comparison of what was decoded
                 let cmp = compare(&partial, &reference, f.width as usize, f.height as usize).err().unwrap_or_default();
-                return Err(format!("{name} (threads {threads}): decode error at access unit {au}: {e} (after {} pictures) {cmp}", partial.len()));
+                return Err(format!(
+                    "{name} (threads {threads}): decode error at access unit {au}: {e} (after {} pictures) {cmp}",
+                    partial.len()
+                ));
             }
         };
-        compare(&pics, &reference, f.width as usize, f.height as usize).map_err(|e| format!("{name} (threads {threads}): {e}"))?;
+        compare(&pics, &reference, f.width as usize, f.height as usize)
+            .map_err(|e| format!("{name} (threads {threads}): {e}"))?;
         if pics.iter().any(|p| p.draft) {
             return Err(format!("{name} (threads {threads}): draft picture without draft mode"));
         }

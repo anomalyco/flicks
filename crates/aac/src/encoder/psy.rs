@@ -34,7 +34,8 @@ impl BandModel {
     fn new(sample_rate: u32, offsets: &'static [u16], m: usize) -> BandModel {
         let nb = offsets.len() - 1;
         let hz_per_line = sample_rate as f64 / (2.0 * m as f64);
-        let centre: Vec<f64> = (0..nb).map(|b| bark((offsets[b] as f64 + offsets[b + 1] as f64) * 0.5 * hz_per_line)).collect();
+        let centre: Vec<f64> =
+            (0..nb).map(|b| bark((offsets[b] as f64 + offsets[b + 1] as f64) * 0.5 * hz_per_line)).collect();
         let spread = (0..nb)
             .map(|i| {
                 (0..nb)
@@ -96,7 +97,10 @@ pub struct PsyResult {
 
 impl Psy {
     pub fn new(sample_rate: u32, sf_index: u8) -> Psy {
-        Psy { long: BandModel::new(sample_rate, swb_offsets_long(sf_index), 1024), short: BandModel::new(sample_rate, swb_offsets_short(sf_index), 128) }
+        Psy {
+            long: BandModel::new(sample_rate, swb_offsets_long(sf_index), 1024),
+            short: BandModel::new(sample_rate, swb_offsets_short(sf_index), 128),
+        }
     }
 
     /// Analyse a spectrum: 1024 lines (long) or 8×128 (short).

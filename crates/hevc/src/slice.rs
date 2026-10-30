@@ -207,7 +207,14 @@ impl SliceHeader {
 impl SliceHeader {
     /// A fresh independent slice header: syntax elements not yet parsed take their inferred
     /// values, the deblocking parameters those of the PPS.
-    fn with_pps_defaults(nal: NalHeader, first: bool, no_output_of_prior_pics: bool, pps_id: u32, segment_address: u32, pps: &Pps) -> SliceHeader {
+    fn with_pps_defaults(
+        nal: NalHeader,
+        first: bool,
+        no_output_of_prior_pics: bool,
+        pps_id: u32,
+        segment_address: u32,
+        pps: &Pps,
+    ) -> SliceHeader {
         SliceHeader {
             nal,
             first_slice_segment_in_pic: first,
@@ -246,7 +253,13 @@ impl SliceHeader {
 }
 
 /// Fields present only in independent slice segments, up to the entry points.
-fn parse_independent_fields(r: &mut BitReader, sh: &mut SliceHeader, nal: NalHeader, pps: &Pps, sps: &Sps) -> Result<()> {
+fn parse_independent_fields(
+    r: &mut BitReader,
+    sh: &mut SliceHeader,
+    nal: NalHeader,
+    pps: &Pps,
+    sps: &Sps,
+) -> Result<()> {
     r.skip(pps.num_extra_slice_header_bits as usize)?;
     let st = r.read_ue()?;
     sh.slice_type = match st {
@@ -397,7 +410,10 @@ fn parse_qp_and_loop_filter(r: &mut BitReader, sh: &mut SliceHeader, pps: &Pps, 
     if pps.slice_chroma_qp_offsets_present {
         sh.cb_qp_offset = r.read_se()?;
         sh.cr_qp_offset = r.read_se()?;
-        ensure!((-12..=12).contains(&sh.cb_qp_offset) && (-12..=12).contains(&sh.cr_qp_offset), "slice chroma QP offset out of range");
+        ensure!(
+            (-12..=12).contains(&sh.cb_qp_offset) && (-12..=12).contains(&sh.cr_qp_offset),
+            "slice chroma QP offset out of range"
+        );
     }
     let override_flag = if pps.deblocking_override_enabled { r.read_flag()? } else { false };
     if override_flag {
@@ -405,7 +421,10 @@ fn parse_qp_and_loop_filter(r: &mut BitReader, sh: &mut SliceHeader, pps: &Pps, 
         if !sh.deblocking_disabled {
             sh.beta_offset_div2 = r.read_se()?;
             sh.tc_offset_div2 = r.read_se()?;
-            ensure!((-6..=6).contains(&sh.beta_offset_div2) && (-6..=6).contains(&sh.tc_offset_div2), "deblocking offsets out of range");
+            ensure!(
+                (-6..=6).contains(&sh.beta_offset_div2) && (-6..=6).contains(&sh.tc_offset_div2),
+                "deblocking offsets out of range"
+            );
         }
     }
     if pps.loop_filter_across_slices && (sh.sao_luma || sh.sao_chroma || !sh.deblocking_disabled) {
@@ -471,7 +490,10 @@ fn parse_pwt(r: &mut BitReader, sh: &SliceHeader, sps: &Sps) -> Result<PredWeigh
                 for c in 0..2 {
                     let dw = r.read_se()?;
                     let doff = r.read_se()?;
-                    ensure!((-128..=127).contains(&dw) && (-4 * half..4 * half).contains(&doff), "chroma weight out of range");
+                    ensure!(
+                        (-128..=127).contains(&dw) && (-4 * half..4 * half).contains(&doff),
+                        "chroma weight out of range"
+                    );
                     let w = (1 << t.chroma_log2_denom) + dw;
                     let off = (half - ((half * w) >> t.chroma_log2_denom) + doff).clamp(-half, half - 1);
                     x.chroma[c] = (w, off);

@@ -44,9 +44,14 @@ fn synthetic() -> Vec<u8> {
     el(&mut v, CODEC_PRIVATE, &[1, 0x64, 0, 0x1F]);
     el_uint(&mut v, DEFAULT_DURATION, 40_000_000);
     let mut mm = Vec::new();
-    for (id, val) in
-        [(PRIMARY_R_X, 0.708), (PRIMARY_R_Y, 0.292), (PRIMARY_G_X, 0.17), (PRIMARY_G_Y, 0.797), (PRIMARY_B_X, 0.131), (PRIMARY_B_Y, 0.046)]
-    {
+    for (id, val) in [
+        (PRIMARY_R_X, 0.708),
+        (PRIMARY_R_Y, 0.292),
+        (PRIMARY_G_X, 0.17),
+        (PRIMARY_G_Y, 0.797),
+        (PRIMARY_B_X, 0.131),
+        (PRIMARY_B_Y, 0.046),
+    ] {
         el_float(&mut mm, id, val);
     }
     el_float(&mut mm, WHITE_POINT_X, 0.3127);

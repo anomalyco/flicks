@@ -5,7 +5,9 @@
 
 use crate::error::{Error, Result, ensure};
 use crate::frame::{BAND_PAD, Band, Frame, FrameInfo, MiGrid, MiInfo, Pools};
-use crate::header::{FrameHeader, HeaderState, KEY_FRAME, RefInfo, parse_compressed, parse_uncompressed, split_superframe};
+use crate::header::{
+    FrameHeader, HeaderState, KEY_FRAME, RefInfo, parse_compressed, parse_uncompressed, split_superframe,
+};
 use crate::loopfilter::{LfFrame, PlaneView, filter_superblock};
 use crate::probs::{Counts, adapt_coef_probs, adapt_noncoef_probs};
 use crate::tables::{AC_QLOOKUP, DC_QLOOKUP, SEG_LVL_ALT_Q, SWITCHABLE, TX_MODE_SELECT};
@@ -115,7 +117,12 @@ impl Decoder {
     pub fn with_threads(threads: usize) -> Self {
         #[cfg(feature = "threads")]
         let pool = if threads > 1 && cfg!(not(target_arch = "wasm32")) {
-            rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("vp9-{i}")).build().ok().map(Arc::new)
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|i| format!("vp9-{i}"))
+                .build()
+                .ok()
+                .map(Arc::new)
         } else {
             None
         };
@@ -249,13 +256,15 @@ impl Decoder {
     }
 
     fn decode_frame(&mut self, data: &[u8], pts: i64) -> Result<()> {
-        let refs: [Option<RefInfo>; 8] = std::array::from_fn(|i| self.slots[i].as_ref().map(|f| RefInfo { width: f.info.width, height: f.info.height }));
+        let refs: [Option<RefInfo>; 8] = std::array::from_fn(|i| {
+            self.slots[i].as_ref().map(|f| RefInfo { width: f.info.width, height: f.info.height })
+        });
         let mut h = parse_uncompressed(data, &mut self.st, &refs)?;
         if h.show_existing_frame {
             self.stats.show_existing += 1;
-            let f = self.slots[h.frame_to_show_map_idx as usize]
-                .clone()
-                .ok_or_else(|| Error::MissingReference(format!("show_existing_frame of empty slot {}", h.frame_to_show_map_idx)))?;
+            let f = self.slots[h.frame_to_show_map_idx as usize].clone().ok_or_else(|| {
+                Error::MissingReference(format!("show_existing_frame of empty slot {}", h.frame_to_show_map_idx))
+            })?;
             self.stats.shown += 1;
             self.pending.push_back(Pending::Existing(f, pts, false));
             return Ok(());
@@ -296,8 +305,9 @@ impl Decoder {
 
         // References (8.5.2.3).
         let mut refs: [Option<RefUse>; 3] = [None, None, None];
-        let ref_frames: Vec<Option<Arc<Frame>>> =
-            (0..3).map(|i| if h.frame_is_intra { None } else { self.slots[h.ref_frame_idx[i] as usize].clone() }).collect();
+        let ref_frames: Vec<Option<Arc<Frame>>> = (0..3)
+            .map(|i| if h.frame_is_intra { None } else { self.slots[h.ref_frame_idx[i] as usize].clone() })
+            .collect();
         if !h.frame_is_intra {
             for i in 0..3 {
                 let Some(rf) = &ref_frames[i] else {
@@ -305,7 +315,9 @@ impl Decoder {
                 };
                 let ri = &rf.info;
                 ensure!(
-                    ri.bit_depth == h.color.bit_depth && ri.ss_x == h.color.subsampling_x && ri.ss_y == h.color.subsampling_y,
+                    ri.bit_depth == h.color.bit_depth
+                        && ri.ss_x == h.color.subsampling_x
+                        && ri.ss_y == h.color.subsampling_y,
                     "reference frame format differs from the current frame"
                 );
                 let (rw, rh) = (ri.width as i64, ri.height as i64);
@@ -313,7 +325,13 @@ impl Decoder {
                 if 2 * w >= rw && 2 * hh >= rh && w <= 16 * rw && hh <= 16 * rh {
                     let x_scale = ((rw << 14) / w) as i32;
                     let y_scale = ((rh << 14) / hh) as i32;
-                    refs[i] = Some(RefUse { frame: rf, x_scale, y_scale, x_step: (16 * x_scale) >> 14, y_step: (16 * y_scale) >> 14 });
+                    refs[i] = Some(RefUse {
+                        frame: rf,
+                        x_scale,
+                        y_scale,
+                        x_step: (16 * x_scale) >> 14,
+                        y_step: (16 * y_scale) >> 14,
+                    });
                 }
             }
         }
@@ -359,12 +377,23 @@ impl Decoder {
         }
         let counting = !h.error_resilient_mode && !h.frame_parallel_decoding_mode;
         let prev_mi = if use_prev { self.prev_mi.clone() } else { None };
-        let shared =
-            FrameShared { h: &h, fc: &fc, seg: &seg, prev_seg_ids: &self.prev_seg_ids, prev_mi: prev_mi.as_deref(), refs, seg_q, counting, pools: &self.bufs };
-        let col_bounds: Vec<(usize, usize)> =
-            (0..tile_cols).map(|i| (tile_offset(i, mi_cols, h.tile_cols_log2), tile_offset(i + 1, mi_cols, h.tile_cols_log2))).collect();
-        let row_bounds: Vec<(usize, usize)> =
-            (0..tile_rows).map(|i| (tile_offset(i, mi_rows, h.tile_rows_log2), tile_offset(i + 1, mi_rows, h.tile_rows_log2))).collect();
+        let shared = FrameShared {
+            h: &h,
+            fc: &fc,
+            seg: &seg,
+            prev_seg_ids: &self.prev_seg_ids,
+            prev_mi: prev_mi.as_deref(),
+            refs,
+            seg_q,
+            counting,
+            pools: &self.bufs,
+        };
+        let col_bounds: Vec<(usize, usize)> = (0..tile_cols)
+            .map(|i| (tile_offset(i, mi_cols, h.tile_cols_log2), tile_offset(i + 1, mi_cols, h.tile_cols_log2)))
+            .collect();
+        let row_bounds: Vec<(usize, usize)> = (0..tile_rows)
+            .map(|i| (tile_offset(i, mi_rows, h.tile_rows_log2), tile_offset(i + 1, mi_rows, h.tile_rows_log2)))
+            .collect();
         let decode_col = |ci: usize| -> (Strip, Option<Error>) {
             let (cs, ce) = col_bounds[ci];
             let mut td = TileDecoder::new(&shared, cs, ce);
@@ -426,8 +455,17 @@ impl Decoder {
         // Loop filter (8.8), skipped in draft mode for frames nothing can reference.
         let draft = self.draft && h.refresh_frame_flags == 0 && h.show_frame && self.st.lf.level > 0;
         self.stats.draft_frames += draft as u64;
-        let lf = (self.st.lf.level > 0 && !draft)
-            .then(|| LfFrame::new(&self.st.lf, &seg, mi_rows, mi_cols, h.color.subsampling_x, h.color.subsampling_y, h.color.bit_depth));
+        let lf = (self.st.lf.level > 0 && !draft).then(|| {
+            LfFrame::new(
+                &self.st.lf,
+                &seg,
+                mi_rows,
+                mi_cols,
+                h.color.subsampling_x,
+                h.color.subsampling_y,
+                h.color.bit_depth,
+            )
+        });
         let job = PostJob {
             frame: frame.clone(),
             strips,
@@ -449,7 +487,13 @@ impl Decoder {
             if !h.frame_is_intra {
                 a.tx = saved.tx;
                 a.skip = saved.skip;
-                adapt_noncoef_probs(&mut a, &counts, h.interp_filter == SWITCHABLE, h.tx_mode == TX_MODE_SELECT, h.allow_high_precision_mv);
+                adapt_noncoef_probs(
+                    &mut a,
+                    &counts,
+                    h.interp_filter == SWITCHABLE,
+                    h.tx_mode == TX_MODE_SELECT,
+                    h.allow_high_precision_mv,
+                );
             }
             fc = a;
         }
@@ -725,7 +769,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Wave {
-    fn new(frame: Arc<Frame>, strips: Vec<Strip>, mi: Arc<MiGrid>, lf: LfFrame, pools: Arc<Pools>, pic: Option<PictureBuilder>) -> Wave {
+    fn new(
+        frame: Arc<Frame>,
+        strips: Vec<Strip>,
+        mi: Arc<MiGrid>,
+        lf: LfFrame,
+        pools: Arc<Pools>,
+        pic: Option<PictureBuilder>,
+    ) -> Wave {
         let sb_rows = frame.sb_rows();
         let sb_cols = lf.mi_cols.div_ceil(8);
         let rows = (0..sb_rows)
@@ -829,7 +880,12 @@ impl Wave {
         let Some(row) = self.rows.get(r) else { return };
         let mut bottom = lock(&row.bottom);
         for (p, dst) in bottom.iter_mut().enumerate() {
-            copy_column(&self.frame, Column { p, c, sb_cols: self.sb_cols }, (&band.planes[p], self.frame.band_h[p]), (dst, 0));
+            copy_column(
+                &self.frame,
+                Column { p, c, sb_cols: self.sb_cols },
+                (&band.planes[p], self.frame.band_h[p]),
+                (dst, 0),
+            );
         }
     }
 
@@ -868,7 +924,9 @@ impl Wave {
             let Some(mut pb) = lock(&above.band).take() else { return false };
             for p in 0..3 {
                 let (fs, bh) = (f.strides[p], f.band_h[p]);
-                if let (Some(d), Some(s)) = (pb.planes[p].get_mut(bh * fs..(bh + BAND_PAD) * fs), band.planes[p].get(..BAND_PAD * fs)) {
+                if let (Some(d), Some(s)) =
+                    (pb.planes[p].get_mut(bh * fs..(bh + BAND_PAD) * fs), band.planes[p].get(..BAND_PAD * fs))
+                {
                     d.copy_from_slice(s);
                 }
             }
@@ -886,7 +944,10 @@ impl Wave {
 
 impl Drop for Wave {
     fn drop(&mut self) {
-        recycle_strip_planes(std::mem::take(self.strips.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner)), &self.pools);
+        recycle_strip_planes(
+            std::mem::take(self.strips.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner)),
+            &self.pools,
+        );
         for row in &self.rows {
             for p in std::mem::take(&mut *lock(&row.bottom)) {
                 self.pools.bands.put(p);
@@ -928,7 +989,11 @@ fn copy_column(f: &Frame, col: Column, (src, src_row): (&[u16], usize), (dst, ds
 /// scratch rows holding the bottom of band r - 1.
 fn band_view<'a>(f: &Frame, d: &'a mut [u16], p: usize, r: usize) -> PlaneView<'a> {
     let (fs, bh) = (f.strides[p], f.band_h[p]);
-    if r == 0 { PlaneView { data: &mut d[BAND_PAD * fs..], stride: fs, ox: 0, oy: 0 } } else { PlaneView { data: d, stride: fs, ox: 0, oy: r * bh - BAND_PAD } }
+    if r == 0 {
+        PlaneView { data: &mut d[BAND_PAD * fs..], stride: fs, ox: 0, oy: 0 }
+    } else {
+        PlaneView { data: d, stride: fs, ox: 0, oy: r * bh - BAND_PAD }
+    }
 }
 
 /// Mode info and segment ids of the whole frame from the tile column strips (whose mode info
@@ -936,7 +1001,10 @@ fn band_view<'a>(f: &Frame, d: &'a mut [u16], p: usize, r: usize) -> PlaneView<'
 fn assemble_mi(strips: &mut [Strip], mi_rows: usize, mi_cols: usize, pools: &Pools) -> (MiGrid, Vec<u8>) {
     if strips.len() == 1 {
         let s = &mut strips[0];
-        return (MiGrid { cols: mi_cols, rows: mi_rows, mi: std::mem::take(&mut s.mi) }, std::mem::take(&mut s.seg_ids));
+        return (
+            MiGrid { cols: mi_cols, rows: mi_rows, mi: std::mem::take(&mut s.mi) },
+            std::mem::take(&mut s.seg_ids),
+        );
     }
     let mut mi = pools.mi.take(mi_rows * mi_cols, MiInfo::default());
     let mut seg = vec![0u8; mi_rows * mi_cols];
@@ -944,7 +1012,8 @@ fn assemble_mi(strips: &mut [Strip], mi_rows: usize, mi_cols: usize, pools: &Poo
         let mw = s.mi_col_end - s.mi_col_start;
         for r in 0..mi_rows {
             mi[r * mi_cols + s.mi_col_start..r * mi_cols + s.mi_col_end].copy_from_slice(&s.mi[r * mw..r * mw + mw]);
-            seg[r * mi_cols + s.mi_col_start..r * mi_cols + s.mi_col_end].copy_from_slice(&s.seg_ids[r * mw..r * mw + mw]);
+            seg[r * mi_cols + s.mi_col_start..r * mi_cols + s.mi_col_end]
+                .copy_from_slice(&s.seg_ids[r * mw..r * mw + mw]);
         }
         pools.mi.put(std::mem::take(&mut s.mi));
     }
@@ -962,7 +1031,9 @@ struct PictureBuilder {
 
 impl PictureBuilder {
     fn new(f: &Frame, pts: i64, draft: bool) -> Self {
-        let planes = f.vis.map(|(w, h)| if f.info.bit_depth == 8 { Plane::U8(vec![0; w * h]) } else { Plane::U16(vec![0; w * h]) });
+        let planes = f
+            .vis
+            .map(|(w, h)| if f.info.bit_depth == 8 { Plane::U8(vec![0; w * h]) } else { Plane::U16(vec![0; w * h]) });
         PictureBuilder { planes, info: f.info, vis: f.vis, pts, draft }
     }
 

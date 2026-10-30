@@ -42,11 +42,7 @@ pub trait SyncHandler: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<Vec<u8>>, HandlerError>> + Send;
 
     /// Entries received from `peer`, in the order it sent them.
-    fn receive(
-        &self,
-        peer: PeerId,
-        entries: Vec<Vec<u8>>,
-    ) -> impl Future<Output = Result<(), HandlerError>> + Send;
+    fn receive(&self, peer: PeerId, entries: Vec<Vec<u8>>) -> impl Future<Output = Result<(), HandlerError>> + Send;
 }
 
 impl<T: SyncHandler> SyncHandler for Arc<T> {
@@ -62,11 +58,7 @@ impl<T: SyncHandler> SyncHandler for Arc<T> {
         (**self).missing_for(peer, peer_heads)
     }
 
-    fn receive(
-        &self,
-        peer: PeerId,
-        entries: Vec<Vec<u8>>,
-    ) -> impl Future<Output = Result<(), HandlerError>> + Send {
+    fn receive(&self, peer: PeerId, entries: Vec<Vec<u8>>) -> impl Future<Output = Result<(), HandlerError>> + Send {
         (**self).receive(peer, entries)
     }
 }
@@ -75,16 +67,8 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub(crate) trait DynSyncHandler: Send + Sync + 'static {
     fn heads(&self, peer: PeerId) -> BoxFuture<'_, Result<Vec<u8>, HandlerError>>;
-    fn missing_for(
-        &self,
-        peer: PeerId,
-        peer_heads: Vec<u8>,
-    ) -> BoxFuture<'_, Result<Vec<Vec<u8>>, HandlerError>>;
-    fn receive(
-        &self,
-        peer: PeerId,
-        entries: Vec<Vec<u8>>,
-    ) -> BoxFuture<'_, Result<(), HandlerError>>;
+    fn missing_for(&self, peer: PeerId, peer_heads: Vec<u8>) -> BoxFuture<'_, Result<Vec<Vec<u8>>, HandlerError>>;
+    fn receive(&self, peer: PeerId, entries: Vec<Vec<u8>>) -> BoxFuture<'_, Result<(), HandlerError>>;
 }
 
 impl<T: SyncHandler> DynSyncHandler for T {
@@ -92,19 +76,11 @@ impl<T: SyncHandler> DynSyncHandler for T {
         Box::pin(SyncHandler::heads(self, peer))
     }
 
-    fn missing_for(
-        &self,
-        peer: PeerId,
-        peer_heads: Vec<u8>,
-    ) -> BoxFuture<'_, Result<Vec<Vec<u8>>, HandlerError>> {
+    fn missing_for(&self, peer: PeerId, peer_heads: Vec<u8>) -> BoxFuture<'_, Result<Vec<Vec<u8>>, HandlerError>> {
         Box::pin(SyncHandler::missing_for(self, peer, peer_heads))
     }
 
-    fn receive(
-        &self,
-        peer: PeerId,
-        entries: Vec<Vec<u8>>,
-    ) -> BoxFuture<'_, Result<(), HandlerError>> {
+    fn receive(&self, peer: PeerId, entries: Vec<Vec<u8>>) -> BoxFuture<'_, Result<(), HandlerError>> {
         Box::pin(SyncHandler::receive(self, peer, entries))
     }
 }
@@ -130,23 +106,13 @@ pub struct SyncConnection {
 
 impl std::fmt::Debug for SyncConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SyncConnection")
-            .field("peer", &fmt_id(&self.peer()))
-            .finish_non_exhaustive()
+        f.debug_struct("SyncConnection").field("peer", &fmt_id(&self.peer())).finish_non_exhaustive()
     }
 }
 
 impl SyncConnection {
-    pub(crate) fn new(
-        conn: Connection,
-        handler: Arc<dyn DynSyncHandler>,
-        max_frame_len: usize,
-    ) -> Self {
-        Self {
-            conn,
-            handler,
-            max_frame_len,
-        }
+    pub(crate) fn new(conn: Connection, handler: Arc<dyn DynSyncHandler>, max_frame_len: usize) -> Self {
+        Self { conn, handler, max_frame_len }
     }
 
     pub fn peer(&self) -> PeerId {
@@ -159,15 +125,7 @@ impl SyncConnection {
             Ok(streams) => streams,
             Err(e) => return Err(settle(&self.conn, Error::Closed(e.to_string())).await),
         };
-        let result = run_session(
-            &*self.handler,
-            self.peer(),
-            &mut send,
-            &mut recv,
-            self.max_frame_len,
-            true,
-        )
-        .await;
+        let result = run_session(&*self.handler, self.peer(), &mut send, &mut recv, self.max_frame_len, true).await;
         match result {
             Ok(outcome) => Ok(outcome),
             // Close before the streams drop, so the peer sees the reason rather than an
@@ -194,11 +152,7 @@ impl SyncConnection {
 }
 
 /// Serves inbound sessions on an accepted (already gated) sync connection.
-pub(crate) async fn serve_sync(
-    conn: Connection,
-    handler: Arc<dyn DynSyncHandler>,
-    max_frame_len: usize,
-) {
+pub(crate) async fn serve_sync(conn: Connection, handler: Arc<dyn DynSyncHandler>, max_frame_len: usize) {
     let peer = *conn.remote_id().as_bytes();
     while let Ok((mut send, mut recv)) = conn.accept_bi().await {
         match run_session(&*handler, peer, &mut send, &mut recv, max_frame_len, false).await {
@@ -234,24 +188,13 @@ async fn run_session(
     initiator: bool,
 ) -> Result<SyncOutcome> {
     let heads = handler.heads(peer).await.map_err(Error::Handler)?;
-    let ((), peer_heads) = tokio::try_join!(
-        frame::write(send, tag::HEADS, &heads),
-        frame::expect(recv, tag::HEADS, max),
-    )?;
+    let ((), peer_heads) =
+        tokio::try_join!(frame::write(send, tag::HEADS, &heads), frame::expect(recv, tag::HEADS, max),)?;
 
-    let missing = handler
-        .missing_for(peer, peer_heads)
-        .await
-        .map_err(Error::Handler)?;
-    let ((), entries) = tokio::try_join!(
-        frame::write_entries(send, &missing),
-        frame::read_entries(recv, max),
-    )?;
+    let missing = handler.missing_for(peer, peer_heads).await.map_err(Error::Handler)?;
+    let ((), entries) = tokio::try_join!(frame::write_entries(send, &missing), frame::read_entries(recv, max),)?;
 
-    let outcome = SyncOutcome {
-        sent: missing.len(),
-        received: entries.len(),
-    };
+    let outcome = SyncOutcome { sent: missing.len(), received: entries.len() };
     let local = handler.receive(peer, entries).await;
 
     if initiator {

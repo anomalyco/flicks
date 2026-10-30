@@ -293,12 +293,19 @@ impl Decoder {
     }
 
     fn layout_for(&mut self, pps: &Arc<Pps>, sps: &Arc<Sps>) -> Result<(Arc<Layout>, Option<Arc<Vec<Vec<u8>>>>)> {
-        if let Some((_, _, l, s)) = self.layout_cache.iter().find(|(p, s, _, _)| Arc::ptr_eq(p, pps) && Arc::ptr_eq(s, sps)) {
+        if let Some((_, _, l, s)) =
+            self.layout_cache.iter().find(|(p, s, _, _)| Arc::ptr_eq(p, pps) && Arc::ptr_eq(s, sps))
+        {
             return Ok((l.clone(), s.clone()));
         }
         let layout = Arc::new(Layout::new(sps, pps)?);
         let scaling = if sps.scaling_list_enabled {
-            let list = pps.scaling_list.as_ref().or(sps.scaling_list.as_ref()).cloned().unwrap_or_else(crate::params::ScalingList::default_lists);
+            let list = pps
+                .scaling_list
+                .as_ref()
+                .or(sps.scaling_list.as_ref())
+                .cloned()
+                .unwrap_or_else(crate::params::ScalingList::default_lists);
             let mut v = Vec::with_capacity(24);
             for size in 0..4 {
                 for m in 0..6 {
@@ -337,7 +344,9 @@ impl Decoder {
             hdr,
             |id| {
                 let pps = ppss[id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("PPS {id}")))?;
-                let sps = spss[pps.sps_id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("SPS {}", pps.sps_id)))?;
+                let sps = spss[pps.sps_id as usize]
+                    .as_ref()
+                    .ok_or_else(|| Error::MissingParameterSet(format!("SPS {}", pps.sps_id)))?;
                 Ok((pps.clone(), sps.clone()))
             },
             prev,
@@ -360,8 +369,15 @@ impl Decoder {
         if !sh.dependent {
             pending.last_sh = sh.clone();
         }
-        let (st, dependent, weighted, tmvp, sao, dbk_off, lt) =
-            (sh.slice_type, sh.dependent, sh.pwt.is_some(), sh.temporal_mvp, sh.sao_luma || sh.sao_chroma, sh.deblocking_disabled, !sh.lt.is_empty());
+        let (st, dependent, weighted, tmvp, sao, dbk_off, lt) = (
+            sh.slice_type,
+            sh.dependent,
+            sh.pwt.is_some(),
+            sh.temporal_mvp,
+            sh.sao_luma || sh.sao_chroma,
+            sh.deblocking_disabled,
+            !sh.lt.is_empty(),
+        );
         pending.slices.push(SliceJob { sh, pps, sps, rbsp, refs });
         self.stat(|s| {
             match st {
@@ -402,7 +418,11 @@ impl Decoder {
         self.active_sps = Some(sps.clone());
         self.dpb.max_dec_pic_buffering = sps.max_dec_pic_buffering as usize;
         self.dpb.max_num_reorder = sps.max_num_reorder as usize;
-        self.dpb.max_latency = if sps.max_latency_increase_plus1 != 0 { sps.max_num_reorder + sps.max_latency_increase_plus1 - 1 } else { 0 };
+        self.dpb.max_latency = if sps.max_latency_increase_plus1 != 0 {
+            sps.max_num_reorder + sps.max_latency_increase_plus1 - 1
+        } else {
+            0
+        };
         let irap_no_rasl = hdr.is_irap() && (hdr.is_idr() || hdr.is_bla() || self.first_picture || self.after_eos);
         if hdr.is_irap() {
             self.skip_rasl = irap_no_rasl;
@@ -483,7 +503,11 @@ impl Decoder {
     fn submit_pending(&mut self) {
         let Some(p) = self.pending.take() else { return };
         let PendingPic { frame, sps, pps, layout, first_sh, poc, output, meta, slices, .. } = p;
-        let scaling = self.layout_cache.iter().find(|(pp, ss, _, _)| Arc::ptr_eq(pp, &pps) && Arc::ptr_eq(ss, &sps)).and_then(|(_, _, _, s)| s.clone());
+        let scaling = self
+            .layout_cache
+            .iter()
+            .find(|(pp, ss, _, _)| Arc::ptr_eq(pp, &pps) && Arc::ptr_eq(ss, &sps))
+            .and_then(|(_, _, _, s)| s.clone());
         self.dispatch(PicJob { frame: frame.clone(), sps, pps, layout, scaling, slices, draft: meta.draft });
         self.poc_state.update(&first_sh, poc);
         let mut outs = Vec::new();
@@ -522,7 +546,11 @@ struct PicJob {
 
 /// Decode all slices of one picture and publish its rows, in the picture's sample type.
 fn run_job(job: PicJob, shared: &Shared) {
-    if stores_u8(job.frame.bit_depth, job.frame.bit_depth_c) { run_job_as::<u8>(job, shared) } else { run_job_as::<u16>(job, shared) }
+    if stores_u8(job.frame.bit_depth, job.frame.bit_depth_c) {
+        run_job_as::<u8>(job, shared)
+    } else {
+        run_job_as::<u16>(job, shared)
+    }
 }
 
 fn run_job_as<S: Sample>(job: PicJob, shared: &Shared) {
@@ -647,7 +675,10 @@ mod tests {
         }
         assert_eq!(a.num_rows(), b.num_rows());
         assert!(a.is_complete() && b.is_complete());
-        assert_eq!((a.width, a.height, a.log2_ctb, a.bit_depth, a.bit_depth_c), (b.width, b.height, b.log2_ctb, b.bit_depth, b.bit_depth_c));
+        assert_eq!(
+            (a.width, a.height, a.log2_ctb, a.bit_depth, a.bit_depth_c),
+            (b.width, b.height, b.log2_ctb, b.bit_depth, b.bit_depth_c)
+        );
         if stores_u8(a.bit_depth, a.bit_depth_c) {
             check::<u8>(a, b);
         } else {
@@ -693,7 +724,16 @@ mod tests {
             let pictures = decoder.flush();
             assert_eq!(pictures.len(), 2);
             for picture in pictures {
-                assert!(picture.y.as_u8().unwrap().iter().chain(picture.u.as_u8().unwrap()).chain(picture.v.as_u8().unwrap()).all(|&v| v == 128));
+                assert!(
+                    picture
+                        .y
+                        .as_u8()
+                        .unwrap()
+                        .iter()
+                        .chain(picture.u.as_u8().unwrap())
+                        .chain(picture.v.as_u8().unwrap())
+                        .all(|&v| v == 128)
+                );
             }
             assert!(decoder.take_error().is_none());
             assert_eq!(decoder.stats().missing_refs, 4);

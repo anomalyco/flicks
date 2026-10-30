@@ -188,7 +188,8 @@ pub fn mc_luma_win(src: &[u8], ss: usize, blk: McBlock, out: &mut [u8], os: usiz
                     }
                     _ => {
                         let off = if fx == 1 { 2 } else { 3 };
-                        let rows = [wrow(r), wrow(r + 1), wrow(r + 2), wrow(r + 3), wrow(r + 4), wrow(r + 5)].map(|x| &x[off..]);
+                        let rows = [wrow(r), wrow(r + 1), wrow(r + 2), wrow(r + 3), wrow(r + 4), wrow(r + 5)]
+                            .map(|x| &x[off..]);
                         vtap_row(rows, &mut v, bw);
                         for c in 0..bw {
                             o[c] = avg(clip1((v[c] + 16) >> 5), clip1((t[c] + 512) >> 10));
@@ -204,7 +205,8 @@ pub fn mc_luma_win(src: &[u8], ss: usize, blk: McBlock, out: &mut [u8], os: usiz
             let mut v = [0i32; 16];
             for r in 0..bh {
                 htap_row(wrow(r + hoff), &mut t, bw);
-                let rows = [wrow(r), wrow(r + 1), wrow(r + 2), wrow(r + 3), wrow(r + 4), wrow(r + 5)].map(|x| &x[voff..]);
+                let rows =
+                    [wrow(r), wrow(r + 1), wrow(r + 2), wrow(r + 3), wrow(r + 4), wrow(r + 5)].map(|x| &x[voff..]);
                 vtap_row(rows, &mut v, bw);
                 let o = &mut out[r * os..r * os + bw];
                 for c in 0..bw {
@@ -281,7 +283,15 @@ pub enum Weight {
 }
 
 /// Combine prediction(s) into `dst` (stride `ds`). `p0`/`p1` have stride `ps`.
-pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&[u8]>, ps: usize, (bw, bh): (usize, usize), w: Weight) {
+pub fn weighted_store(
+    dst: &mut [u8],
+    ds: usize,
+    p0: Option<&[u8]>,
+    p1: Option<&[u8]>,
+    ps: usize,
+    (bw, bh): (usize, usize),
+    w: Weight,
+) {
     match (p0, p1, w) {
         (Some(a), Some(b), Weight::Default) => {
             for r in 0..bh {
@@ -345,7 +355,14 @@ mod reference {
         // unclipped horizontal half-sample b1 at block row r (-2..bh+3 via offset) and column c
         let b1 = |r: isize, c: usize| {
             let base = ((r + 2) as usize) * WIN + c;
-            tap6(win[base] as i32, win[base + 1] as i32, win[base + 2] as i32, win[base + 3] as i32, win[base + 4] as i32, win[base + 5] as i32)
+            tap6(
+                win[base] as i32,
+                win[base + 1] as i32,
+                win[base + 2] as i32,
+                win[base + 3] as i32,
+                win[base + 4] as i32,
+                win[base + 5] as i32,
+            )
         };
         let h1 = |r: usize, c: isize| {
             let col = (c + 2) as usize;
@@ -515,7 +532,15 @@ mod tests {
         let mut d = [0u8; 4];
         weighted_store(&mut d, 4, Some(&a), Some(&b), 4, (4, 1), Weight::Default);
         assert_eq!(d, [75; 4]);
-        weighted_store(&mut d, 4, Some(&a), None, 4, (4, 1), Weight::Weighted { log_wd: 5, w0: 16, w1: 0, o0: 3, o1: 0 });
+        weighted_store(
+            &mut d,
+            4,
+            Some(&a),
+            None,
+            4,
+            (4, 1),
+            Weight::Weighted { log_wd: 5, w0: 16, w1: 0, o0: 3, o1: 0 },
+        );
         assert_eq!(d, [53; 4]);
     }
 }

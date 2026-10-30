@@ -77,7 +77,14 @@ impl<F: Clone> Dpb<F> {
 
     /// Output the picture with the smallest POC (C.4.5.3 "bumping"). Returns false if none waits.
     fn bump(&mut self, out: &mut Vec<Output<F>>) -> bool {
-        let Some(i) = self.entries.iter().enumerate().filter(|(_, e)| e.needed_for_output).min_by_key(|(_, e)| e.poc).map(|(i, _)| i) else {
+        let Some(i) = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.needed_for_output)
+            .min_by_key(|(_, e)| e.poc)
+            .map(|(i, _)| i)
+        else {
             return false;
         };
         let e = &mut self.entries[i];
@@ -140,7 +147,8 @@ impl<F: Clone> Dpb<F> {
         // Missing frames before the last `max_num_ref_frames` would be dropped by the sliding window
         // (oldest FrameNumWrap first) before the gap ends, so only their POC / frame_num bookkeeping
         // runs; building pictures for them would cost up to max_frame_num frames per access unit.
-        let gap = if frame_num >= unused { frame_num - unused } else { (frame_num % max_frame_num) + max_frame_num - unused };
+        let gap =
+            if frame_num >= unused { frame_num - unused } else { (frame_num % max_frame_num) + max_frame_num - unused };
         let skip = gap.saturating_sub(max_num_ref_frames.max(1).try_into().unwrap_or(u32::MAX));
         let mut guard = 0;
         while unused != frame_num && guard < max_frame_num {
@@ -170,7 +178,13 @@ impl<F: Clone> Dpb<F> {
 
     /// Initial reference picture lists (8.2.4.2) + modification (8.2.4.3) for a frame slice, each
     /// entry made by `to_ref` from the DPB entry it refers to.
-    pub fn build_ref_lists<R>(&self, sh: &SliceHeader, cur_poc: i32, max_frame_num: u32, to_ref: impl Fn(&DpbEntry<F>) -> R) -> Result<[Vec<R>; 2]> {
+    pub fn build_ref_lists<R>(
+        &self,
+        sh: &SliceHeader,
+        cur_poc: i32,
+        max_frame_num: u32,
+        to_ref: impl Fn(&DpbEntry<F>) -> R,
+    ) -> Result<[Vec<R>; 2]> {
         let mut lists: [Vec<R>; 2] = [Vec::new(), Vec::new()];
         if sh.slice_type.is_intra() {
             return Ok(lists);
@@ -270,7 +284,13 @@ impl<F: Clone> Dpb<F> {
     }
 
     /// Adaptive memory control (8.2.5.4). Returns true if MMCO 5 was executed.
-    fn apply_mmcos(&mut self, mmcos: &[Mmco], cur_frame_num: u32, max_frame_num: u32, cur_long: &mut Option<u32>) -> Result<bool> {
+    fn apply_mmcos(
+        &mut self,
+        mmcos: &[Mmco],
+        cur_frame_num: u32,
+        max_frame_num: u32,
+        cur_long: &mut Option<u32>,
+    ) -> Result<bool> {
         let mut had5 = false;
         let curr_pic_num = cur_frame_num as i32;
         for m in mmcos {
@@ -291,7 +311,10 @@ impl<F: Clone> Dpb<F> {
                     }
                 }
                 3 => {
-                    ensure!(self.max_long_term_frame_idx.is_some_and(|max| m.long_term_frame_idx <= max), "MMCO long-term index exceeds the configured limit");
+                    ensure!(
+                        self.max_long_term_frame_idx.is_some_and(|max| m.long_term_frame_idx <= max),
+                        "MMCO long-term index exceeds the configured limit"
+                    );
                     let pn = curr_pic_num - (m.difference_of_pic_nums_minus1 as i32 + 1);
                     for e in &mut self.entries {
                         if e.mark == RefMark::Long && e.long_term_frame_idx == m.long_term_frame_idx {
@@ -322,7 +345,10 @@ impl<F: Clone> Dpb<F> {
                     had5 = true;
                 }
                 6 => {
-                    ensure!(self.max_long_term_frame_idx.is_some_and(|max| m.long_term_frame_idx <= max), "MMCO long-term index exceeds the configured limit");
+                    ensure!(
+                        self.max_long_term_frame_idx.is_some_and(|max| m.long_term_frame_idx <= max),
+                        "MMCO long-term index exceeds the configured limit"
+                    );
                     for e in &mut self.entries {
                         if e.mark == RefMark::Long && e.long_term_frame_idx == m.long_term_frame_idx {
                             e.mark = RefMark::Unused;
@@ -411,7 +437,16 @@ impl<F: Clone> Dpb<F> {
                 }
             }
         }
-        self.entries.push(DpbEntry { frame, poc, frame_num, long_term_frame_idx: long_idx, mark, needed_for_output: true, non_existing: false, meta });
+        self.entries.push(DpbEntry {
+            frame,
+            poc,
+            frame_num,
+            long_term_frame_idx: long_idx,
+            mark,
+            needed_for_output: true,
+            non_existing: false,
+            meta,
+        });
         // Low-delay output: honour max_num_reorder_frames.
         while self.entries.iter().filter(|e| e.needed_for_output).count() > self.max_reorder {
             if !self.bump(out) {

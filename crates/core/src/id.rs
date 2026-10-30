@@ -9,10 +9,7 @@ fn hex(bytes: &[u8], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     bytes.iter().try_for_each(|b| write!(f, "{b:02x}"))
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "OS CSPRNG failure is unrecoverable; never substitute weak randomness"
-)]
+#[expect(clippy::expect_used, reason = "OS CSPRNG failure is unrecoverable; never substitute weak randomness")]
 pub(crate) fn random<const N: usize>() -> [u8; N] {
     let mut bytes = [0; N];
     getrandom::fill(&mut bytes).expect("OS random number generator failed");
@@ -84,8 +81,7 @@ impl DeviceId {
         let Ok(key) = VerifyingKey::from_bytes(&self.0) else {
             return false;
         };
-        key.verify_strict(message, &ed25519_dalek::Signature::from_bytes(&signature.0))
-            .is_ok()
+        key.verify_strict(message, &ed25519_dalek::Signature::from_bytes(&signature.0)).is_ok()
     }
 }
 

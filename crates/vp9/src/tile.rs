@@ -7,11 +7,13 @@ use crate::frame::{Frame, MiGrid, MiInfo, Mv};
 use crate::header::{FrameHeader, Segmentation};
 use crate::probs::{Counts, FrameContext};
 use crate::tables::{
-    ALTREF_FRAME, B_HEIGHT_LOG2, B_WIDTH_LOG2, BLOCK_8X8, BLOCK_64X64, BLOCK_INVALID, BORDERINPIXELS, COMPANDED_MVREF_THRESH, COUNTER_TO_CONTEXT, DC_PRED,
-    GOLDEN_FRAME, IDX_N_COLUMN_TO_SUBBLOCK, INTER_MODE_TREE, INTERP_EXTEND, INTERP_FILTER_TREE, INTRA_FRAME, INTRA_MODE_TREE, KF_PARTITION_PROBS,
-    KF_UV_MODE_PROBS, KF_Y_MODE_PROBS, LAST_FRAME, MAX_TXSIZE, MI_WIDTH_LOG2, MODE_2_COUNTER, MV_BORDER, MV_CLASS_TREE, MV_FR_TREE, MV_JOINT_TREE,
-    MV_REF_BLOCKS, NEARESTMV, NEARMV, NEWMV, NONE, NUM_4X4_HIGH, NUM_4X4_WIDE, NUM_8X8_HIGH, NUM_8X8_WIDE, PARTITION_TREE, SEG_LVL_REF_FRAME, SEG_LVL_SKIP,
-    SEGMENT_TREE, SIZE_GROUP, SS_SIZE_LOOKUP, SUBSIZE_LOOKUP, SWITCHABLE, TX_MODE_SELECT, TX_MODE_TO_BIGGEST_TX_SIZE, TX_SIZE_8_TREE, TX_SIZE_16_TREE,
+    ALTREF_FRAME, B_HEIGHT_LOG2, B_WIDTH_LOG2, BLOCK_8X8, BLOCK_64X64, BLOCK_INVALID, BORDERINPIXELS,
+    COMPANDED_MVREF_THRESH, COUNTER_TO_CONTEXT, DC_PRED, GOLDEN_FRAME, IDX_N_COLUMN_TO_SUBBLOCK, INTER_MODE_TREE,
+    INTERP_EXTEND, INTERP_FILTER_TREE, INTRA_FRAME, INTRA_MODE_TREE, KF_PARTITION_PROBS, KF_UV_MODE_PROBS,
+    KF_Y_MODE_PROBS, LAST_FRAME, MAX_TXSIZE, MI_WIDTH_LOG2, MODE_2_COUNTER, MV_BORDER, MV_CLASS_TREE, MV_FR_TREE,
+    MV_JOINT_TREE, MV_REF_BLOCKS, NEARESTMV, NEARMV, NEWMV, NONE, NUM_4X4_HIGH, NUM_4X4_WIDE, NUM_8X8_HIGH,
+    NUM_8X8_WIDE, PARTITION_TREE, SEG_LVL_REF_FRAME, SEG_LVL_SKIP, SEGMENT_TREE, SIZE_GROUP, SS_SIZE_LOOKUP,
+    SUBSIZE_LOOKUP, SWITCHABLE, TX_MODE_SELECT, TX_MODE_TO_BIGGEST_TX_SIZE, TX_SIZE_8_TREE, TX_SIZE_16_TREE,
     TX_SIZE_32_TREE, ZEROMV,
 };
 
@@ -136,7 +138,11 @@ impl<'a> TileDecoder<'a> {
         let strip_h = sb_rows * 64;
         let x0 = mi_col_start * 8;
         let uv_len = (strip_w >> ss_x) * (strip_h >> ss_y);
-        let planes = [s.pools.samples.take(strip_w * strip_h, 0), s.pools.samples.take(uv_len, 0), s.pools.samples.take(uv_len, 0)];
+        let planes = [
+            s.pools.samples.take(strip_w * strip_h, 0),
+            s.pools.samples.take(uv_len, 0),
+            s.pools.samples.take(uv_len, 0),
+        ];
         let mi_w = mi_col_end - mi_col_start;
         let strip = Strip {
             mi_col_start,
@@ -181,7 +187,14 @@ impl<'a> TileDecoder<'a> {
             pred: vec![0; 64 * 64],
             pred2: vec![0; 64 * 64],
             // Scaled prediction reads up to 5x the block height (8.5.2.3), unscaled h + 7 rows.
-            mc_tmp: vec![0; if s.refs.iter().flatten().any(|r| r.x_scale != 1 << 14 || r.y_scale != 1 << 14) { 64 * (64 * 5 + 16) } else { 64 * 71 }],
+            mc_tmp: vec![
+                0;
+                if s.refs.iter().flatten().any(|r| r.x_scale != 1 << 14 || r.y_scale != 1 << 14) {
+                    64 * (64 * 5 + 16)
+                } else {
+                    64 * 71
+                }
+            ],
             mc_win: vec![0; 71 * 71],
             error: None,
         }
@@ -232,7 +245,8 @@ impl<'a> TileDecoder<'a> {
         let above = (above >> boffset) & 1;
         let left = (left >> boffset) & 1;
         let ctx = bsl * 4 + left as usize * 2 + above as usize;
-        let probs: &[u8] = if self.h.frame_is_intra { &KF_PARTITION_PROBS[ctx * 3..ctx * 3 + 3] } else { &self.fc.partition[ctx] };
+        let probs: &[u8] =
+            if self.h.frame_is_intra { &KF_PARTITION_PROBS[ctx * 3..ctx * 3 + 3] } else { &self.fc.partition[ctx] };
         let partition = if has_rows && has_cols {
             bd.read_tree(&PARTITION_TREE, probs)
         } else if has_cols {
@@ -320,7 +334,11 @@ impl<'a> TileDecoder<'a> {
 
     fn intra_frame_mode_info(&mut self, bd: &mut BoolDecoder, b: &mut Blk) {
         // intra_segment_id
-        b.seg_id = if self.s.seg.enabled && self.s.seg.update_map { bd.read_tree(&SEGMENT_TREE, &self.s.seg.tree_probs) } else { 0 };
+        b.seg_id = if self.s.seg.enabled && self.s.seg.update_map {
+            bd.read_tree(&SEGMENT_TREE, &self.s.seg.tree_probs)
+        } else {
+            0
+        };
         self.read_skip(bd, b);
         self.read_tx_size(bd, b, true);
         b.ref_frame = [INTRA_FRAME, NONE];
@@ -342,8 +360,13 @@ impl<'a> TileDecoder<'a> {
             while idy < 2 {
                 let mut idx = 0;
                 while idx < 2 {
-                    let above = if idy > 0 { b.sub_modes[idx] } else { above_mi.map_or(DC_PRED, |m| m.sub_modes[2 + idx]) };
-                    let left = if idx > 0 { b.sub_modes[idy * 2] } else { left_mi.map_or(DC_PRED, |m| m.sub_modes[1 + idy * 2]) };
+                    let above =
+                        if idy > 0 { b.sub_modes[idx] } else { above_mi.map_or(DC_PRED, |m| m.sub_modes[2 + idx]) };
+                    let left = if idx > 0 {
+                        b.sub_modes[idy * 2]
+                    } else {
+                        left_mi.map_or(DC_PRED, |m| m.sub_modes[1 + idy * 2])
+                    };
                     let o = (above as usize * 10 + left as usize) * 9;
                     mode = bd.read_tree(&INTRA_MODE_TREE, &KF_Y_MODE_PROBS[o..o + 9]);
                     for y2 in 0..n4h {
@@ -558,8 +581,10 @@ impl<'a> TileDecoder<'a> {
             b.y_mode = NEARESTMV + inter_mode;
         }
         b.interp_filter = if self.h.interp_filter == SWITCHABLE {
-            let left = if b.avail_l && b.left_ref[0] > INTRA_FRAME { self.mi_at(b.r, b.c - 1).interp_filter } else { 3 };
-            let above = if b.avail_u && b.above_ref[0] > INTRA_FRAME { self.mi_at(b.r - 1, b.c).interp_filter } else { 3 };
+            let left =
+                if b.avail_l && b.left_ref[0] > INTRA_FRAME { self.mi_at(b.r, b.c - 1).interp_filter } else { 3 };
+            let above =
+                if b.avail_u && b.above_ref[0] > INTRA_FRAME { self.mi_at(b.r - 1, b.c).interp_filter } else { 3 };
             let ctx = if left == above {
                 left
             } else if left == 3 && above != 3 {
@@ -620,7 +645,8 @@ impl<'a> TileDecoder<'a> {
     fn read_ref_frames(&mut self, bd: &mut BoolDecoder, b: &mut Blk) {
         let seg = self.s.seg;
         if seg.feature_active(b.seg_id, SEG_LVL_REF_FRAME) {
-            b.ref_frame = [(seg.feature_data[b.seg_id as usize][SEG_LVL_REF_FRAME] as i8).clamp(LAST_FRAME, ALTREF_FRAME), NONE];
+            b.ref_frame =
+                [(seg.feature_data[b.seg_id as usize][SEG_LVL_REF_FRAME] as i8).clamp(LAST_FRAME, ALTREF_FRAME), NONE];
             return;
         }
         let h = self.h;
@@ -695,9 +721,17 @@ impl<'a> TileDecoder<'a> {
             if b.above_intra && b.left_intra {
                 2
             } else if b.left_intra {
-                if b.above_single { 1 + 2 * (b.above_ref[0] != var1) as u8 } else { 1 + 2 * (b.above_ref[var_ref_idx] != var1) as u8 }
+                if b.above_single {
+                    1 + 2 * (b.above_ref[0] != var1) as u8
+                } else {
+                    1 + 2 * (b.above_ref[var_ref_idx] != var1) as u8
+                }
             } else if b.above_intra {
-                if b.left_single { 1 + 2 * (b.left_ref[0] != var1) as u8 } else { 1 + 2 * (b.left_ref[var_ref_idx] != var1) as u8 }
+                if b.left_single {
+                    1 + 2 * (b.left_ref[0] != var1) as u8
+                } else {
+                    1 + 2 * (b.left_ref[var_ref_idx] != var1) as u8
+                }
             } else {
                 let vrfa = if b.above_single { b.above_ref[0] } else { b.above_ref[var_ref_idx] };
                 let vrfl = if b.left_single { b.left_ref[0] } else { b.left_ref[var_ref_idx] };
@@ -754,9 +788,17 @@ impl<'a> TileDecoder<'a> {
             if b.above_intra && b.left_intra {
                 2
             } else if b.left_intra {
-                if b.above_single { 4 * (a[0] == LAST_FRAME) as u8 } else { 1 + (a[0] == LAST_FRAME || a[1] == LAST_FRAME) as u8 }
+                if b.above_single {
+                    4 * (a[0] == LAST_FRAME) as u8
+                } else {
+                    1 + (a[0] == LAST_FRAME || a[1] == LAST_FRAME) as u8
+                }
             } else if b.above_intra {
-                if b.left_single { 4 * (l[0] == LAST_FRAME) as u8 } else { 1 + (l[0] == LAST_FRAME || l[1] == LAST_FRAME) as u8 }
+                if b.left_single {
+                    4 * (l[0] == LAST_FRAME) as u8
+                } else {
+                    1 + (l[0] == LAST_FRAME || l[1] == LAST_FRAME) as u8
+                }
             } else if b.above_single && b.left_single {
                 2 * (a[0] == LAST_FRAME) as u8 + 2 * (l[0] == LAST_FRAME) as u8
             } else if !b.above_single && !b.left_single {
@@ -765,7 +807,11 @@ impl<'a> TileDecoder<'a> {
                 let rfs = if b.above_single { a[0] } else { l[0] };
                 let crf1 = if b.above_single { l[0] } else { a[0] };
                 let crf2 = if b.above_single { l[1] } else { a[1] };
-                if rfs == LAST_FRAME { 3 + (crf1 == LAST_FRAME || crf2 == LAST_FRAME) as u8 } else { (crf1 == LAST_FRAME || crf2 == LAST_FRAME) as u8 }
+                if rfs == LAST_FRAME {
+                    3 + (crf1 == LAST_FRAME || crf2 == LAST_FRAME) as u8
+                } else {
+                    (crf1 == LAST_FRAME || crf2 == LAST_FRAME) as u8
+                }
             }
         } else if b.avail_u {
             if b.above_intra {
@@ -796,9 +842,17 @@ impl<'a> TileDecoder<'a> {
             if b.above_intra && b.left_intra {
                 2
             } else if b.left_intra {
-                if b.above_single { if a[0] == L { 3 } else { 4 * (a[0] == G) as u8 } } else { 1 + 2 * (a[0] == G || a[1] == G) as u8 }
+                if b.above_single {
+                    if a[0] == L { 3 } else { 4 * (a[0] == G) as u8 }
+                } else {
+                    1 + 2 * (a[0] == G || a[1] == G) as u8
+                }
             } else if b.above_intra {
-                if b.left_single { if l[0] == L { 3 } else { 4 * (l[0] == G) as u8 } } else { 1 + 2 * (l[0] == G || l[1] == G) as u8 }
+                if b.left_single {
+                    if l[0] == L { 3 } else { 4 * (l[0] == G) as u8 }
+                } else {
+                    1 + 2 * (l[0] == G || l[1] == G) as u8
+                }
             } else if b.above_single && b.left_single {
                 if a[0] == L && l[0] == L {
                     3
@@ -919,7 +973,10 @@ impl<'a> TileDecoder<'a> {
 
     #[inline]
     fn is_inside(&self, r: isize, c: isize) -> bool {
-        r >= 0 && (r as usize) < self.mi_rows && c >= self.strip.mi_col_start as isize && (c as usize) < self.strip.mi_col_end
+        r >= 0
+            && (r as usize) < self.mi_rows
+            && c >= self.strip.mi_col_start as isize
+            && (c as usize) < self.strip.mi_col_end
     }
 
     #[inline]
@@ -947,7 +1004,9 @@ impl<'a> TileDecoder<'a> {
         let bias = &self.h.ref_frame_sign_bias;
         let mvs = [m.mv[0][3], m.mv[1][3]];
         let same = mvs[0] == mvs[1];
-        let scale = |f: i8, mv: Mv| -> Mv { if bias[f as usize] != bias[ref_frame as usize] { Mv::new(-(mv.row as i32), -(mv.col as i32)) } else { mv } };
+        let scale = |f: i8, mv: Mv| -> Mv {
+            if bias[f as usize] != bias[ref_frame as usize] { Mv::new(-(mv.row as i32), -(mv.col as i32)) } else { mv }
+        };
         if m.ref_frame[0] > INTRA_FRAME && m.ref_frame[0] != ref_frame {
             let mv = scale(m.ref_frame[0], mvs[0]);
             self.add_mv_ref_list(mv);
@@ -988,7 +1047,11 @@ impl<'a> TileDecoder<'a> {
                 context_counter += MODE_2_COUNTER[m.y_mode as usize] as usize;
                 for j in 0..2 {
                     if m.ref_frame[j] == ref_frame {
-                        let idx = if block >= 0 { IDX_N_COLUMN_TO_SUBBLOCK[block as usize][(search[i * 2 + 1] == 0) as usize] as usize } else { 3 };
+                        let idx = if block >= 0 {
+                            IDX_N_COLUMN_TO_SUBBLOCK[block as usize][(search[i * 2 + 1] == 0) as usize] as usize
+                        } else {
+                            3
+                        };
                         self.add_mv_ref_list(m.mv[j][idx]);
                         break;
                     }
@@ -1022,7 +1085,8 @@ impl<'a> TileDecoder<'a> {
         self.mode_context[ref_frame as usize] = COUNTER_TO_CONTEXT[context_counter.min(18)];
         for i in 0..2 {
             let mv = self.ref_list_mv[i];
-            self.ref_list_mv[i] = Mv::new(self.clamp_mv_row(b, mv.row as i32, MV_BORDER), self.clamp_mv_col(b, mv.col as i32, MV_BORDER));
+            self.ref_list_mv[i] =
+                Mv::new(self.clamp_mv_row(b, mv.row as i32, MV_BORDER), self.clamp_mv_col(b, mv.col as i32, MV_BORDER));
         }
     }
 

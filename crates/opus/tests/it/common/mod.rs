@@ -15,7 +15,8 @@ pub fn snr_db(reference: &[f32], test: &[f32]) -> f64 {
 }
 
 const NBANDS: usize = 21;
-const BANDS: [usize; NBANDS + 1] = [0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 68, 80, 96, 120, 156, 200];
+const BANDS: [usize; NBANDS + 1] =
+    [0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 68, 80, 96, 120, 156, 200];
 const WIN: usize = 480;
 const STEP: usize = 120;
 const NFREQ: usize = 240;
@@ -29,7 +30,8 @@ fn spectra(x: &[f32], channels: usize, ch: usize, rate: u32) -> Vec<[f64; NFREQ]
     let step = STEP / scale;
     let n = x.len() / channels;
     let nframes = if n >= win { (n - win) / step + 1 } else { 0 };
-    let w: Vec<f64> = (0..win).map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * (i as f64 + 0.5) / win as f64).cos()).collect();
+    let w: Vec<f64> =
+        (0..win).map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * (i as f64 + 0.5) / win as f64).cos()).collect();
     let nb = NFREQ / scale;
     let mut out = Vec::with_capacity(nframes);
     let tw = twiddles(win);
@@ -230,7 +232,8 @@ pub fn music(n: usize, seed: u64) -> Vec<f32> {
             let chord = (t * 2.0) as usize;
             let mut s = 0.0;
             for k in 0..3 {
-                let f = notes[(chord * 3 + k * 2) % notes.len()] * (1.0 + 0.003 * (2.0 * std::f32::consts::PI * 5.0 * t).sin());
+                let f = notes[(chord * 3 + k * 2) % notes.len()]
+                    * (1.0 + 0.003 * (2.0 * std::f32::consts::PI * 5.0 * t).sin());
                 for h in 1..6 {
                     s += (2.0 * std::f32::consts::PI * f * h as f32 * t).sin() * 0.08 / h as f32;
                 }

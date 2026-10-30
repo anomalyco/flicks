@@ -99,7 +99,12 @@ impl Mode {
             cache_bits,
             caps: Vec::new(),
             window: [0.0; OVERLAP],
-            mdct: [super::mdct::Imdct::new(1920), super::mdct::Imdct::new(960), super::mdct::Imdct::new(480), super::mdct::Imdct::new(240)],
+            mdct: [
+                super::mdct::Imdct::new(1920),
+                super::mdct::Imdct::new(960),
+                super::mdct::Imdct::new(480),
+                super::mdct::Imdct::new(240),
+            ],
         };
         m.caps = compute_caps(&m);
         for i in 0..OVERLAP {
@@ -241,7 +246,8 @@ fn compute_caps(m: &Mode) -> Vec<u8> {
                     }
                     if c == 2 {
                         mb <<= 1;
-                        let offset = ((m.log_n[j] + (i << BITRES)) >> 1) - if n == 2 { QTHETA_OFFSET_TWOPHASE } else { QTHETA_OFFSET };
+                        let offset = ((m.log_n[j] + (i << BITRES)) >> 1)
+                            - if n == 2 { QTHETA_OFFSET_TWOPHASE } else { QTHETA_OFFSET };
                         let ndof = 2 * n - 1 - (n == 2) as i32;
                         let p = if n == 2 { 512 } else { 487 };
                         let num = p * (mb + ndof * offset);
@@ -295,7 +301,8 @@ pub struct AllocationInput<'a, 'd> {
 }
 
 pub fn compute_allocation(input: AllocationInput<'_, '_>) -> Allocation {
-    let AllocationInput { mode: m, start, end, offsets, cap, trim: alloc_trim, total, channels: c, lm, decoder: dec } = input;
+    let AllocationInput { mode: m, start, end, offsets, cap, trim: alloc_trim, total, channels: c, lm, decoder: dec } =
+        input;
     let ci = c as i32;
     let lmi = lm as i32;
     let mut total = total.max(0);
@@ -321,7 +328,8 @@ pub fn compute_allocation(input: AllocationInput<'_, '_>) -> Allocation {
     for j in start..end {
         let w = EBANDS[j + 1] - EBANDS[j];
         thresh[j] = (ci << BITRES).max(((3 * w) << lmi << BITRES) >> 4);
-        trim_offset[j] = (ci * w * (alloc_trim - 5 - lmi) * (end as i32 - j as i32 - 1) * (1 << (lmi + BITRES as i32))) >> 6;
+        trim_offset[j] =
+            (ci * w * (alloc_trim - 5 - lmi) * (end as i32 - j as i32 - 1) * (1 << (lmi + BITRES as i32))) >> 6;
         if w << lmi == 1 {
             trim_offset[j] -= ci << BITRES;
         }
@@ -612,8 +620,8 @@ mod tests {
         assert!(m.caps[..8].iter().all(|&c| c == 224));
         assert!(m.caps[21..29].iter().all(|&c| c == 224));
         let first_rows: [u8; 42] = [
-            224, 224, 224, 224, 224, 224, 224, 224, 160, 160, 160, 160, 185, 185, 185, 178, 178, 168, 134, 61, 37, 224, 224, 224, 224, 224, 224, 224, 224, 240,
-            240, 240, 240, 207, 207, 207, 198, 198, 183, 144, 66, 40,
+            224, 224, 224, 224, 224, 224, 224, 224, 160, 160, 160, 160, 185, 185, 185, 178, 178, 168, 134, 61, 37, 224,
+            224, 224, 224, 224, 224, 224, 224, 240, 240, 240, 240, 207, 207, 207, 198, 198, 183, 144, 66, 40,
         ];
         assert_eq!(&m.caps[..42], &first_rows[..]);
     }

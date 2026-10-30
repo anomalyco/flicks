@@ -238,7 +238,9 @@ fn itx_narrow<const N: usize>(coefs: &[i32], p: &TxParams, dst: &mut [u16], stri
         add_cols(&y, 0, p, dst, stride);
     } else {
         for c0 in (0..N).step_by(8) {
-            let x: [Cols<8>; N] = std::array::from_fn(|i| Cols(t[i].get(c0..).and_then(|r| r.first_chunk::<8>()).copied().unwrap_or_default()));
+            let x: [Cols<8>; N] = std::array::from_fn(|i| {
+                Cols(t[i].get(c0..).and_then(|r| r.first_chunk::<8>()).copied().unwrap_or_default())
+            });
             let y = col_tx8(x, p.col_adst);
             add_cols(&y, c0, p, dst, stride);
         }
@@ -425,7 +427,12 @@ mod tests {
                 buf[k] = 1000;
                 tx1d_narrow(&mut buf, n, true);
                 let r: Vec<f64> = (0..n)
-                    .map(|x| 1000.0 * ((2 * x + 1) as f64 * (2 * k + 1) as f64 * std::f64::consts::PI / (4 * n) as f64).sin() * 2f64.sqrt() / 2f64.sqrt())
+                    .map(|x| {
+                        1000.0
+                            * ((2 * x + 1) as f64 * (2 * k + 1) as f64 * std::f64::consts::PI / (4 * n) as f64).sin()
+                            * 2f64.sqrt()
+                            / 2f64.sqrt()
+                    })
                     .collect();
                 for (a, b) in buf.iter().zip(&r) {
                     assert!((*a as f64 - b).abs() <= 4.0, "n {n} k {k}: {buf:?} vs {r:?}");
@@ -437,8 +444,15 @@ mod tests {
             let mut buf = vec![0i32; 4];
             buf[k] = 1000;
             tx1d_narrow(&mut buf, 4, true);
-            let r: Vec<f64> =
-                (0..4).map(|x| 1000.0 * (std::f64::consts::PI * (x + 1) as f64 * (2 * k + 1) as f64 / 9.0).sin() * 2.0 * 2f64.sqrt() / 3.0).collect();
+            let r: Vec<f64> = (0..4)
+                .map(|x| {
+                    1000.0
+                        * (std::f64::consts::PI * (x + 1) as f64 * (2 * k + 1) as f64 / 9.0).sin()
+                        * 2.0
+                        * 2f64.sqrt()
+                        / 3.0
+                })
+                .collect();
             for (a, b) in buf.iter().zip(&r) {
                 assert!((*a as f64 - b).abs() <= 3.0, "k {k}: {buf:?} vs {r:?}");
             }
@@ -454,8 +468,18 @@ mod tests {
                 coefs[0] = dc;
                 let mut a = vec![128u16; n * n];
                 let mut b = vec![128u16; n * n];
-                inverse_transform_add(&coefs, &InverseTx { tx_size: tx, tx_type: DCT_DCT, lossless: false, eob: 1, rows: 1, bit_depth: 8 }, &mut a, n);
-                inverse_transform_add(&coefs, &InverseTx { tx_size: tx, tx_type: DCT_DCT, lossless: false, eob: 2, rows: n, bit_depth: 8 }, &mut b, n);
+                inverse_transform_add(
+                    &coefs,
+                    &InverseTx { tx_size: tx, tx_type: DCT_DCT, lossless: false, eob: 1, rows: 1, bit_depth: 8 },
+                    &mut a,
+                    n,
+                );
+                inverse_transform_add(
+                    &coefs,
+                    &InverseTx { tx_size: tx, tx_type: DCT_DCT, lossless: false, eob: 2, rows: n, bit_depth: 8 },
+                    &mut b,
+                    n,
+                );
                 assert_eq!(a, b, "tx {tx} dc {dc}");
             }
         }
@@ -482,7 +506,8 @@ mod tests {
             tx1d_narrow(&mut col, N, p.col_adst);
             for i in 0..N {
                 let d = &mut dst[i * stride + j];
-                *d = (*d as i32 + (col[i].wrapping_add(p.round) >> p.shift).clamp(-(1 << 20), 1 << 20)).clamp(0, p.max) as u16;
+                *d = (*d as i32 + (col[i].wrapping_add(p.round) >> p.shift).clamp(-(1 << 20), 1 << 20)).clamp(0, p.max)
+                    as u16;
             }
         }
     }
@@ -500,7 +525,9 @@ mod tests {
             let (row_adst, col_adst) = if N == 32 { (false, false) } else { (case & 1 == 1, case & 2 == 2) };
             let rows = 1 + rnd() as usize % N;
             let big = if case % 7 == 0 { 1 << 22 } else { 2000 };
-            let coefs: Vec<i32> = (0..N * N).map(|i| if i / N < rows && rnd() % 3 == 0 { (rnd() % (2 * big)) as i32 - big as i32 } else { 0 }).collect();
+            let coefs: Vec<i32> = (0..N * N)
+                .map(|i| if i / N < rows && rnd() % 3 == 0 { (rnd() % (2 * big)) as i32 - big as i32 } else { 0 })
+                .collect();
             let p = TxParams { row_adst, col_adst, rows, shift, round: 1 << (shift - 1), max: 255 };
             let stride = N + 5;
             let base: Vec<u16> = (0..N * stride).map(|_| (rnd() % 256) as u16).collect();
@@ -527,7 +554,12 @@ mod tests {
         let mut coefs = [0i32; 16];
         coefs[0] = 4 * 4;
         let mut dst = [100u16; 16];
-        inverse_transform_add(&coefs, &InverseTx { tx_size: 0, tx_type: DCT_DCT, lossless: true, eob: 1, rows: 4, bit_depth: 8 }, &mut dst, 4);
+        inverse_transform_add(
+            &coefs,
+            &InverseTx { tx_size: 0, tx_type: DCT_DCT, lossless: true, eob: 1, rows: 4, bit_depth: 8 },
+            &mut dst,
+            4,
+        );
         let sum: i32 = dst.iter().map(|&v| v as i32 - 100).sum();
         assert_eq!(sum, 16);
     }

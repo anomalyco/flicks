@@ -12,10 +12,7 @@ async fn local_addr_has_direct_address() {
     let addr = a.node.addr();
     assert_eq!(addr.id, a.id());
     assert!(addr.relay_url.is_none());
-    assert!(
-        addr.direct_addrs.iter().any(|s| s.ip().is_loopback()),
-        "{addr:?}"
-    );
+    assert!(addr.direct_addrs.iter().any(|s| s.ip().is_loopback()), "{addr:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -23,32 +20,17 @@ async fn sync_exchanges_missing_entries_both_ways() {
     let (a, b) = pair_of_members(&["m1", "a1", "a2"], &["m1", "b1"]).await;
 
     let outcome = within(a.node.sync(b.node.addr())).await.unwrap();
-    assert_eq!(
-        outcome,
-        SyncOutcome {
-            sent: 2,
-            received: 1
-        }
-    );
+    assert_eq!(outcome, SyncOutcome { sent: 2, received: 1 });
     assert_eq!(a.store.sorted(), ["a1", "a2", "b1", "m1"]);
     assert_eq!(b.store.sorted(), ["a1", "a2", "b1", "m1"]);
     // Order chosen by the sender is preserved.
-    assert_eq!(
-        b.store.received.lock().unwrap().last().unwrap(),
-        &vec![b"a1".to_vec(), b"a2".to_vec()]
-    );
+    assert_eq!(b.store.received.lock().unwrap().last().unwrap(), &vec![b"a1".to_vec(), b"a2".to_vec()]);
 
     // Nothing left to exchange; also works on a reused connection.
     let conn = within(b.node.connect(a.node.addr())).await.unwrap();
     for _ in 0..2 {
         let outcome = within(conn.sync()).await.unwrap();
-        assert_eq!(
-            outcome,
-            SyncOutcome {
-                sent: 0,
-                received: 0
-            }
-        );
+        assert_eq!(outcome, SyncOutcome { sent: 0, received: 0 });
     }
 }
 
@@ -75,10 +57,7 @@ async fn accept_rejects_non_member() {
         conn.sync().await
     })
     .await;
-    assert!(
-        matches!(result, Err(Error::MembershipRejected(_))),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(Error::MembershipRejected(_))), "{result:?}");
 
     // A never ran any application logic for B, and B received nothing.
     assert_eq!(a.store.calls(), 0);
@@ -95,10 +74,7 @@ async fn dial_refuses_non_member() {
     b.members.add(a.id());
 
     let result = within(a.node.connect(b.node.addr())).await;
-    assert!(
-        matches!(result, Err(Error::NotAMember(id)) if id == b.id()),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(Error::NotAMember(id)) if id == b.id()), "{result:?}");
     let result = within(a.node.sync(b.node.addr())).await;
     assert!(matches!(result, Err(Error::NotAMember(_))), "{result:?}");
 
@@ -132,10 +108,7 @@ async fn revoke_closes_live_inbound_connection() {
         conn.sync().await
     })
     .await;
-    assert!(
-        matches!(result, Err(Error::MembershipRejected(_))),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(Error::MembershipRejected(_))), "{result:?}");
     assert_eq!(a.store.calls(), calls);
 }
 
@@ -152,10 +125,7 @@ async fn revoke_closes_live_outbound_connection_and_blocks_redial() {
     assert!(within(conn.sync()).await.is_err());
 
     let result = within(a.node.connect(b.node.addr())).await;
-    assert!(
-        matches!(result, Err(Error::NotAMember(id)) if id == b.id()),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(Error::NotAMember(id)) if id == b.id()), "{result:?}");
     within(async {
         while !b.node.connected_peers().is_empty() {
             tokio::task::yield_now().await;
@@ -168,10 +138,7 @@ async fn revoke_closes_live_outbound_connection_and_blocks_redial() {
 async fn revoke_interrupts_in_flight_session() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let store = Store {
-        block: Some((entered.clone(), release.clone())),
-        ..Default::default()
-    };
+    let store = Store { block: Some((entered.clone(), release.clone())), ..Default::default() };
     let a = TestNode::new(Arc::new(store)).await;
     let b = TestNode::new(Store::with(&["b1", "b2"])).await;
     a.members.add(b.id());

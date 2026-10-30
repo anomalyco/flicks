@@ -90,11 +90,7 @@ impl PairingTicket {
 
     /// How to reach the new device.
     pub fn addr(&self) -> PeerAddr {
-        PeerAddr {
-            id: self.id,
-            relay_url: self.relay_url.clone(),
-            direct_addrs: self.direct_addrs.clone(),
-        }
+        PeerAddr { id: self.id, relay_url: self.relay_url.clone(), direct_addrs: self.direct_addrs.clone() }
     }
 
     /// Binary form: `version(1) || id(32) || secret(32) || relay_len(1) || relay_url ||
@@ -154,14 +150,8 @@ impl PairingTicket {
         if !r.0.is_empty() {
             return Err(Error::InvalidTicket("trailing bytes".into()));
         }
-        iroh::PublicKey::from_bytes(&id)
-            .map_err(|_| Error::InvalidTicket("invalid endpoint id".into()))?;
-        Ok(Self {
-            id,
-            secret,
-            relay_url,
-            direct_addrs,
-        })
+        iroh::PublicKey::from_bytes(&id).map_err(|_| Error::InvalidTicket("invalid endpoint id".into()))?;
+        Ok(Self { id, secret, relay_url, direct_addrs })
     }
 
     /// Terminal QR code (unicode half blocks) of the ticket string.
@@ -174,11 +164,7 @@ impl PairingTicket {
 /// Only uses QR alphanumeric characters, so QR codes encode it compactly.
 impl fmt::Display for PairingTicket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{TICKET_PREFIX}{}",
-            BASE32_NOPAD.encode(&self.to_bytes())
-        )
+        write!(f, "{TICKET_PREFIX}{}", BASE32_NOPAD.encode(&self.to_bytes()))
     }
 }
 
@@ -188,17 +174,12 @@ impl FromStr for PairingTicket {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        let cleaned: String = s
-            .chars()
-            .filter(|c| !c.is_whitespace() && *c != '-')
-            .map(|c| c.to_ascii_uppercase())
-            .collect();
-        let body = cleaned
-            .strip_prefix(TICKET_PREFIX)
-            .ok_or_else(|| Error::InvalidTicket("missing DBPAIR prefix".into()))?;
-        let bytes = BASE32_NOPAD
-            .decode(body.as_bytes())
-            .map_err(|e| Error::InvalidTicket(format!("bad base32: {e}")))?;
+        let cleaned: String =
+            s.chars().filter(|c| !c.is_whitespace() && *c != '-').map(|c| c.to_ascii_uppercase()).collect();
+        let body =
+            cleaned.strip_prefix(TICKET_PREFIX).ok_or_else(|| Error::InvalidTicket("missing DBPAIR prefix".into()))?;
+        let bytes =
+            BASE32_NOPAD.decode(body.as_bytes()).map_err(|e| Error::InvalidTicket(format!("bad base32: {e}")))?;
         Self::from_bytes(&bytes)
     }
 }
@@ -268,11 +249,7 @@ pub trait Joiner: Send + Sync {
 
     /// Produce the join blob (e.g. the new device's signed consent to join the vault named
     /// in `offer`).
-    fn join(
-        &self,
-        ctx: &PairingContext,
-        offer: Vec<u8>,
-    ) -> impl Future<Output = Result<Vec<u8>, HandlerError>> + Send;
+    fn join(&self, ctx: &PairingContext, offer: Vec<u8>) -> impl Future<Output = Result<Vec<u8>, HandlerError>> + Send;
 
     /// The existing device's welcome blobs (e.g. the `Add` op, membership log and data).
     fn receive(
@@ -288,10 +265,7 @@ pub trait Inviter: Send + Sync {
     fn confirm(&self, ctx: &PairingContext) -> impl Future<Output = bool> + Send;
 
     /// The offer blob sent to the new device (e.g. the vault id it is asked to join).
-    fn offer(
-        &self,
-        ctx: &PairingContext,
-    ) -> impl Future<Output = Result<Vec<u8>, HandlerError>> + Send;
+    fn offer(&self, ctx: &PairingContext) -> impl Future<Output = Result<Vec<u8>, HandlerError>> + Send;
 
     /// Verify the new device's join blob and produce the welcome blobs, in the order the
     /// new device should apply them (membership first).
@@ -314,10 +288,7 @@ pub struct PairingOptions {
 
 impl Default for PairingOptions {
     fn default() -> Self {
-        Self {
-            ttl: DEFAULT_PAIRING_TTL,
-            online_timeout: Duration::from_secs(10),
-        }
+        Self { ttl: DEFAULT_PAIRING_TTL, online_timeout: Duration::from_secs(10) }
     }
 }
 
@@ -366,18 +337,8 @@ impl PairingStream {
     /// Both sides supply the same exporter, listener id and dialer id.
     /// Simulation-only: bypasses the iroh adapter's exporter binding and ticket checks.
     #[cfg(feature = "sim")]
-    pub fn new(
-        local: PeerId,
-        remote: PeerId,
-        secret: [u8; 32],
-        exporter: [u8; 32],
-        listener: bool,
-    ) -> Self {
-        let (listener_id, dialer_id) = if listener {
-            (local, remote)
-        } else {
-            (remote, local)
-        };
+    pub fn new(local: PeerId, remote: PeerId, secret: [u8; 32], exporter: [u8; 32], listener: bool) -> Self {
+        let (listener_id, dialer_id) = if listener { (local, remote) } else { (remote, local) };
         Self {
             local,
             remote,
@@ -413,12 +374,7 @@ impl PairingStream {
         max: usize,
         inviter: &impl Inviter,
     ) -> Result<PairingOutcome> {
-        frame::write(
-            send,
-            tag::PROOF,
-            &mac(&self.secret, DIALER_LABEL, &self.transcript),
-        )
-        .await?;
+        frame::write(send, tag::PROOF, &mac(&self.secret, DIALER_LABEL, &self.transcript)).await?;
         let proof = frame::expect(recv, tag::PROOF, 64).await?;
         if !verify(&self.secret, LISTENER_LABEL, &self.transcript, &proof) {
             return Err(Error::PairingProofFailed);
@@ -434,10 +390,7 @@ impl PairingStream {
             debug!(%error, "pairing send closed; peer result determines success");
         }
         frame::read_result(recv, max).await?;
-        Ok(PairingOutcome {
-            peer: ctx.remote,
-            code: ctx.code,
-        })
+        Ok(PairingOutcome { peer: ctx.remote, code: ctx.code })
     }
 }
 
@@ -454,12 +407,7 @@ impl ProvenPairing {
         joiner: &impl Joiner,
     ) -> Result<PairingOutcome> {
         let ctx = self.0.context();
-        frame::write(
-            send,
-            tag::PROOF,
-            &mac(&self.0.secret, LISTENER_LABEL, &self.0.transcript),
-        )
-        .await?;
+        frame::write(send, tag::PROOF, &mac(&self.0.secret, LISTENER_LABEL, &self.0.transcript)).await?;
         let offer = frame::expect(recv, tag::OFFER, max).await?;
         confirm_exchange(send, recv, joiner.confirm(&ctx, &offer)).await?;
         let join = joiner.join(&ctx, offer).await.map_err(Error::Handler)?;
@@ -472,10 +420,7 @@ impl ProvenPairing {
             debug!(%error, "pairing send closed after reporting result");
         }
         received.map_err(Error::Handler)?;
-        Ok(PairingOutcome {
-            peer: ctx.remote,
-            code: ctx.code,
-        })
+        Ok(PairingOutcome { peer: ctx.remote, code: ctx.code })
     }
 }
 
@@ -517,19 +462,9 @@ impl PairingListener {
         self.node.inner.gate.close_pairing(self.slot);
         drop(proving);
 
-        let Proven {
-            conn,
-            mut send,
-            mut recv,
-            transcript,
-        } = proven;
+        let Proven { conn, mut send, mut recv, transcript } = proven;
         let remote = *conn.remote_id().as_bytes();
-        let proven = ProvenPairing(PairingStream {
-            local,
-            remote,
-            secret,
-            transcript,
-        });
+        let proven = ProvenPairing(PairingStream { local, remote, secret, transcript });
         let max = self.node.inner.max_frame_len;
         let result = tokio::select! {
             result = proven.complete(&mut send, &mut recv, max, joiner) => result,
@@ -551,11 +486,7 @@ impl PairingListener {
     }
 }
 
-async fn listener_prove(
-    conn: Connection,
-    local: PeerId,
-    secret: Zeroizing<[u8; 32]>,
-) -> Result<Proven> {
+async fn listener_prove(conn: Connection, local: PeerId, secret: Zeroizing<[u8; 32]>) -> Result<Proven> {
     let remote = *conn.remote_id().as_bytes();
     let (send, mut recv) = match tokio::time::timeout(PROOF_TIMEOUT, conn.accept_bi()).await {
         Ok(Ok(streams)) => streams,
@@ -567,23 +498,11 @@ async fn listener_prove(
     };
     let attempt = async {
         let transcript = transcript(&conn, &local, &remote)?;
-        let proven = PairingStream {
-            local,
-            remote,
-            secret,
-            transcript,
-        }
-        .prove(&mut recv)
-        .await?;
+        let proven = PairingStream { local, remote, secret, transcript }.prove(&mut recv).await?;
         Ok(proven.0.transcript)
     };
     match tokio::time::timeout(PROOF_TIMEOUT, attempt).await {
-        Ok(Ok(transcript)) => Ok(Proven {
-            conn,
-            send,
-            recv,
-            transcript,
-        }),
+        Ok(Ok(transcript)) => Ok(Proven { conn, send, recv, transcript }),
         Ok(Err(err)) => Err(fail_pairing(&conn, err).await),
         Err(_) => {
             conn.close(close::PROTOCOL, b"timeout");
@@ -597,9 +516,7 @@ impl Node {
     /// connections for it. Replaces any previous outstanding ticket.
     pub async fn start_pairing(&self, options: PairingOptions) -> Result<PairingListener> {
         if self.inner.relays_enabled
-            && tokio::time::timeout(options.online_timeout, self.inner.endpoint.online())
-                .await
-                .is_err()
+            && tokio::time::timeout(options.online_timeout, self.inner.endpoint.online()).await.is_err()
         {
             debug!("relay online deadline elapsed; pairing ticket uses available addresses");
         }
@@ -610,38 +527,19 @@ impl Node {
             id: addr.id,
             secret,
             relay_url: addr.relay_url.filter(|u| u.len() <= u8::MAX as usize),
-            direct_addrs: addr
-                .direct_addrs
-                .into_iter()
-                .take(MAX_TICKET_ADDRS)
-                .collect(),
+            direct_addrs: addr.direct_addrs.into_iter().take(MAX_TICKET_ADDRS).collect(),
         };
         let expires_at = Instant::now() + options.ttl;
         let (tx, rx) = mpsc::channel(16);
         let slot = self.inner.gate.open_pairing(expires_at, tx);
-        Ok(PairingListener {
-            node: self.clone(),
-            ticket,
-            slot,
-            expires_at,
-            rx,
-        })
+        Ok(PairingListener { node: self.clone(), ticket, slot, expires_at, rx })
     }
 
     /// Pairs with a new device using its ticket (existing-device side).
-    pub async fn pair(
-        &self,
-        ticket: &PairingTicket,
-        inviter: &impl Inviter,
-    ) -> Result<PairingOutcome> {
+    pub async fn pair(&self, ticket: &PairingTicket, inviter: &impl Inviter) -> Result<PairingOutcome> {
         let local = self.id();
         let addr = ticket.addr().to_endpoint_addr()?;
-        let conn = self
-            .inner
-            .endpoint
-            .connect(addr, PAIR_ALPN)
-            .await
-            .map_err(|e| Error::Connect(e.to_string()))?;
+        let conn = self.inner.endpoint.connect(addr, PAIR_ALPN).await.map_err(|e| Error::Connect(e.to_string()))?;
         if *conn.remote_id().as_bytes() != ticket.id {
             conn.close(close::PROTOCOL, b"unexpected peer");
             return Err(Error::Protocol("connected to unexpected peer".into()));
@@ -655,12 +553,8 @@ impl Node {
         // Streams outlive the block so a failure closes the connection (with its reason)
         // before they are dropped.
         let result = async {
-            let stream = PairingStream {
-                local,
-                remote: ticket.id,
-                secret,
-                transcript: transcript(&conn, &ticket.id, &local)?,
-            };
+            let stream =
+                PairingStream { local, remote: ticket.id, secret, transcript: transcript(&conn, &ticket.id, &local)? };
             tokio::select! {
                 result = stream.invite(&mut send, &mut recv, max, inviter) => result,
                 _ = conn.closed() => Err(from_conn(&conn, Error::Closed("closed".into()))),
@@ -688,10 +582,7 @@ async fn confirm_exchange(
     if !confirmed {
         return Err(Error::PairingDeclined);
     }
-    let ((), peer) = tokio::try_join!(
-        frame::write(send, tag::CONFIRM, &[1]),
-        frame::expect(recv, tag::CONFIRM, 64),
-    )?;
+    let ((), peer) = tokio::try_join!(frame::write(send, tag::CONFIRM, &[1]), frame::expect(recv, tag::CONFIRM, 64),)?;
     if peer != [1] {
         return Err(Error::PairingDeclined);
     }
@@ -736,10 +627,7 @@ fn hmac(secret: &[u8; 32], label: &[u8], transcript: &[u8]) -> Hmac<Sha256> {
 }
 
 fn mac(secret: &[u8; 32], label: &[u8], transcript: &[u8]) -> Vec<u8> {
-    hmac(secret, label, transcript)
-        .finalize()
-        .into_bytes()
-        .to_vec()
+    hmac(secret, label, transcript).finalize().into_bytes().to_vec()
 }
 
 fn verify(secret: &[u8; 32], label: &[u8], transcript: &[u8], tag: &[u8]) -> bool {
@@ -763,10 +651,7 @@ mod tests {
             id: *iroh::SecretKey::from_bytes(&[7; 32]).public().as_bytes(),
             secret: Zeroizing::new([9; 32]),
             relay_url: Some("https://relay.example.com./".into()),
-            direct_addrs: vec![
-                "127.0.0.1:4242".parse().unwrap(),
-                "[fe80::1]:9".parse().unwrap(),
-            ],
+            direct_addrs: vec!["127.0.0.1:4242".parse().unwrap(), "[fe80::1]:9".parse().unwrap()],
         }
     }
 
@@ -775,20 +660,13 @@ mod tests {
         let t = ticket();
         let s = t.to_string();
         assert!(s.starts_with("DBPAIR"));
-        assert!(
-            s.chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-        );
+        assert!(s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
         assert_eq!(s.parse::<PairingTicket>().unwrap(), t);
         // copy/paste tolerant
         let messy = format!("  {}\n{} ", s[..20].to_lowercase(), &s[20..]);
         assert_eq!(messy.parse::<PairingTicket>().unwrap(), t);
 
-        let bare = PairingTicket {
-            relay_url: None,
-            direct_addrs: vec![],
-            ..t.clone()
-        };
+        let bare = PairingTicket { relay_url: None, direct_addrs: vec![], ..t.clone() };
         assert_eq!(bare.to_string().parse::<PairingTicket>().unwrap(), bare);
         assert!(!format!("{t:?}").contains("9, 9"));
     }

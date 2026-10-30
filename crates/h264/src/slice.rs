@@ -172,27 +172,47 @@ impl SliceHeader {
     }
 
     /// One pred_weight_table() entry (7.3.3.2).
-    fn parse_weight_entry(r: &mut BitReader, has_chroma: bool, luma_log2_denom: u32, chroma_log2_denom: u32) -> Result<WeightEntry> {
-        let mut e = WeightEntry { luma_weight: 1 << luma_log2_denom, chroma_weight: [1 << chroma_log2_denom; 2], ..Default::default() };
+    fn parse_weight_entry(
+        r: &mut BitReader,
+        has_chroma: bool,
+        luma_log2_denom: u32,
+        chroma_log2_denom: u32,
+    ) -> Result<WeightEntry> {
+        let mut e = WeightEntry {
+            luma_weight: 1 << luma_log2_denom,
+            chroma_weight: [1 << chroma_log2_denom; 2],
+            ..Default::default()
+        };
         if r.read_flag()? {
             e.luma_flag = true;
             e.luma_weight = r.read_se()?;
             e.luma_offset = r.read_se()?;
-            ensure!((-128..=127).contains(&e.luma_weight) && (-128..=127).contains(&e.luma_offset), "luma weight out of range");
+            ensure!(
+                (-128..=127).contains(&e.luma_weight) && (-128..=127).contains(&e.luma_offset),
+                "luma weight out of range"
+            );
         }
         if has_chroma && r.read_flag()? {
             e.chroma_flag = true;
             for j in 0..2 {
                 e.chroma_weight[j] = r.read_se()?;
                 e.chroma_offset[j] = r.read_se()?;
-                ensure!((-128..=127).contains(&e.chroma_weight[j]) && (-128..=127).contains(&e.chroma_offset[j]), "chroma weight out of range");
+                ensure!(
+                    (-128..=127).contains(&e.chroma_weight[j]) && (-128..=127).contains(&e.chroma_offset[j]),
+                    "chroma weight out of range"
+                );
             }
         }
         Ok(e)
     }
 
     /// pred_weight_table() (7.3.3.2).
-    fn parse_pred_weight_table(r: &mut BitReader, sps: &Sps, slice_type: SliceType, num_ref_idx_active: [u32; 2]) -> Result<PredWeightTable> {
+    fn parse_pred_weight_table(
+        r: &mut BitReader,
+        sps: &Sps,
+        slice_type: SliceType,
+        num_ref_idx_active: [u32; 2],
+    ) -> Result<PredWeightTable> {
         let luma_log2_denom = r.read_ue()?;
         ensure!(luma_log2_denom <= 7, "luma_log2_weight_denom out of range");
         let has_chroma = sps.chroma_array_type() != 0;
@@ -221,7 +241,13 @@ impl SliceHeader {
             if op == 0 {
                 return Ok(mmcos);
             }
-            let mut m = Mmco { op, difference_of_pic_nums_minus1: 0, long_term_pic_num: 0, long_term_frame_idx: 0, max_long_term_frame_idx_plus1: 0 };
+            let mut m = Mmco {
+                op,
+                difference_of_pic_nums_minus1: 0,
+                long_term_pic_num: 0,
+                long_term_frame_idx: 0,
+                max_long_term_frame_idx_plus1: 0,
+            };
             if op == 1 || op == 3 {
                 m.difference_of_pic_nums_minus1 = r.read_ue()?;
             }
@@ -240,7 +266,11 @@ impl SliceHeader {
     }
 
     /// Parse the slice header. `pps_lookup` resolves pic_parameter_set_id to (PPS, SPS).
-    pub fn parse<'a>(rbsp: &[u8], nal: NalHeader, pps_lookup: impl FnOnce(u32) -> Result<(&'a Pps, &'a Sps)>) -> Result<(SliceHeader, &'a Pps, &'a Sps)> {
+    pub fn parse<'a>(
+        rbsp: &[u8],
+        nal: NalHeader,
+        pps_lookup: impl FnOnce(u32) -> Result<(&'a Pps, &'a Sps)>,
+    ) -> Result<(SliceHeader, &'a Pps, &'a Sps)> {
         let mut r = BitReader::new(rbsp);
         let idr = nal.nal_unit_type == nal_type::IDR;
         let first_mb_in_slice = r.read_ue()?;
@@ -344,7 +374,10 @@ impl SliceHeader {
             if disable_deblocking_filter_idc != 1 {
                 slice_alpha_c0_offset_div2 = r.read_se()?;
                 slice_beta_offset_div2 = r.read_se()?;
-                ensure!((-6..=6).contains(&slice_alpha_c0_offset_div2) && (-6..=6).contains(&slice_beta_offset_div2), "deblocking offsets out of range");
+                ensure!(
+                    (-6..=6).contains(&slice_alpha_c0_offset_div2) && (-6..=6).contains(&slice_beta_offset_div2),
+                    "deblocking offsets out of range"
+                );
             }
         }
         let mut slice_group_change_cycle = 0;
@@ -421,7 +454,10 @@ pub fn is_new_picture(prev: &SliceHeader, sh: &SliceHeader, sps: &Sps) -> bool {
     {
         return true;
     }
-    if sps.pic_order_cnt_type == 0 && (sh.pic_order_cnt_lsb != prev.pic_order_cnt_lsb || sh.delta_pic_order_cnt_bottom != prev.delta_pic_order_cnt_bottom) {
+    if sps.pic_order_cnt_type == 0
+        && (sh.pic_order_cnt_lsb != prev.pic_order_cnt_lsb
+            || sh.delta_pic_order_cnt_bottom != prev.delta_pic_order_cnt_bottom)
+    {
         return true;
     }
     if sps.pic_order_cnt_type == 1 && sh.delta_pic_order_cnt != prev.delta_pic_order_cnt {

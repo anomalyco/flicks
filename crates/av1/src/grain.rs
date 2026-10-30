@@ -134,7 +134,13 @@ fn collocated_luma_grain(luma: &GrainTemplate, y: usize, x: usize, sub: Subsampl
 }
 
 /// Auto-regressive sums `(cb, cr)` for chroma sample `(y, x)`.
-fn chroma_ar_sums(g: &FilmGrainParams, luma: &GrainTemplate, chroma: &ChromaGrain, pos: (usize, usize), sub: Subsampling) -> (i32, i32) {
+fn chroma_ar_sums(
+    g: &FilmGrainParams,
+    luma: &GrainTemplate,
+    chroma: &ChromaGrain,
+    pos: (usize, usize),
+    sub: Subsampling,
+) -> (i32, i32) {
     let (y, x) = pos;
     let lag = g.ar_coeff_lag as i32;
     let mut s0 = 0;
@@ -162,9 +168,20 @@ fn chroma_ar_sums(g: &FilmGrainParams, luma: &GrainTemplate, chroma: &ChromaGrai
 }
 
 /// Cb/Cr grain templates (all zero for monochrome pictures).
-fn generate_chroma_grain(g: &FilmGrainParams, luma: &GrainTemplate, rng: &mut Rng, sub: Subsampling, shift: u32, range: GrainRange) -> ChromaGrain {
-    let mut chroma =
-        ChromaGrain { cb: new_template(), cr: new_template(), cols: if sub.x != 0 { 44 } else { GRAIN_W }, rows: if sub.y != 0 { 38 } else { GRAIN_H } };
+fn generate_chroma_grain(
+    g: &FilmGrainParams,
+    luma: &GrainTemplate,
+    rng: &mut Rng,
+    sub: Subsampling,
+    shift: u32,
+    range: GrainRange,
+) -> ChromaGrain {
+    let mut chroma = ChromaGrain {
+        cb: new_template(),
+        cr: new_template(),
+        cols: if sub.x != 0 { 44 } else { GRAIN_W },
+        rows: if sub.y != 0 { 38 } else { GRAIN_H },
+    };
     let dims = (chroma.cols, chroma.rows);
     rng.0 = g.grain_seed ^ 0xb524;
     fill_template(&mut chroma.cb, rng, g.num_cb_points > 0 || g.chroma_scaling_from_luma, dims, shift);
@@ -267,7 +284,15 @@ struct OverlapBlend {
 }
 
 /// Copies one random 34x34 block of grain into plane `s` of a stripe at horizontal position `x`.
-fn copy_stripe_block(s: &mut [i32], src: &GrainTemplate, origin: (usize, usize), (psx, psy): (usize, usize), x: usize, stripe_w: usize, blend: OverlapBlend) {
+fn copy_stripe_block(
+    s: &mut [i32],
+    src: &GrainTemplate,
+    origin: (usize, usize),
+    (psx, psy): (usize, usize),
+    x: usize,
+    stripe_w: usize,
+    blend: OverlapBlend,
+) {
     let (pox, poy) = origin;
     let OverlapBlend { overlap, range } = blend;
     for i in 0..(STRIPE_H >> psy) {
@@ -291,11 +316,18 @@ fn copy_stripe_block(s: &mut [i32], src: &GrainTemplate, origin: (usize, usize),
 }
 
 impl NoiseStripes {
-    fn generate(g: &FilmGrainParams, rng: &mut Rng, luma: &GrainTemplate, chroma: &ChromaGrain, p: &StripeParams) -> Self {
+    fn generate(
+        g: &FilmGrainParams,
+        rng: &mut Rng,
+        luma: &GrainTemplate,
+        chroma: &ChromaGrain,
+        p: &StripeParams,
+    ) -> Self {
         let stripe_w = p.width + 64;
         let n_stripes = (p.height.div_ceil(2)).div_ceil(16).max(1);
-        let mut stripes: Vec<[Vec<i32>; 3]> =
-            (0..n_stripes).map(|_| [vec![0; STRIPE_H * stripe_w], vec![0; STRIPE_H * stripe_w], vec![0; STRIPE_H * stripe_w]]).collect();
+        let mut stripes: Vec<[Vec<i32>; 3]> = (0..n_stripes)
+            .map(|_| [vec![0; STRIPE_H * stripe_w], vec![0; STRIPE_H * stripe_w], vec![0; STRIPE_H * stripe_w]])
+            .collect();
         for (luma_num, stripe) in stripes.iter_mut().enumerate() {
             let mut r = g.grain_seed;
             r ^= (((luma_num * 37 + 178) & 255) << 8) as u32;
@@ -315,7 +347,15 @@ impl NoiseStripes {
                         1 => &chroma.cb,
                         _ => &chroma.cr,
                     };
-                    copy_stripe_block(s, src, (pox, poy), (psx, psy), x, stripe_w, OverlapBlend { overlap: g.overlap_flag, range: p.range });
+                    copy_stripe_block(
+                        s,
+                        src,
+                        (pox, poy),
+                        (psx, psy),
+                        x,
+                        stripe_w,
+                        OverlapBlend { overlap: g.overlap_flag, range: p.range },
+                    );
                 }
             }
         }
@@ -382,15 +422,31 @@ fn blend_chroma(pic: &mut Picture, g: &FilmGrainParams, lut: &ScalingLut, noise:
     let ch = (h + sub_y) >> sub_y;
     let [py, pu, pv] = &mut pic.planes;
     let planes = [
-        ChromaBlendPlane { plane: 1, enabled: g.num_cb_points > 0, luma_mult: g.cb_luma_mult, mult: g.cb_mult, offset: g.cb_offset },
-        ChromaBlendPlane { plane: 2, enabled: g.num_cr_points > 0, luma_mult: g.cr_luma_mult, mult: g.cr_mult, offset: g.cr_offset },
+        ChromaBlendPlane {
+            plane: 1,
+            enabled: g.num_cb_points > 0,
+            luma_mult: g.cb_luma_mult,
+            mult: g.cb_mult,
+            offset: g.cb_offset,
+        },
+        ChromaBlendPlane {
+            plane: 2,
+            enabled: g.num_cr_points > 0,
+            luma_mult: g.cr_luma_mult,
+            mult: g.cr_mult,
+            offset: g.cr_offset,
+        },
     ];
     for y in 0..ch {
         for x in 0..cw {
             let lx = x << sub_x;
             let ly = y << sub_y;
             let lnx = (lx + 1).min(w - 1);
-            let avg = if sub_x != 0 { round2(py[ly * w + lx] as i32 + py[ly * w + lnx] as i32, 1) } else { py[ly * w + lx] as i32 };
+            let avg = if sub_x != 0 {
+                round2(py[ly * w + lx] as i32 + py[ly * w + lnx] as i32, 1)
+            } else {
+                py[ly * w + lx] as i32
+            };
             for (cp, out) in planes.iter().zip([&mut *pu, &mut *pv]) {
                 if !(cp.enabled || g.chroma_scaling_from_luma) {
                     continue;

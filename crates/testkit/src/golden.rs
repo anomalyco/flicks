@@ -69,7 +69,9 @@ pub fn decode_png(bytes: &[u8]) -> Result<Rgba8, String> {
     let px = match info.color_type {
         png::ColorType::Rgba => buf[..n * 4].to_vec(),
         png::ColorType::Rgb => buf[..n * 3].as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        png::ColorType::GrayscaleAlpha => buf[..n * 2].as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::GrayscaleAlpha => {
+            buf[..n * 2].as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect()
+        }
         png::ColorType::Grayscale => buf[..n].iter().flat_map(|&g| [g, g, g, 255]).collect(),
         png::ColorType::Indexed => return Err("unexpanded palette PNG".into()),
     };
@@ -107,7 +109,11 @@ pub struct Diff {
 
 impl std::fmt::Display for Diff {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PSNR {:.2} dB, max {}, p99 {}, mean {:.3}, {} pixels differ", self.psnr, self.max_abs, self.p99, self.mean_abs, self.differing)
+        write!(
+            f,
+            "PSNR {:.2} dB, max {}, p99 {}, mean {:.3}, {} pixels differ",
+            self.psnr, self.max_abs, self.p99, self.mean_abs, self.differing
+        )
     }
 }
 
@@ -169,7 +175,8 @@ impl Tolerance {
 
 /// Whether `FLICKS_BLESS` asks to regenerate references.
 pub fn blessing() -> bool {
-    std::env::var("FLICKS_BLESS").is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+    std::env::var("FLICKS_BLESS")
+        .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
 /// Where failing comparisons write `<name>.actual.png` / `<name>.diff.png`.
@@ -239,17 +246,28 @@ pub fn sidecar_text(file_name: &str, title: &str, generated_by: &str) -> String 
 
 /// The `ATTRIBUTION.md` table row for a golden image at workspace-relative `rel`.
 pub fn attribution_row(rel: &str, generated_by: &str) -> String {
-    format!("| `{rel}` | Flicks contributors | Original work: golden reference rendered by Flicks ({generated_by}) | MIT OR Apache-2.0 |")
+    format!(
+        "| `{rel}` | Flicks contributors | Original work: golden reference rendered by Flicks ({generated_by}) | MIT OR Apache-2.0 |"
+    )
 }
 
 /// Compare `actual` with the golden PNG at `golden` (or bless it). `title` and `generated_by`
 /// fill the attribution sidecar written on bless. Returns the difference on success.
-pub fn check_golden(golden: &Path, actual: &Rgba8, tol: Tolerance, title: &str, generated_by: &str) -> Result<Diff, String> {
+pub fn check_golden(
+    golden: &Path,
+    actual: &Rgba8,
+    tol: Tolerance,
+    title: &str,
+    generated_by: &str,
+) -> Result<Diff, String> {
     let name = golden.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     if blessing() {
         let size = write_png(golden, actual)?;
         if size > MAX_GOLDEN_BYTES {
-            return Err(format!("{}: {size} bytes exceeds the {MAX_GOLDEN_BYTES}-byte golden limit; render smaller", golden.display()));
+            return Err(format!(
+                "{}: {size} bytes exceeds the {MAX_GOLDEN_BYTES}-byte golden limit; render smaller",
+                golden.display()
+            ));
         }
         let side = PathBuf::from(format!("{}.attribution", golden.display()));
         if !side.exists() {
@@ -265,7 +283,8 @@ pub fn check_golden(golden: &Path, actual: &Rgba8, tol: Tolerance, title: &str, 
         eprintln!("blessed {rel} ({size} bytes)");
         return Ok(Diff { max_abs: 0, mean_abs: 0.0, p99: 0, psnr: f64::INFINITY, differing: 0 });
     }
-    let expected = read_png(golden).map_err(|e| format!("{e}\n(missing or unreadable golden; generate it with FLICKS_BLESS=1)"))?;
+    let expected = read_png(golden)
+        .map_err(|e| format!("{e}\n(missing or unreadable golden; generate it with FLICKS_BLESS=1)"))?;
     let d = diff(&expected, actual).map_err(|e| format!("{}: {e}", golden.display()))?;
     if tol.accepts(&d) {
         return Ok(d);
@@ -360,7 +379,11 @@ mod tests {
         far.px.iter_mut().step_by(4).for_each(|v| *v = 255 - *v);
         let e = check_golden(&path, &far, Tolerance::RENDER, "t", "unit test").unwrap_err();
         assert!(e.contains("PSNR"), "{e}");
-        assert!(check_golden(&dir.path().join("missing.png"), &img, Tolerance::RENDER, "t", "unit test").unwrap_err().contains("FLICKS_BLESS"));
+        assert!(
+            check_golden(&dir.path().join("missing.png"), &img, Tolerance::RENDER, "t", "unit test")
+                .unwrap_err()
+                .contains("FLICKS_BLESS")
+        );
     }
 
     #[test]

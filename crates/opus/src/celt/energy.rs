@@ -44,7 +44,15 @@ pub fn laplace_decode(dec: &mut RangeDecoder, mut fs: u32, decay: u32) -> i32 {
 }
 
 /// `unquant_coarse_energy`.
-pub fn unquant_coarse_energy(start: usize, end: usize, old_e: &mut [f32], intra: bool, dec: &mut RangeDecoder, c: usize, lm: usize) {
+pub fn unquant_coarse_energy(
+    start: usize,
+    end: usize,
+    old_e: &mut [f32],
+    intra: bool,
+    dec: &mut RangeDecoder,
+    c: usize,
+    lm: usize,
+) {
     let prob = &E_PROB_MODEL[lm][intra as usize];
     let (coef, beta) = if intra { (0.0, BETA_INTRA) } else { (PRED_COEF[lm], BETA_COEF[lm]) };
     let budget = dec.storage() as i32 * 8;
@@ -73,7 +81,14 @@ pub fn unquant_coarse_energy(start: usize, end: usize, old_e: &mut [f32], intra:
     }
 }
 
-pub fn unquant_fine_energy(start: usize, end: usize, old_e: &mut [f32], fine_quant: &[i32; NB_EBANDS], dec: &mut RangeDecoder, c: usize) {
+pub fn unquant_fine_energy(
+    start: usize,
+    end: usize,
+    old_e: &mut [f32],
+    fine_quant: &[i32; NB_EBANDS],
+    dec: &mut RangeDecoder,
+    c: usize,
+) {
     for i in start..end {
         let fq = fine_quant[i];
         if fq <= 0 {
@@ -99,7 +114,8 @@ pub struct EnergyFinalise<'a, 'd> {
 }
 
 pub fn unquant_energy_finalise(input: EnergyFinalise<'_, '_>) {
-    let EnergyFinalise { start, end, old_e, fine_quant, fine_priority, mut bits_left, decoder: dec, channels: c } = input;
+    let EnergyFinalise { start, end, old_e, fine_quant, fine_priority, mut bits_left, decoder: dec, channels: c } =
+        input;
     for prio in 0..2 {
         let mut i = start;
         while i < end && bits_left >= c as i32 {

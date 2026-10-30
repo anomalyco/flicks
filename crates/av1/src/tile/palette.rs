@@ -1,7 +1,7 @@
 use super::coeffs::ceil_log2;
 use super::{
-    DC_PRED, MI_HEIGHT_LOG2, MI_WIDTH_LOG2, PALETTE_COLOR_CONTEXT, PALETTE_COLOR_HASH_MULTIPLIERS, PALETTE_COLORS, PALETTE_NUM_NEIGHBORS, TileDecoder,
-    block_height, block_width,
+    DC_PRED, MI_HEIGHT_LOG2, MI_WIDTH_LOG2, PALETTE_COLOR_CONTEXT, PALETTE_COLOR_HASH_MULTIPLIERS, PALETTE_COLORS,
+    PALETTE_NUM_NEIGHBORS, TileDecoder, block_height, block_width,
 };
 
 impl<'a, 'f> TileDecoder<'a, 'f> {

@@ -73,7 +73,14 @@ impl Decoder {
         if layout.is_empty() && asc.channel_config != 0 {
             return Err(Error::InvalidConfig("unsupported channel configuration"));
         }
-        let mut d = Decoder { asc, layout: Vec::new(), offsets: Vec::new(), channels: Vec::new(), noise_state: 0x2545_F491, sbr_seen: false };
+        let mut d = Decoder {
+            asc,
+            layout: Vec::new(),
+            offsets: Vec::new(),
+            channels: Vec::new(),
+            noise_state: 0x2545_F491,
+            sbr_seen: false,
+        };
         d.set_layout(layout);
         Ok(d)
     }
@@ -171,7 +178,11 @@ impl Decoder {
                 }
                 ID_PCE => {
                     let pce = ProgramConfig::parse(&mut br)?;
-                    if allow_reconfig && !saw_element && self.asc.channel_config == 0 && self.asc.pce.as_ref() != Some(&pce) {
+                    if allow_reconfig
+                        && !saw_element
+                        && self.asc.channel_config == 0
+                        && self.asc.pce.as_ref() != Some(&pce)
+                    {
                         let layout = pce.layout();
                         if !layout.is_empty() && layout.iter().map(|e| e.0.channels()).sum::<usize>() <= 64 {
                             self.asc.pce = Some(pce);

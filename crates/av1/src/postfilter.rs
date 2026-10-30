@@ -3,7 +3,8 @@
 
 use crate::frame::RowBand;
 use crate::spec_tables::{
-    GLOBAL_GLOBALMV, GLOBALMV, INTRA_FRAME, MAX_LOOP_FILTER, NEARESTMV, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SEG_LVL_ALT_LF_Y_V, TX_HEIGHT, TX_WIDTH,
+    GLOBAL_GLOBALMV, GLOBALMV, INTRA_FRAME, MAX_LOOP_FILTER, NEARESTMV, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE,
+    SEG_LVL_ALT_LF_Y_V, TX_HEIGHT, TX_WIDTH,
 };
 use crate::state::FrameState;
 use crate::stats::{DecodeStats, Stage, Timer};
@@ -80,7 +81,11 @@ fn loop_filter(fs: &mut FrameState, pool: &crate::par::Pool) {
                 let pl = &cur.planes[p];
                 let (y0, y1) = ((start.saturating_sub(LF_MARGIN)) >> sub_y, start >> sub_y);
                 let rows = pl.data.get(y0 * pl.stride..y1 * pl.stride);
-                if start == 0 || !planes.contains(&p) { Vec::new() } else { rows.map(<[u16]>::to_vec).unwrap_or_default() }
+                if start == 0 || !planes.contains(&p) {
+                    Vec::new()
+                } else {
+                    rows.map(<[u16]>::to_vec).unwrap_or_default()
+                }
             })
         })
         .collect();
@@ -111,7 +116,13 @@ fn loop_filter(fs: &mut FrameState, pool: &crate::par::Pool) {
 /// Both loop filter passes over the band of `plane` holding luma rows [start, end); `margin` is
 /// an unfiltered copy of the rows above the band (empty for the first band). Returns the samples
 /// of `margin` that the band's top horizontal edges changed, as (index, value).
-fn filter_band(fs: &FrameState, plane: usize, (start, end): (usize, usize), band: &mut RowBand, margin: &mut [u16]) -> Vec<(usize, u16)> {
+fn filter_band(
+    fs: &FrameState,
+    plane: usize,
+    (start, end): (usize, usize),
+    band: &mut RowBand,
+    margin: &mut [u16],
+) -> Vec<(usize, u16)> {
     let mi_rows = fs.fh.mi_rows as usize;
     let (r0, r1) = (start / 4, mi_rows.min(end / 4));
     let sub_y = if plane == 0 { 0 } else { fs.ssy };
@@ -145,14 +156,25 @@ fn filter_band(fs: &FrameState, plane: usize, (start, end): (usize, usize), band
 
 /// One loop filter edge (7.14.2) at mode info position (row, col): 4 lines of samples across
 /// it. `above` holds the rows above `band` for horizontal edges on the band's top row.
-fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane: usize, pass: usize, row: usize, col: usize) {
+fn edge(
+    fs: &FrameState,
+    band: &mut RowBand,
+    above: Option<&mut RowBand>,
+    plane: usize,
+    pass: usize,
+    row: usize,
+    col: usize,
+) {
     let (sub_x, sub_y) = if plane == 0 { (0, 0) } else { (fs.ssx, fs.ssy) };
     let (dx, dy) = if pass == 0 { (1i32, 0i32) } else { (0, 1) };
     let x = col * 4;
     let y = row * 4;
     let row = row | sub_y;
     let col = col | sub_x;
-    let on_screen = !(x >= fs.fh.frame_width as usize || y >= fs.fh.frame_height as usize || (pass == 0 && x == 0) || (pass == 1 && y == 0));
+    let on_screen = !(x >= fs.fh.frame_width as usize
+        || y >= fs.fh.frame_height as usize
+        || (pass == 0 && x == 0)
+        || (pass == 1 && y == 0));
     if !on_screen {
         return;
     }
@@ -161,7 +183,11 @@ fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane:
     let prev_row = row - ((dy as usize) << sub_y);
     let prev_col = col - ((dx as usize) << sub_x);
     let tx_sz = fs.lf_tx_size(plane, row >> sub_y, col >> sub_x);
-    let is_tx_edge = if pass == 0 { xp.is_multiple_of(TX_WIDTH[tx_sz] as usize) } else { yp.is_multiple_of(TX_HEIGHT[tx_sz] as usize) };
+    let is_tx_edge = if pass == 0 {
+        xp.is_multiple_of(TX_WIDTH[tx_sz] as usize)
+    } else {
+        yp.is_multiple_of(TX_HEIGHT[tx_sz] as usize)
+    };
     if !is_tx_edge {
         return;
     }
@@ -181,7 +207,9 @@ fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane:
     }
     let prev_tx_sz = fs.lf_tx_size(plane, prev_row >> sub_y, prev_col >> sub_x);
     // filter size (7.14.3)
-    let base_size = if pass == 0 { TX_WIDTH[prev_tx_sz].min(TX_WIDTH[tx_sz]) } else { TX_HEIGHT[prev_tx_sz].min(TX_HEIGHT[tx_sz]) } as usize;
+    let base_size =
+        if pass == 0 { TX_WIDTH[prev_tx_sz].min(TX_WIDTH[tx_sz]) } else { TX_HEIGHT[prev_tx_sz].min(TX_HEIGHT[tx_sz]) }
+            as usize;
     let filter_size = if plane == 0 { 16.min(base_size) } else { 8.min(base_size) };
     let (mut lvl, mut limit, mut blimit, mut thresh) = strength(fs, row, col, plane, pass);
     if lvl == 0 {
@@ -233,7 +261,11 @@ fn strength(fs: &FrameState, row: usize, col: usize, plane: usize, pass: usize) 
     let rf = mi.ref_frame[i][0];
     let mode = mi.y_mode[i] as usize;
     let mode_type = (mode >= NEARESTMV && mode != GLOBALMV && mode != GLOBAL_GLOBALMV) as usize;
-    let delta_lf = if fs.fh.delta_lf_multi { mi.delta_lf[i][if plane == 0 { pass } else { plane + 1 }] } else { mi.delta_lf[i][0] } as i32;
+    let delta_lf = if fs.fh.delta_lf_multi {
+        mi.delta_lf[i][if plane == 0 { pass } else { plane + 1 }]
+    } else {
+        mi.delta_lf[i][0]
+    } as i32;
     // 7.14.5
     let idx = if plane == 0 { pass } else { plane + 1 };
     let base = (delta_lf + fs.fh.lf.level[idx] as i32).clamp(0, MAX_LOOP_FILTER as i32);
@@ -283,7 +315,14 @@ struct LfThresh {
 impl LfThresh {
     fn new(limit: i32, blimit: i32, thresh: i32, bd: u32) -> LfThresh {
         let sh = bd - 8;
-        LfThresh { limit: limit << sh, blimit: blimit << sh, thresh: thresh << sh, flat: 1 << sh, off: 0x80 << sh, half: 1 << (bd - 1) }
+        LfThresh {
+            limit: limit << sh,
+            blimit: blimit << sh,
+            thresh: thresh << sh,
+            flat: 1 << sh,
+            off: 0x80 << sh,
+            half: 1 << (bd - 1),
+        }
     }
 }
 

@@ -95,7 +95,11 @@ fn program_stream_with_large_pes_packets_gives_back_every_frame() {
         for (s, frames) in f.streams.iter().zip([&a, &b]) {
             assert_eq!(s.units.len(), frames.len());
             for (i, fr) in frames.iter().enumerate() {
-                assert_eq!(&f.read_unit(&data, f.streams.iter().position(|x| std::ptr::eq(x, s)).unwrap(), i).unwrap(), fr, "mpeg1 {mpeg1} unit {i}");
+                assert_eq!(
+                    &f.read_unit(&data, f.streams.iter().position(|x| std::ptr::eq(x, s)).unwrap(), i).unwrap(),
+                    fr,
+                    "mpeg1 {mpeg1} unit {i}"
+                );
             }
         }
         // cut inside the last packets: never panics, and the units before the cut are intact

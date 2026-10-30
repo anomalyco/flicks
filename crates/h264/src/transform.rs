@@ -32,13 +32,21 @@ impl LevelScale {
 /// Scale one 4x4 AC coefficient (8.5.12.1, not the DC of Intra16x16 / chroma blocks).
 #[inline(always)]
 pub fn scale4(c: i32, ls: i32, qp: i32) -> i32 {
-    if qp >= 24 { c.wrapping_mul(ls) << (qp / 6 - 4) } else { c.wrapping_mul(ls).wrapping_add(1 << (3 - qp / 6)) >> (4 - qp / 6) }
+    if qp >= 24 {
+        c.wrapping_mul(ls) << (qp / 6 - 4)
+    } else {
+        c.wrapping_mul(ls).wrapping_add(1 << (3 - qp / 6)) >> (4 - qp / 6)
+    }
 }
 
 /// Scale one 8x8 coefficient (8.5.13.1).
 #[inline(always)]
 pub fn scale8(c: i32, ls: i32, qp: i32) -> i32 {
-    if qp >= 36 { c.wrapping_mul(ls) << (qp / 6 - 6) } else { c.wrapping_mul(ls).wrapping_add(1 << (5 - qp / 6)) >> (6 - qp / 6) }
+    if qp >= 36 {
+        c.wrapping_mul(ls) << (qp / 6 - 6)
+    } else {
+        c.wrapping_mul(ls).wrapping_add(1 << (5 - qp / 6)) >> (6 - qp / 6)
+    }
 }
 
 /// Intra16x16 luma DC: inverse Hadamard + scaling (8.5.10). `c` is raster order (row*4+col);
@@ -65,8 +73,11 @@ pub fn luma_dc_dequant(c: &mut [i32; 16], qp: i32, ls00: i32) {
         let d23 = t[8 + j] - t[12 + j];
         let f = [s01 + s23, s01 - s23, d01 - d23, d01 + d23];
         for i in 0..4 {
-            c[i * 4 + j] =
-                if qp >= 36 { f[i].wrapping_mul(ls00) << (qp / 6 - 6) } else { f[i].wrapping_mul(ls00).wrapping_add(1 << (5 - qp / 6)) >> (6 - qp / 6) };
+            c[i * 4 + j] = if qp >= 36 {
+                f[i].wrapping_mul(ls00) << (qp / 6 - 6)
+            } else {
+                f[i].wrapping_mul(ls00).wrapping_add(1 << (5 - qp / 6)) >> (6 - qp / 6)
+            };
         }
     }
 }

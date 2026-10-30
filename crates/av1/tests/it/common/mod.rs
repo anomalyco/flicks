@@ -25,7 +25,11 @@ pub fn ffmpeg_libaom() -> Option<PathBuf> {
 fn ffmpeg_with(needs: &[(&str, &str)]) -> Option<PathBuf> {
     let ff = flicks_testkit::ffmpeg_or_skip("av1 oracle")?;
     for &(list, lib) in needs {
-        let out = Command::new(&ff).args(["-hide_banner", list]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let out = Command::new(&ff)
+            .args(["-hide_banner", list])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
         if !out.contains(lib) {
             flicks_testkit::skip("av1 oracle", &format!("ffmpeg has no {lib} (see `ffmpeg {list}`)"));
             return None;
@@ -39,7 +43,8 @@ pub fn fixture_dir() -> PathBuf {
 }
 
 pub fn run(ff: &Path, args: &[&str]) {
-    let out = Command::new(ff).args(["-hide_banner", "-loglevel", "error", "-y"]).args(args).output().expect("run ffmpeg");
+    let out =
+        Command::new(ff).args(["-hide_banner", "-loglevel", "error", "-y"]).args(args).output().expect("run ffmpeg");
     assert!(out.status.success(), "ffmpeg {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
 }
 
@@ -57,7 +62,14 @@ pub struct Spec {
 
 impl Spec {
     pub fn new(name: &'static str, lavfi: impl Into<String>, frames: u32, pix_fmt: &'static str, enc: &[&str]) -> Spec {
-        Spec { name, encoder: "libsvtav1", lavfi: lavfi.into(), frames, pix_fmt, enc: enc.iter().map(|s| s.to_string()).collect() }
+        Spec {
+            name,
+            encoder: "libsvtav1",
+            lavfi: lavfi.into(),
+            frames,
+            pix_fmt,
+            enc: enc.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
     pub fn encoder(mut self, encoder: &'static str) -> Spec {
@@ -72,7 +84,18 @@ pub fn make(ff: &Path, spec: &Spec) -> PathBuf {
         let tmp = flicks_testkit::temp_path(&path);
         let frames = spec.frames.to_string();
         let t = tmp.to_str().unwrap().to_string();
-        let mut args: Vec<&str> = vec!["-f", "lavfi", "-i", spec.lavfi.as_str(), "-frames:v", frames.as_str(), "-pix_fmt", spec.pix_fmt, "-c:v", spec.encoder];
+        let mut args: Vec<&str> = vec![
+            "-f",
+            "lavfi",
+            "-i",
+            spec.lavfi.as_str(),
+            "-frames:v",
+            frames.as_str(),
+            "-pix_fmt",
+            spec.pix_fmt,
+            "-c:v",
+            spec.encoder,
+        ];
         args.extend(spec.enc.iter().map(String::as_str));
         args.extend(["-f", "ivf", t.as_str()]);
         run(ff, &args);
@@ -218,10 +241,19 @@ pub fn check_file(ff: &Path, name: &str, path: &Path) {
     for (i, p) in pics.iter().enumerate() {
         let (first, count) = compare(p, &raw[i * per..(i + 1) * per]);
         if let Some((plane, x, y, a, b)) = first {
-            panic!("{name}: frame {i} differs in {count} samples; first at plane {plane} ({x},{y}): ours {a}, reference {b}");
+            panic!(
+                "{name}: frame {i} differs in {count} samples; first at plane {plane} ({x},{y}): ours {a}, reference {b}"
+            );
         }
     }
-    println!("{:<34} {:>3} frames {}x{} {}-bit bit-exact", name, pics.len(), pics[0].width, pics[0].height, pics[0].bit_depth);
+    println!(
+        "{:<34} {:>3} frames {}x{} {}-bit bit-exact",
+        name,
+        pics.len(),
+        pics[0].width,
+        pics[0].height,
+        pics[0].bit_depth
+    );
 }
 
 /// An AV1 conformance test vector (libaom test data), downloaded on first use with curl into
@@ -235,7 +267,13 @@ pub fn test_vector(name: &str) -> Option<PathBuf> {
     }
     let tmp = flicks_testkit::temp_path(&path);
     let url = format!("https://storage.googleapis.com/aom-test-data/{name}");
-    let ok = Command::new("curl").args(["-sfL", "--max-time", "120", "-o"]).arg(&tmp).arg(&url).status().map(|s| s.success()).unwrap_or(false);
+    let ok = Command::new("curl")
+        .args(["-sfL", "--max-time", "120", "-o"])
+        .arg(&tmp)
+        .arg(&url)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     if !ok {
         _ = std::fs::remove_file(&tmp);
         flicks_testkit::skip("av1 conformance", &format!("could not download {url}"));

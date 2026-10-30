@@ -111,7 +111,11 @@ impl Resampler {
         r.period = (fout / g) as u64;
         let pi = std::f64::consts::PI;
         // Passband edge and (for decimation) stopband edge in radians per input sample.
-        let (wp, ws) = if fout > fin { (0.94 * pi, pi) } else { (0.88 * pi * fout as f64 / fin as f64, pi * fout as f64 / fin as f64) };
+        let (wp, ws) = if fout > fin {
+            (0.94 * pi, pi)
+        } else {
+            (0.88 * pi * fout as f64 / fin as f64, pi * fout as f64 / fin as f64)
+        };
         for j in 0..r.period as i64 {
             let num = j * fin as i64 - r.delay_q;
             let base = num.div_euclid(fout as i64);
@@ -174,11 +178,15 @@ mod tests {
 
     #[test]
     fn upsample_sine_and_delay() {
-        for &(fin, fout) in &[(16000u32, 48000u32), (8000, 48000), (12000, 48000), (16000, 24000), (16000, 8000), (12000, 16000)] {
+        for &(fin, fout) in
+            &[(16000u32, 48000u32), (8000, 48000), (12000, 48000), (16000, 24000), (16000, 8000), (12000, 16000)]
+        {
             let mut r = Resampler::new(fin, fout);
             let f = 440.0;
             let n = fin as usize / 10;
-            let x: Vec<i16> = (0..n).map(|i| ((2.0 * std::f64::consts::PI * f * i as f64 / fin as f64).sin() * 10000.0) as i16).collect();
+            let x: Vec<i16> = (0..n)
+                .map(|i| ((2.0 * std::f64::consts::PI * f * i as f64 / fin as f64).sin() * 10000.0) as i16)
+                .collect();
             let mut y = Vec::new();
             for c in x.chunks(fin as usize / 50) {
                 r.process(c, &mut y);

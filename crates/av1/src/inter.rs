@@ -6,14 +6,16 @@ use std::sync::OnceLock;
 use crate::frame::Plane;
 use crate::mvpred::round2_signed64;
 use crate::spec_tables::{
-    BLOCK_8X8, BLOCK_SIZES, COMPOUND_AVERAGE, COMPOUND_DIFFWTD, COMPOUND_DISTANCE, COMPOUND_INTRA, COMPOUND_WEDGE, DIV_LUT, DIV_LUT_BITS, DIV_LUT_PREC_BITS,
-    EIGHTTAP, EIGHTTAP_SHARP, EIGHTTAP_SMOOTH, FILTER_BITS, GLOBAL_GLOBALMV, GLOBALMV, II_H_PRED, II_SMOOTH_PRED, II_V_PRED, II_WEIGHTS_1D, INTRA_FRAME,
-    LAST_FRAME, LOCALWARP, LS_MV_MAX, MASK_MASTER_SIZE, MAX_FRAME_DISTANCE, MAX_SB_SIZE, MI_HEIGHT_LOG2, MI_WIDTH_LOG2, NUM_4X4_BLOCKS_HIGH,
-    NUM_4X4_BLOCKS_WIDE, OBMC, OBMC_MASK_2, OBMC_MASK_4, OBMC_MASK_8, OBMC_MASK_16, OBMC_MASK_32, QUANT_DIST_LOOKUP, QUANT_DIST_WEIGHT, REF_SCALE_SHIFT,
-    SCALE_SUBPEL_BITS, SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK, TRANSLATION, WARP_PARAM_REDUCE_BITS, WARPED_FILTERS, WARPEDDIFF_PREC_BITS,
-    WARPEDMODEL_NONDIAGAFFINE_CLAMP, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP, WARPEDPIXEL_PREC_SHIFTS, WEDGE_BITS, WEDGE_CODEBOOK, WEDGE_HORIZONTAL,
-    WEDGE_MASTER_OBLIQUE_EVEN, WEDGE_MASTER_OBLIQUE_ODD, WEDGE_MASTER_VERTICAL, WEDGE_OBLIQUE27, WEDGE_OBLIQUE63, WEDGE_OBLIQUE117, WEDGE_OBLIQUE153,
-    WEDGE_TYPES, WEDGE_VERTICAL,
+    BLOCK_8X8, BLOCK_SIZES, COMPOUND_AVERAGE, COMPOUND_DIFFWTD, COMPOUND_DISTANCE, COMPOUND_INTRA, COMPOUND_WEDGE,
+    DIV_LUT, DIV_LUT_BITS, DIV_LUT_PREC_BITS, EIGHTTAP, EIGHTTAP_SHARP, EIGHTTAP_SMOOTH, FILTER_BITS, GLOBAL_GLOBALMV,
+    GLOBALMV, II_H_PRED, II_SMOOTH_PRED, II_V_PRED, II_WEIGHTS_1D, INTRA_FRAME, LAST_FRAME, LOCALWARP, LS_MV_MAX,
+    MASK_MASTER_SIZE, MAX_FRAME_DISTANCE, MAX_SB_SIZE, MI_HEIGHT_LOG2, MI_WIDTH_LOG2, NUM_4X4_BLOCKS_HIGH,
+    NUM_4X4_BLOCKS_WIDE, OBMC, OBMC_MASK_2, OBMC_MASK_4, OBMC_MASK_8, OBMC_MASK_16, OBMC_MASK_32, QUANT_DIST_LOOKUP,
+    QUANT_DIST_WEIGHT, REF_SCALE_SHIFT, SCALE_SUBPEL_BITS, SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK, TRANSLATION,
+    WARP_PARAM_REDUCE_BITS, WARPED_FILTERS, WARPEDDIFF_PREC_BITS, WARPEDMODEL_NONDIAGAFFINE_CLAMP,
+    WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP, WARPEDPIXEL_PREC_SHIFTS, WEDGE_BITS, WEDGE_CODEBOOK,
+    WEDGE_HORIZONTAL, WEDGE_MASTER_OBLIQUE_EVEN, WEDGE_MASTER_OBLIQUE_ODD, WEDGE_MASTER_VERTICAL, WEDGE_OBLIQUE27,
+    WEDGE_OBLIQUE63, WEDGE_OBLIQUE117, WEDGE_OBLIQUE153, WEDGE_TYPES, WEDGE_VERTICAL,
 };
 use crate::tile::TileDecoder;
 
@@ -80,7 +82,11 @@ fn resolve_divisor(d: i64) -> (i32, i64) {
     let a = d.unsigned_abs();
     let n = 63 - a.leading_zeros() as i32;
     let e = a as i64 - (1i64 << n);
-    let f = if n > DIV_LUT_BITS as i32 { round2_signed64(e, (n - DIV_LUT_BITS as i32) as u32) } else { e << (DIV_LUT_BITS as i32 - n) };
+    let f = if n > DIV_LUT_BITS as i32 {
+        round2_signed64(e, (n - DIV_LUT_BITS as i32) as u32)
+    } else {
+        e << (DIV_LUT_BITS as i32 - n)
+    };
     let shift = n + DIV_LUT_PREC_BITS as i32;
     let factor = DIV_LUT[f as usize] as i64;
     (shift, if d < 0 { -factor } else { factor })
@@ -95,11 +101,13 @@ pub(crate) fn setup_shear(p: &[i32; 6]) -> (bool, i32, i32, i32, i32) {
     let v = (p[4] as i64) << WARPEDMODEL_PREC_BITS;
     let gamma0 = round2_signed_wide(v as i128 * div_factor as i128, div_shift as u32).clamp(-32768, 32767);
     let w = p[3] as i64 * p[4] as i64;
-    let delta0 = (p[5] as i64 - round2_signed_wide(w as i128 * div_factor as i128, div_shift as u32) - prec).clamp(-32768, 32767);
+    let delta0 = (p[5] as i64 - round2_signed_wide(w as i128 * div_factor as i128, div_shift as u32) - prec)
+        .clamp(-32768, 32767);
     let rb = WARP_PARAM_REDUCE_BITS as u32;
     let red = |x: i64| (round2_signed64(x, rb) << rb) as i32;
     let (alpha, beta, gamma, delta) = (red(alpha0), red(beta0), red(gamma0), red(delta0));
-    let valid = !(4 * alpha.abs() + 7 * beta.abs() >= (1 << WARPEDMODEL_PREC_BITS) || 4 * gamma.abs() + 4 * delta.abs() >= (1 << WARPEDMODEL_PREC_BITS));
+    let valid = !(4 * alpha.abs() + 7 * beta.abs() >= (1 << WARPEDMODEL_PREC_BITS)
+        || 4 * gamma.abs() + 4 * delta.abs() >= (1 << WARPEDMODEL_PREC_BITS));
     (valid, alpha, beta, gamma, delta)
 }
 
@@ -120,9 +128,11 @@ fn wedge_masks() -> &'static Vec<Vec<[Vec<u8>; 2]>> {
             let mut shift = (n / 4) as i32;
             let mut i = 0;
             while i < n {
-                master[WEDGE_OBLIQUE63][i][j] = WEDGE_MASTER_OBLIQUE_EVEN[(j as i32 - shift).clamp(0, n as i32 - 1) as usize];
+                master[WEDGE_OBLIQUE63][i][j] =
+                    WEDGE_MASTER_OBLIQUE_EVEN[(j as i32 - shift).clamp(0, n as i32 - 1) as usize];
                 shift -= 1;
-                master[WEDGE_OBLIQUE63][i + 1][j] = WEDGE_MASTER_OBLIQUE_ODD[(j as i32 - shift).clamp(0, n as i32 - 1) as usize];
+                master[WEDGE_OBLIQUE63][i + 1][j] =
+                    WEDGE_MASTER_OBLIQUE_ODD[(j as i32 - shift).clamp(0, n as i32 - 1) as usize];
                 master[WEDGE_VERTICAL][i][j] = WEDGE_MASTER_VERTICAL[j];
                 master[WEDGE_VERTICAL][i + 1][j] = WEDGE_MASTER_VERTICAL[j];
                 i += 2;
@@ -236,7 +246,15 @@ impl TileDecoder<'_, '_> {
 
     /// Block inter prediction process (7.11.3.4) into `pred` (stride PRED_STRIDE); `tmp` holds
     /// the intermediate (horizontally filtered) rows.
-    fn block_inter_prediction(&self, src: McSource, (w, h): (usize, usize), filters: [u8; 2], rnd: (u32, u32, u32), pred: &mut [i32], tmp: &mut [i32]) {
+    fn block_inter_prediction(
+        &self,
+        src: McSource,
+        (w, h): (usize, usize),
+        filters: [u8; 2],
+        rnd: (u32, u32, u32),
+        pred: &mut [i32],
+        tmp: &mut [i32],
+    ) {
         let McSource { plane, ref_idx, x, y, x_step, y_step } = src;
         let refp = self.ref_plane(ref_idx, plane);
         let (last_x, last_y) = self.ref_plane_dims(ref_idx, plane);
@@ -293,7 +311,15 @@ impl TileDecoder<'_, '_> {
     }
 
     /// Block warp process (7.11.3.5) for the 8x8 section (i8, j8).
-    fn block_warp(&self, params: &[i32; 6], ref_idx: i32, blk: PredBlock, (i8, j8): (usize, usize), rnd: (u32, u32, u32), pred: &mut [i32]) {
+    fn block_warp(
+        &self,
+        params: &[i32; 6],
+        ref_idx: i32,
+        blk: PredBlock,
+        (i8, j8): (usize, usize),
+        rnd: (u32, u32, u32),
+        pred: &mut [i32],
+    ) {
         let PredBlock { plane, x, y, w, h } = blk;
         let (x, y) = (x as i32, y as i32);
         let refp = self.ref_plane(ref_idx, plane);
@@ -318,7 +344,8 @@ impl TileDecoder<'_, '_> {
                 let offs = (round2(sxv, WARPEDDIFF_PREC_BITS as u32) + WARPEDPIXEL_PREC_SHIFTS as i32) as usize;
                 let mut s = 0i32;
                 for i3 in 0..8i32 {
-                    s += WARPED_FILTERS[offs][i3 as usize] as i32 * row[(ix4 + i2 - 3 + i3).clamp(0, last_x) as usize] as i32;
+                    s += WARPED_FILTERS[offs][i3 as usize] as i32
+                        * row[(ix4 + i2 - 3 + i3).clamp(0, last_x) as usize] as i32;
                 }
                 inter[(i1 + 7) as usize][(i2 + 4) as usize] = round2(s, rnd.0);
             }
@@ -379,8 +406,11 @@ impl TileDecoder<'_, '_> {
         }
         let prec = 1i64 << WARPEDMODEL_PREC_BITS;
         let cl = WARPEDMODEL_NONDIAGAFFINE_CLAMP as i64;
-        let nondiag = |v: i64| round2_signed_wide(v as i128 * div_factor as i128, div_shift as u32).clamp(-cl + 1, cl - 1);
-        let diag = |v: i64| round2_signed_wide(v as i128 * div_factor as i128, div_shift as u32).clamp(prec - cl + 1, prec + cl - 1);
+        let nondiag =
+            |v: i64| round2_signed_wide(v as i128 * div_factor as i128, div_shift as u32).clamp(-cl + 1, cl - 1);
+        let diag = |v: i64| {
+            round2_signed_wide(v as i128 * div_factor as i128, div_shift as u32).clamp(prec - cl + 1, prec + cl - 1)
+        };
         let mut p = [0i64; 6];
         p[2] = diag(a[1][1] * bx[0] - a[0][1] * bx[1]);
         p[3] = nondiag(-a[0][1] * bx[0] + a[0][0] * bx[1]);
@@ -442,7 +472,9 @@ impl TileDecoder<'_, '_> {
     fn select_warp(&self, blk: PredBlock, ref_frame: i8, ref_idx: i32) -> WarpKind {
         let fh = &self.fs.fh;
         let ym = self.b.y_mode;
-        let global = (ym == GLOBALMV || ym == GLOBAL_GLOBALMV) && ref_frame > INTRA_FRAME as i8 && fh.gm_type[ref_frame as usize] as usize > TRANSLATION;
+        let global = (ym == GLOBALMV || ym == GLOBAL_GLOBALMV)
+            && ref_frame > INTRA_FRAME as i8
+            && fh.gm_type[ref_frame as usize] as usize > TRANSLATION;
         let global_valid = global && setup_shear(&fh.gm_params[ref_frame as usize]).0;
         if blk.w < 8 || blk.h < 8 || fh.force_integer_mv {
             WarpKind::None
@@ -456,12 +488,21 @@ impl TileDecoder<'_, '_> {
     }
 
     /// Predicts `blk` from one reference list of the candidate at `mi_i` into `pred`.
-    fn predict_from_reference(&self, blk: PredBlock, mi_i: usize, ref_list: usize, rnd: (u32, u32, u32), pred: &mut [i32], tmp: &mut [i32]) {
+    fn predict_from_reference(
+        &self,
+        blk: PredBlock,
+        mi_i: usize,
+        ref_list: usize,
+        rnd: (u32, u32, u32),
+        pred: &mut [i32],
+        tmp: &mut [i32],
+    ) {
         let PredBlock { plane, x, y, w, h } = blk;
         let fh = &self.fs.fh;
         let ref_frame = self.t.mi.ref_frame[mi_i][ref_list];
         let cand_mv = self.t.mi.mv[mi_i][ref_list];
-        let ref_idx: i32 = if self.b.use_intrabc { -1 } else { fh.ref_frame_idx[ref_frame as usize - LAST_FRAME] as i32 };
+        let ref_idx: i32 =
+            if self.b.use_intrabc { -1 } else { fh.ref_frame_idx[ref_frame as usize - LAST_FRAME] as i32 };
         let warp = self.select_warp(blk, ref_frame, ref_idx);
         if warp == WarpKind::None {
             let mv = [cand_mv.row as i32, cand_mv.col as i32];
@@ -470,7 +511,8 @@ impl TileDecoder<'_, '_> {
             let src = McSource { plane, ref_idx, x: sx, y: sy, x_step: stx, y_step: sty };
             self.block_inter_prediction(src, (w, h), filters, rnd, pred, tmp);
         } else {
-            let params = if warp == WarpKind::Local { self.b.local_warp_params } else { fh.gm_params[ref_frame as usize] };
+            let params =
+                if warp == WarpKind::Local { self.b.local_warp_params } else { fh.gm_params[ref_frame as usize] };
             for i8 in 0..=((h - 1) >> 3) {
                 for j8 in 0..=((w - 1) >> 3) {
                     self.block_warp(&params, ref_idx, blk, (i8, j8), rnd, pred);
@@ -573,7 +615,13 @@ impl TileDecoder<'_, '_> {
                 } else if sx == 1 && sy == 0 {
                     round2(mk(yy, 2 * xx) + mk(yy, 2 * xx + 1), 1)
                 } else {
-                    round2(mk(2 * yy, 2 * xx) + mk(2 * yy, 2 * xx + 1) + mk(2 * yy + 1, 2 * xx) + mk(2 * yy + 1, 2 * xx + 1), 2)
+                    round2(
+                        mk(2 * yy, 2 * xx)
+                            + mk(2 * yy, 2 * xx + 1)
+                            + mk(2 * yy + 1, 2 * xx)
+                            + mk(2 * yy + 1, 2 * xx + 1),
+                        2,
+                    )
                 };
                 let k = yy * PRED_STRIDE + xx;
                 let pl = &mut self.t.cur.planes[plane];

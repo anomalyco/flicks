@@ -492,7 +492,18 @@ fn sequence(tiles: &Tiles, pcm_lf_disabled: bool, segments: Vec<Segment>) -> (Ve
     let c0 = content(0);
     let c1 = content(1);
     // 0: IDR, PCM, tiles / slices / dependent segments
-    let p0 = PicDesc { nal_type: 19, poc: 0, intra: true, cu: Cu::Pcm, pps_id: 0, st: vec![], lt: vec![], num_ref: 0, list_entry: None, segments };
+    let p0 = PicDesc {
+        nal_type: 19,
+        poc: 0,
+        intra: true,
+        cu: Cu::Pcm,
+        pps_id: 0,
+        st: vec![],
+        lt: vec![],
+        num_ref: 0,
+        list_entry: None,
+        segments,
+    };
     encode_picture(&p0, tiles, &c0, &mut s, &mut saved);
     // 1: intra TRAIL_R keeping picture 0 as a long-term reference (not used by this picture)
     let p1 = PicDesc {
@@ -659,7 +670,10 @@ fn tiles_slices_and_dependent_segments() {
 
 #[test]
 fn slices_without_tiles() {
-    let segs =
-        vec![Segment { start: 0, len: 7, dependent: false }, Segment { start: 7, len: 9, dependent: true }, Segment { start: 16, len: 8, dependent: false }];
+    let segs = vec![
+        Segment { start: 0, len: 7, dependent: false },
+        Segment { start: 7, len: 9, dependent: true },
+        Segment { start: 16, len: 8, dependent: false },
+    ];
     run("slices", None, false, segs);
 }

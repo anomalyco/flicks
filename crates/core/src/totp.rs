@@ -105,29 +105,14 @@ impl Totp {
                 _ => {}
             }
         }
-        Self::new(
-            secret.ok_or(TotpError::NoSecret)??,
-            algorithm,
-            digits,
-            period,
-        )
+        Self::new(secret.ok_or(TotpError::NoSecret)??, algorithm, digits, period)
     }
 
-    fn new(
-        secret: Zeroizing<Vec<u8>>,
-        algorithm: Algorithm,
-        digits: u32,
-        period: u64,
-    ) -> Result<Self, TotpError> {
+    fn new(secret: Zeroizing<Vec<u8>>, algorithm: Algorithm, digits: u32, period: u64) -> Result<Self, TotpError> {
         if secret.is_empty() {
             return Err(TotpError::NoSecret);
         }
-        Ok(Self {
-            secret,
-            algorithm,
-            digits,
-            period,
-        })
+        Ok(Self { secret, algorithm, digits, period })
     }
 
     /// Seconds each code lasts.
@@ -144,8 +129,7 @@ impl Totp {
             Algorithm::Sha512 => sign::<sha2::Sha512>(&self.secret, &counter),
         };
         let at = usize::from(mac[mac.len() - 1] & 0x0f);
-        let bits =
-            u32::from_be_bytes([mac[at], mac[at + 1], mac[at + 2], mac[at + 3]]) & 0x7fff_ffff;
+        let bits = u32::from_be_bytes([mac[at], mac[at + 1], mac[at + 2], mac[at + 3]]) & 0x7fff_ffff;
         let code = bits % 10u32.pow(self.digits);
         format!("{code:0width$}", width = self.digits as usize)
     }
@@ -181,20 +165,13 @@ fn lenient() -> Encoding {
 
 fn base32(value: &str) -> Result<Zeroizing<Vec<u8>>, TotpError> {
     let clean: Zeroizing<String> = Zeroizing::new(
-        value
-            .chars()
-            .filter(|c| !c.is_whitespace() && *c != '-')
-            .map(|c| c.to_ascii_uppercase())
-            .collect(),
+        value.chars().filter(|c| !c.is_whitespace() && *c != '-').map(|c| c.to_ascii_uppercase()).collect(),
     );
     let trimmed = clean.trim_end_matches('=');
     if trimmed.is_empty() {
         return Err(TotpError::NoSecret);
     }
-    lenient()
-        .decode(trimmed.as_bytes())
-        .map(Zeroizing::new)
-        .map_err(|_| TotpError::NotBase32)
+    lenient().decode(trimmed.as_bytes()).map(Zeroizing::new).map_err(|_| TotpError::NotBase32)
 }
 
 /// Decodes `%XX` escapes (two hex digits) and `+` as a space. Invalid
@@ -205,9 +182,7 @@ fn percent_decode(raw: &str) -> Zeroizing<String> {
     let mut i = 0;
     while i < bytes.len() {
         let hex = match bytes.get(i + 1..i + 3) {
-            Some(&[a, b]) if a.is_ascii_hexdigit() && b.is_ascii_hexdigit() => {
-                Some(hex_digit(a) << 4 | hex_digit(b))
-            }
+            Some(&[a, b]) if a.is_ascii_hexdigit() && b.is_ascii_hexdigit() => Some(hex_digit(a) << 4 | hex_digit(b)),
             _ => None,
         };
         match (bytes[i], hex) {
@@ -251,11 +226,8 @@ mod tests {
     fn rfc_6238_vectors() {
         let sha1 = Totp::parse(&uri(b"12345678901234567890", "SHA1")).unwrap();
         let sha256 = Totp::parse(&uri(b"12345678901234567890123456789012", "SHA256")).unwrap();
-        let sha512 = Totp::parse(&uri(
-            b"1234567890123456789012345678901234567890123456789012345678901234",
-            "SHA512",
-        ))
-        .unwrap();
+        let sha512 =
+            Totp::parse(&uri(b"1234567890123456789012345678901234567890123456789012345678901234", "SHA512")).unwrap();
         let vectors: [(u64, &str, &str, &str); 6] = [
             (59, "94287082", "46119246", "90693936"),
             (1111111109, "07081804", "68084774", "25091201"),
@@ -301,12 +273,7 @@ mod tests {
     #[test]
     fn bare_secrets_tolerate_spaces_lowercase_and_padding() {
         let canonical = Totp::parse("JBSWY3DPEHPK3PXP").unwrap();
-        for variant in [
-            "jbswy3dpehpk3pxp",
-            "JBSW Y3DP EHPK 3PXP",
-            " jbsw-y3dp-ehpk-3pxp ",
-            "JBSWY3DPEHPK3PXP======",
-        ] {
+        for variant in ["jbswy3dpehpk3pxp", "JBSW Y3DP EHPK 3PXP", " jbsw-y3dp-ehpk-3pxp ", "JBSWY3DPEHPK3PXP======"] {
             assert_eq!(Totp::parse(variant).unwrap(), canonical, "{variant}");
         }
     }
@@ -335,41 +302,17 @@ mod tests {
             ("123456", TotpError::NotBase32),
             ("JBSWY3DPEHPK3P", TotpError::NotBase32),
             ("not a secret!", TotpError::NotBase32),
-            (
-                "https://example.com/?secret=JBSWY3DPEHPK3PXP",
-                TotpError::NotTotpUri,
-            ),
-            (
-                "otpauth://steam/x?secret=JBSWY3DPEHPK3PXP",
-                TotpError::NotTotpUri,
-            ),
-            (
-                "otpauth-migration://offline?data=abc",
-                TotpError::NotTotpUri,
-            ),
-            (
-                "otpauth://hotp/x?secret=JBSWY3DPEHPK3PXP&counter=1",
-                TotpError::Hotp,
-            ),
+            ("https://example.com/?secret=JBSWY3DPEHPK3PXP", TotpError::NotTotpUri),
+            ("otpauth://steam/x?secret=JBSWY3DPEHPK3PXP", TotpError::NotTotpUri),
+            ("otpauth-migration://offline?data=abc", TotpError::NotTotpUri),
+            ("otpauth://hotp/x?secret=JBSWY3DPEHPK3PXP&counter=1", TotpError::Hotp),
             ("otpauth://totp/x?issuer=Example", TotpError::NoSecret),
             ("otpauth://totp/x?secret=", TotpError::NoSecret),
             ("otpauth://totp/x?secret=0189", TotpError::NotBase32),
-            (
-                "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&algorithm=MD5",
-                TotpError::Algorithm("MD5".into()),
-            ),
-            (
-                "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&digits=10",
-                TotpError::Digits("10".into()),
-            ),
-            (
-                "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&digits=six",
-                TotpError::Digits("six".into()),
-            ),
-            (
-                "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&period=0",
-                TotpError::Period("0".into()),
-            ),
+            ("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&algorithm=MD5", TotpError::Algorithm("MD5".into())),
+            ("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&digits=10", TotpError::Digits("10".into())),
+            ("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&digits=six", TotpError::Digits("six".into())),
+            ("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&period=0", TotpError::Period("0".into())),
         ];
         for (value, error) in cases {
             assert_eq!(Totp::parse(value), Err(error), "{value:?}");

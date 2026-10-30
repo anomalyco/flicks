@@ -18,7 +18,17 @@
 //! adaptive hybrid transform and enhanced coupling are refused with [`Error::Unsupported`];
 //! transient pre-noise processing data is read and not applied.
 
-#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unimplemented,
+        clippy::todo,
+        clippy::unreachable
+    )
+)]
 
 mod eac3;
 mod tables;
@@ -123,7 +133,17 @@ pub fn parse_header(b: &[u8]) -> Result<Header> {
         r.skip(2);
     }
     let lfeon = r.read(1) == 1;
-    Ok(Header { sample_rate, bitrate_kbps: kbps >> shift, frame_bytes: words as usize * 2, bsid, acmod, lfeon, blocks: 6, strmtyp: 0, substreamid: 0 })
+    Ok(Header {
+        sample_rate,
+        bitrate_kbps: kbps >> shift,
+        frame_bytes: words as usize * 2,
+        bsid,
+        acmod,
+        lfeon,
+        blocks: 6,
+        strmtyp: 0,
+        substreamid: 0,
+    })
 }
 
 /// MSB-first bit reader; reads past the end give zeros.
@@ -184,7 +204,8 @@ fn window() -> &'static [f32; 256] {
             s
         };
         let alpha = 5.0 * std::f64::consts::PI;
-        let k: Vec<f64> = (0..=256).map(|j| i0(alpha * (1.0 - ((j as f64 - 128.0) / 128.0).powi(2)).max(0.0).sqrt())).collect();
+        let k: Vec<f64> =
+            (0..=256).map(|j| i0(alpha * (1.0 - ((j as f64 - 128.0) / 128.0).powi(2)).max(0.0).sqrt())).collect();
         let total: f64 = k.iter().sum();
         let mut acc = 0.0;
         let mut w = [0f32; 256];
@@ -366,7 +387,8 @@ fn bit_allocation(exp: &[u8; 256], p: &AllocParams, g: &Globals, bap: &mut [u8; 
     if start >= end {
         return;
     }
-    let (sdecay, fdecay, sgain, dbknee, floor) = (SLOWDEC[g.sdcycod], FASTDEC[g.fdcycod], SLOWGAIN[g.sgaincod], DBPBTAB[g.dbpbcod], FLOORTAB[g.floorcod]);
+    let (sdecay, fdecay, sgain, dbknee, floor) =
+        (SLOWDEC[g.sdcycod], FASTDEC[g.fdcycod], SLOWGAIN[g.sgaincod], DBPBTAB[g.dbpbcod], FLOORTAB[g.floorcod]);
     let mut psd = [0i32; 256];
     for bin in start..end {
         psd[bin] = 3072 - ((exp[bin] as i32) << 7);
@@ -570,7 +592,15 @@ fn dynrng_gain(v: u32) -> f32 {
 
 /// Decode exponents of one set (§7.1.3) into `exp[first..]`; `ngrps` groups of 3 mapped values,
 /// each expanded to `grpsize` bins after the absolute exponent.
-fn decode_exponents(r: &mut Bits, absexp: i32, ngrps: usize, grpsize: usize, exp: &mut [u8; 256], first: usize, skip_abs: bool) -> Result<()> {
+fn decode_exponents(
+    r: &mut Bits,
+    absexp: i32,
+    ngrps: usize,
+    grpsize: usize,
+    exp: &mut [u8; 256],
+    first: usize,
+    skip_abs: bool,
+) -> Result<()> {
     let mut prev = absexp;
     let mut at = first;
     if !skip_abs {
@@ -785,7 +815,15 @@ impl Decoder {
 
     /// Decode `nblocks` audio blocks and synthesize them (inverse transform, overlap-add), in coded
     /// channel order with the LFE last.
-    fn blocks(&mut self, r: &mut Bits, f: &mut Frame, acmod: usize, lfeon: bool, nblocks: usize, mut x: Option<&mut eac3::FrameInfo>) -> Result<Vec<Vec<f32>>> {
+    fn blocks(
+        &mut self,
+        r: &mut Bits,
+        f: &mut Frame,
+        acmod: usize,
+        lfeon: bool,
+        nblocks: usize,
+        mut x: Option<&mut eac3::FrameInfo>,
+    ) -> Result<Vec<Vec<f32>>> {
         let nfchans = f.nfchans;
         let nout = nfchans + lfeon as usize;
         let mut pcm: Vec<Vec<f32>> = vec![Vec::with_capacity(256 * nblocks); nout];
@@ -812,7 +850,14 @@ impl Decoder {
     }
 
     /// Decode one audio block's side information, exponents and mantissas into `coefs`.
-    fn audio_block(&mut self, r: &mut Bits, f: &mut Frame, pos: BlockPos, coefs: &mut [[f32; 256]; 6], mut x: Option<&mut eac3::FrameInfo>) -> Result<()> {
+    fn audio_block(
+        &mut self,
+        r: &mut Bits,
+        f: &mut Frame,
+        pos: BlockPos,
+        coefs: &mut [[f32; 256]; 6],
+        mut x: Option<&mut eac3::FrameInfo>,
+    ) -> Result<()> {
         let BlockPos { acmod, lfeon, blk } = pos;
         let nf = f.nfchans;
         read_block_flags(r, f, x.as_deref());
@@ -933,7 +978,11 @@ struct SpxBands {
 impl SpxBands {
     fn of(x: Option<&eac3::FrameInfo>) -> SpxBands {
         let spx = x.map(|e| &e.spx).filter(|s| s.inu);
-        SpxBands { begf: spx.map(|s| s.begf), begin: spx.map(|s| s.begin_bin()), chans: spx.map(|s| s.chinspx).unwrap_or([false; 5]) }
+        SpxBands {
+            begf: spx.map(|s| s.begf),
+            begin: spx.map(|s| s.begin_bin()),
+            chans: spx.map(|s| s.chinspx).unwrap_or([false; 5]),
+        }
     }
 }
 
@@ -962,7 +1011,13 @@ fn read_dynrng(r: &mut Bits, f: &mut Frame, pos: BlockPos) {
 }
 
 /// Coupling strategy, channels in coupling, bounds and band structure.
-fn read_coupling_strategy(r: &mut Bits, f: &mut Frame, x: Option<&mut eac3::FrameInfo>, pos: BlockPos, spxbegf: Option<usize>) -> Result<()> {
+fn read_coupling_strategy(
+    r: &mut Bits,
+    f: &mut Frame,
+    x: Option<&mut eac3::FrameInfo>,
+    pos: BlockPos,
+    spxbegf: Option<usize>,
+) -> Result<()> {
     let BlockPos { acmod, blk, .. } = pos;
     let eac3 = x.is_some();
     let strategy = match x.as_deref() {
@@ -1325,7 +1380,17 @@ fn allocate_bits(f: &mut Frame, lfeon: bool) {
     let mut sets: Vec<(usize, AllocParams)> = Vec::new();
     for ch in 0..f.nfchans {
         let dba = (f.deltbae[ch] <= 1).then(|| f.deltsegs[ch].clone());
-        sets.push((ch, AllocParams { start: 0, end: f.endmant[ch], fgain: FASTGAIN[f.fgaincod[ch]], snroffset: snr(f.fsnroffst[ch]), leak: None, dba }));
+        sets.push((
+            ch,
+            AllocParams {
+                start: 0,
+                end: f.endmant[ch],
+                fgain: FASTGAIN[f.fgaincod[ch]],
+                snroffset: snr(f.fsnroffst[ch]),
+                leak: None,
+                dba,
+            },
+        ));
     }
     if f.cplinu {
         let dba = (f.deltbae[CPL] <= 1).then(|| f.deltsegs[CPL].clone());
@@ -1342,7 +1407,17 @@ fn allocate_bits(f: &mut Frame, lfeon: bool) {
         ));
     }
     if lfeon {
-        sets.push((LFE, AllocParams { start: 0, end: 7, fgain: FASTGAIN[f.fgaincod[LFE]], snroffset: snr(f.fsnroffst[LFE]), leak: None, dba: None }));
+        sets.push((
+            LFE,
+            AllocParams {
+                start: 0,
+                end: 7,
+                fgain: FASTGAIN[f.fgaincod[LFE]],
+                snroffset: snr(f.fsnroffst[LFE]),
+                leak: None,
+                dba: None,
+            },
+        ));
     }
     for (ch, p) in &sets {
         f.bap[*ch] = [0; 256];

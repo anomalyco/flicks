@@ -144,7 +144,16 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(id: u32, poc: i32, mb_w: usize, mb_h: usize) -> Self {
-        Frame { id, poc, width: mb_w * 16, height: mb_h * 16, cwidth: mb_w * 8, cheight: mb_h * 8, mb_w, rows: (0..mb_h).map(|_| OnceLock::new()).collect() }
+        Frame {
+            id,
+            poc,
+            width: mb_w * 16,
+            height: mb_h * 16,
+            cwidth: mb_w * 8,
+            cheight: mb_h * 8,
+            mb_w,
+            rows: (0..mb_h).map(|_| OnceLock::new()).collect(),
+        }
     }
 
     pub fn mb_h(&self) -> usize {
@@ -181,7 +190,12 @@ impl Frame {
     }
 
     /// Build a published row from a contiguous plane set (rows of MB row `r`) and motion data.
-    pub fn make_row(planes: &Planes, r: usize, mbs: &[MbState], ref_ids: &dyn Fn(&MbState, usize, i8) -> u32) -> FrameRow {
+    pub fn make_row(
+        planes: &Planes,
+        r: usize,
+        mbs: &[MbState],
+        ref_ids: &dyn Fn(&MbState, usize, i8) -> u32,
+    ) -> FrameRow {
         let w = planes.width;
         let cw = planes.cwidth;
         let mb_w = w / 16;
@@ -212,7 +226,15 @@ impl Frame {
         let [mv0, mv1] = mv;
         let [ri0, ri1] = ref_idx;
         let [id0, id1] = ref_id;
-        FrameRow { y, cb, cr, mv: [mv0.into(), mv1.into()], ref_idx: [ri0.into(), ri1.into()], ref_id: [id0.into(), id1.into()], intra: intra.into() }
+        FrameRow {
+            y,
+            cb,
+            cr,
+            mv: [mv0.into(), mv1.into()],
+            ref_idx: [ri0.into(), ri1.into()],
+            ref_id: [id0.into(), id1.into()],
+            intra: intra.into(),
+        }
     }
 
     /// A frame with every row published from `planes` and no motion (intra), e.g. "non-existing"

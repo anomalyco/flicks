@@ -306,14 +306,25 @@ impl<'a> BoxIter<'a> {
             Some(s) if s <= avail => (s, false),
             Some(_) if self.allow_truncated => (avail, true),
             Some(s) => {
-                return Some(Err(Error::Invalid(format!("box '{}' size {s} exceeds its container ({avail} bytes left)", h.kind))));
+                return Some(Err(Error::Invalid(format!(
+                    "box '{}' size {s} exceeds its container ({avail} bytes left)",
+                    h.kind
+                ))));
             }
         };
         // `size <= rest.len()` and `header_len <= size` (or the header could not have parsed from
         // `rest`), so both fit in usize.
         let (size, header_len) = (size as usize, h.header_len as usize);
         let payload = rest.get(header_len..size)?;
-        let b = BoxRef { kind: h.kind, user_type: h.user_type, offset: self.pos, header_len, payload, extends_to_end: h.size.is_none(), truncated };
+        let b = BoxRef {
+            kind: h.kind,
+            user_type: h.user_type,
+            offset: self.pos,
+            header_len,
+            payload,
+            extends_to_end: h.size.is_none(),
+            truncated,
+        };
         self.pos += size;
         if truncated {
             self.done = true;

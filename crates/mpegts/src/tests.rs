@@ -6,7 +6,13 @@ use super::*;
 
 fn ts_bytes(prefix: u8, v: i64) -> [u8; 5] {
     let v = v & ((1 << 33) - 1);
-    [(prefix << 4) | (((v >> 30) & 7) as u8) << 1 | 1, (v >> 22) as u8, (((v >> 15) & 0x7F) as u8) << 1 | 1, (v >> 7) as u8, ((v & 0x7F) as u8) << 1 | 1]
+    [
+        (prefix << 4) | (((v >> 30) & 7) as u8) << 1 | 1,
+        (v >> 22) as u8,
+        (((v >> 15) & 0x7F) as u8) << 1 | 1,
+        (v >> 7) as u8,
+        ((v & 0x7F) as u8) << 1 | 1,
+    ]
 }
 
 fn pes(stream_id: u8, pts: Option<i64>, dts: Option<i64>, payload: &[u8], bounded: bool) -> Vec<u8> {
@@ -144,7 +150,10 @@ fn transport_stream_units_round_trip() {
         }
         let data = mux.out;
         let f = open(&data).unwrap();
-        assert_eq!(f.format, Format::Ts { packet_size: if m2ts { 192 } else { 188 }, sync_offset: if m2ts { 4 } else { 0 } });
+        assert_eq!(
+            f.format,
+            Format::Ts { packet_size: if m2ts { 192 } else { 188 }, sync_offset: if m2ts { 4 } else { 0 } }
+        );
         assert!(f.warnings.is_empty(), "{:?}", f.warnings);
         assert_eq!(f.program, Some(1));
         let v = f.find(Kind::Video, |_| true).unwrap();
@@ -174,7 +183,8 @@ fn transport_stream_units_round_trip() {
 #[test]
 fn program_stream_units_round_trip() {
     // packs of ≤ 2048 bytes: frames are split across PES packets
-    let frames: Vec<Vec<u8>> = (0..5).map(|k| mpeg2_frame(if k == 0 { 1 } else { 2 }, k as u16, k == 3, 2500 + 300 * k)).collect();
+    let frames: Vec<Vec<u8>> =
+        (0..5).map(|k| mpeg2_frame(if k == 0 { 1 } else { 2 }, k as u16, k == 3, 2500 + 300 * k)).collect();
     let es: Vec<u8> = frames.concat();
     let mut starts = Vec::new();
     let mut acc = 0;
@@ -236,11 +246,23 @@ fn truncation_and_mutation_never_panic() {
     let mut mux = TsMux::new(false);
     mux.psi(&[(0x02, 0x1011), (0x0F, 0x1100), (0x1B, 0x1200)]);
     for k in 0..6u16 {
-        mux.pes(0x1011, &pes(0xE0, Some(3600 * k as i64), None, &mpeg2_frame(if k == 0 { 1 } else { 3 }, k, k % 2 == 1, 400), false));
+        mux.pes(
+            0x1011,
+            &pes(
+                0xE0,
+                Some(3600 * k as i64),
+                None,
+                &mpeg2_frame(if k == 0 { 1 } else { 3 }, k, k % 2 == 1, 400),
+                false,
+            ),
+        );
         let mut adts = vec![0xFF, 0xF1, 0x50, 0x80, 0x0C, 0x9F, 0xFC];
         adts.extend([0x21u8; 93]);
         mux.pes(0x1100, &pes(0xC0, Some(1920 * k as i64), None, &adts, true));
-        mux.pes(0x1200, &pes(0xE1, Some(3600 * k as i64), None, &[0, 0, 0, 1, 0x09, 0xF0, 0, 0, 1, 0x65, 0x88, 1, 2, 3], false));
+        mux.pes(
+            0x1200,
+            &pes(0xE1, Some(3600 * k as i64), None, &[0, 0, 0, 1, 0x09, 0xF0, 0, 0, 1, 0x65, 0x88, 1, 2, 3], false),
+        );
     }
     let data = mux.out;
     let full = open(&data).unwrap();
@@ -391,7 +413,16 @@ fn oversized_unit_is_refused_without_reserving_it() {
             stream_type: 0x1B,
             codec: Codec::H264,
             language: None,
-            units: vec![Unit { pts: None, dts: None, key: true, disposable: false, size: u32::MAX, pos: 0, offset: 0, picture: None }],
+            units: vec![Unit {
+                pts: None,
+                dts: None,
+                key: true,
+                disposable: false,
+                size: u32::MAX,
+                pos: 0,
+                offset: 0,
+                picture: None,
+            }],
             lpcm: None,
             pes_packets: 0,
             skipped_bytes: 0,

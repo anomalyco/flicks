@@ -175,7 +175,8 @@ pub struct FrameInfo {
     pub variant: u8,
 }
 
-const ADTS_RATES: [u32; 13] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
+const ADTS_RATES: [u32; 13] =
+    [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
 
 /// Bytes of the audio frame whose header starts `b` (MPEG audio, ADTS, LATM, AC-3, E-AC-3), or
 /// `None` without a valid header there. For containers that store frames in chunks that need not
@@ -228,7 +229,12 @@ pub fn frame_info(codec: &Codec, b: &[u8]) -> Option<FrameInfo> {
                     ([48_000, 44_100, 32_000][fscod as usize], [1, 2, 3, 6][((b[4] >> 4) & 3) as usize])
                 };
                 let acmod = (b[4] >> 1) & 7;
-                return Some(FrameInfo { sample_rate: rate, channels: AC3_CHANNELS[acmod as usize] + (b[4] & 1) as u32, samples: 256 * blocks, variant: bsid });
+                return Some(FrameInfo {
+                    sample_rate: rate,
+                    channels: AC3_CHANNELS[acmod as usize] + (b[4] & 1) as u32,
+                    samples: 256 * blocks,
+                    variant: bsid,
+                });
             }
             let fscod = b[4] >> 6;
             let rate = *[48_000u32, 44_100, 32_000].get(fscod as usize)?;
@@ -247,7 +253,12 @@ pub fn frame_info(codec: &Codec, b: &[u8]) -> Option<FrameInfo> {
             }
             let word = u16::from_be_bytes([b6, *b.get(7)?]);
             let lfe = (word >> (15 - bit)) & 1;
-            Some(FrameInfo { sample_rate: rate, channels: AC3_CHANNELS[acmod as usize] + lfe as u32, samples: 1536, variant: bsid })
+            Some(FrameInfo {
+                sample_rate: rate,
+                channels: AC3_CHANNELS[acmod as usize] + lfe as u32,
+                samples: 1536,
+                variant: bsid,
+            })
         }
         _ => None,
     }
@@ -359,7 +370,17 @@ impl Splitter {
         let at = self.es_pos;
         self.close(at);
         // the chunk of this position arrives with the next feed: resolved there
-        let mut o = Open { start: at, pos: u64::MAX, offset: 0, pts: None, dts: None, key: false, disposable: false, vcl: false, picture: None };
+        let mut o = Open {
+            start: at,
+            pos: u64::MAX,
+            offset: 0,
+            pts: None,
+            dts: None,
+            key: false,
+            disposable: false,
+            vcl: false,
+            picture: None,
+        };
         if let Some((pts, dts)) = self.timestamps_at(at) {
             o.pts = pts;
             o.dts = dts;
@@ -397,7 +418,16 @@ impl Splitter {
             return;
         }
         let size = (end - o.start).min(u32::MAX as u64) as u32;
-        self.units.push(Unit { pts: o.pts, dts: o.dts, key: o.key, disposable: o.disposable, size, pos: o.pos, offset: o.offset, picture: o.picture });
+        self.units.push(Unit {
+            pts: o.pts,
+            dts: o.dts,
+            key: o.key,
+            disposable: o.disposable,
+            size,
+            pos: o.pos,
+            offset: o.offset,
+            picture: o.picture,
+        });
     }
 
     /// Payload bytes of one chunk (`pos`: where the reader restarts to find them).
@@ -427,7 +457,10 @@ impl Splitter {
             Mode::Audio(sync) => self.scan_audio(start, data, sync),
         }
         // forget chunks no pending position can refer to
-        let keep_from = self.buf_start.min(self.pending.map_or(u64::MAX, |p| p.unit_start.min(p.at))).min(self.header_start.unwrap_or(u64::MAX));
+        let keep_from = self
+            .buf_start
+            .min(self.pending.map_or(u64::MAX, |p| p.unit_start.min(p.at)))
+            .min(self.header_start.unwrap_or(u64::MAX));
         while self.chunks.len() > 2 && self.chunks[1].1 <= keep_from {
             self.chunks.pop_front();
         }
@@ -628,7 +661,17 @@ impl Splitter {
                     if !(sync == AudioSync::Ac3 && self.open.is_some() && eac3_joins_unit(&self.buf[i..])) {
                         self.close(at);
                         let (pos, offset) = self.locate(at).unwrap_or((u64::MAX, 0));
-                        let mut o = Open { start: at, pos, offset, pts: None, dts: None, key: true, disposable: false, vcl: false, picture: None };
+                        let mut o = Open {
+                            start: at,
+                            pos,
+                            offset,
+                            pts: None,
+                            dts: None,
+                            key: true,
+                            disposable: false,
+                            vcl: false,
+                            picture: None,
+                        };
                         if let Some((pts, dts)) = self.timestamps_at(at) {
                             o.pts = pts;
                             o.dts = dts;
@@ -646,9 +689,12 @@ impl Splitter {
                     // lost sync: look for the next header from the following byte
                     self.next_frame = None;
                     self.skipped += 1;
-                    let next = self.buf[i + 1..]
-                        .iter()
-                        .position(|&b| matches!((sync, b), (AudioSync::Ac3, 0x0B) | (AudioSync::Loas, 0x56) | (AudioSync::Mpa | AudioSync::Adts, 0xFF)));
+                    let next = self.buf[i + 1..].iter().position(|&b| {
+                        matches!(
+                            (sync, b),
+                            (AudioSync::Ac3, 0x0B) | (AudioSync::Loas, 0x56) | (AudioSync::Mpa | AudioSync::Adts, 0xFF)
+                        )
+                    });
                     match next {
                         Some(d) => {
                             self.skipped += d as u64;

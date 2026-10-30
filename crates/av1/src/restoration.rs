@@ -4,8 +4,9 @@ use crate::frame::{FrameBuf, Plane, RowBand};
 use crate::par::Pool;
 use crate::postfilter::bands;
 use crate::spec_tables::{
-    FILTER_BITS, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_WIENER, SGR_PARAMS, SGRPROJ_MTABLE_BITS, SGRPROJ_PRJ_BITS, SGRPROJ_RECIP_BITS, SGRPROJ_RST_BITS,
-    SGRPROJ_SGR_BITS, SUPERRES_EXTRA_BITS, SUPERRES_FILTER_OFFSET, SUPERRES_FILTER_TAPS, SUPERRES_SCALE_BITS, SUPERRES_SCALE_MASK, UPSCALE_FILTER,
+    FILTER_BITS, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_WIENER, SGR_PARAMS, SGRPROJ_MTABLE_BITS, SGRPROJ_PRJ_BITS,
+    SGRPROJ_RECIP_BITS, SGRPROJ_RST_BITS, SGRPROJ_SGR_BITS, SUPERRES_EXTRA_BITS, SUPERRES_FILTER_OFFSET,
+    SUPERRES_FILTER_TAPS, SUPERRES_SCALE_BITS, SUPERRES_SCALE_MASK, UPSCALE_FILTER,
 };
 use crate::state::FrameState;
 
@@ -23,7 +24,9 @@ pub(crate) fn upscale(fs: &FrameState, input: &FrameBuf) -> FrameBuf {
         let sb = SUPERRES_SCALE_BITS as i64;
         let step_x = (((down_w as i64) << sb) + (up_pw as i64 / 2)) / up_pw as i64;
         let err = up_pw as i64 * step_x - ((down_w as i64) << sb);
-        let mut initial = (-(((up_pw - down_w) as i64) << (sb - 1)) + up_pw as i64 / 2) / up_pw as i64 + (1 << (SUPERRES_EXTRA_BITS - 1)) - err / 2;
+        let mut initial = (-(((up_pw - down_w) as i64) << (sb - 1)) + up_pw as i64 / 2) / up_pw as i64
+            + (1 << (SUPERRES_EXTRA_BITS - 1))
+            - err / 2;
         initial &= SUPERRES_SCALE_MASK as i64;
         let mi_w = fh.mi_cols as usize >> sub_x;
         let max_x = (mi_w * 4 - 1) as i64;
@@ -106,7 +109,14 @@ pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf,
                 let stripe_num = (luma_y + 8) / 64;
                 let stripe_start_y = (-8 + stripe_num * 64) >> sub_y;
                 let stripe_end_y = stripe_start_y + (64 >> sub_y) - 1;
-                let ctx = LrCtx { cur: &cur.planes[plane], cdef: &cdef.planes[plane], plane_end_x, plane_end_y, stripe_start_y, stripe_end_y };
+                let ctx = LrCtx {
+                    cur: &cur.planes[plane],
+                    cdef: &cdef.planes[plane],
+                    plane_end_x,
+                    plane_end_y,
+                    stripe_start_y,
+                    stripe_end_y,
+                };
                 let unit_row = (unit_rows - 1).min(((row * 4 + 8) >> sub_y) / unit_size);
                 let mut col = 0;
                 while col * 4 < up_w {

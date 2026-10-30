@@ -1,6 +1,7 @@
 use super::{
-    CBF_CHROMA, CBF_LUMA, CODED_SUB_BLOCK, CTX_IDX_MAP, CU_QP_DELTA_ABS, E_TU_H, E_TU_V, F_CBF, F_INTRA, GT1, GT2, LAST_X_PREFIX, LAST_Y_PREFIX, LEVEL_SCALE,
-    PartMode, PicState, Result, SCAN_4, SIG_COEFF, SPLIT_TRANSFORM, Sample, SliceDecoder, TRANSFORM_SKIP, ensure, intra, scan_order, transform,
+    CBF_CHROMA, CBF_LUMA, CODED_SUB_BLOCK, CTX_IDX_MAP, CU_QP_DELTA_ABS, E_TU_H, E_TU_V, F_CBF, F_INTRA, GT1, GT2,
+    LAST_X_PREFIX, LAST_Y_PREFIX, LEVEL_SCALE, PartMode, PicState, Result, SCAN_4, SIG_COEFF, SPLIT_TRANSFORM, Sample,
+    SliceDecoder, TRANSFORM_SKIP, ensure, intra, scan_order, transform,
 };
 
 /// Significant scan positions of one sub-block, in decoding (descending) order.
@@ -108,11 +109,16 @@ pub(super) struct TtNode {
 impl<'a, S: Sample> SliceDecoder<'a, S> {
     pub(super) fn transform_tree(&mut self, node: TtNode, depth: u32, parent_cbf_c: [bool; 2]) -> Result<()> {
         let TtNode { x0, y0, log2, .. } = node;
-        let split = if log2 <= self.sps.log2_max_tb && log2 > self.sps.log2_min_tb && depth < self.max_trafo_depth && !(self.intra_split && depth == 0) {
+        let split = if log2 <= self.sps.log2_max_tb
+            && log2 > self.sps.log2_min_tb
+            && depth < self.max_trafo_depth
+            && !(self.intra_split && depth == 0)
+        {
             self.dd(SPLIT_TRANSFORM + (5 - log2 as usize)) == 1
         } else {
             // interSplitFlag (7.4.9.8)
-            let inter_split = self.sps.max_th_depth_inter == 0 && !self.cu_intra && self.cu_part != PartMode::P2Nx2N && depth == 0;
+            let inter_split =
+                self.sps.max_th_depth_inter == 0 && !self.cu_intra && self.cu_part != PartMode::P2Nx2N && depth == 0;
             log2 > self.sps.log2_max_tb || (self.intra_split && depth == 0) || inter_split
         };
         let mut cbf_c = [false, false];
@@ -132,12 +138,17 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         if split {
             let h = 1 << (log2 - 1);
             for (blk_idx, (dx, dy)) in [(0, 0), (h, 0), (0, h), (h, h)].into_iter().enumerate() {
-                let child = TtNode { x0: x0 + dx, y0: y0 + dy, xb: x0, yb: y0, log2: log2 - 1, blk_idx: blk_idx as u32 };
+                let child =
+                    TtNode { x0: x0 + dx, y0: y0 + dy, xb: x0, yb: y0, log2: log2 - 1, blk_idx: blk_idx as u32 };
                 self.transform_tree(child, depth + 1, cbf_c)?;
             }
             return Ok(());
         }
-        let cbf_luma = if self.cu_intra || depth != 0 || cbf_c[0] || cbf_c[1] { self.dd(CBF_LUMA + if depth == 0 { 1 } else { 0 }) == 1 } else { true };
+        let cbf_luma = if self.cu_intra || depth != 0 || cbf_c[0] || cbf_c[1] {
+            self.dd(CBF_LUMA + if depth == 0 { 1 } else { 0 }) == 1
+        } else {
+            true
+        };
         let n = 1 << log2;
         if depth > 0 {
             self.mark_edges(x0, y0, n, n, E_TU_V, E_TU_H);
@@ -213,8 +224,9 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let mut al = [false; 129];
         let mut at = [false; 129];
         let addr = self.slice_addr;
-        let avail =
-            |pic: &PicState<S>, xn: i32, yn: i32| -> bool { pic.zavail(xl, yl, xn, yn, addr) && (!constrained || pic.blk_at(xn, yn).flags & F_INTRA != 0) };
+        let avail = |pic: &PicState<S>, xn: i32, yn: i32| -> bool {
+            pic.zavail(xl, yl, xn, yn, addr) && (!constrained || pic.blk_at(xn, yn).flags & F_INTRA != 0)
+        };
         let plane = &self.pic.planes[c];
         let r = &mut self.refs_buf;
         // corner
@@ -391,7 +403,11 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
     fn residual(&mut self, x0: i32, y0: i32, log2: u32, c: usize, qp: i32) -> Result<()> {
         let n = 1usize << log2;
         let bypass = self.cu_transquant_bypass;
-        let ts = if self.pps.transform_skip && !bypass && log2 == 2 { self.dd(TRANSFORM_SKIP + (c > 0) as usize) == 1 } else { false };
+        let ts = if self.pps.transform_skip && !bypass && log2 == 2 {
+            self.dd(TRANSFORM_SKIP + (c > 0) as usize) == 1
+        } else {
+            false
+        };
         let (mut lx, mut ly) = self.last_sig_coeff_pos(log2, c);
         let scan_idx = self.scan_idx(x0, y0, log2, c);
         if scan_idx == 2 {
@@ -430,7 +446,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 15
             };
             if csbf[ys * 8 + xs] != 0 {
-                let params = SigMapParams { log2, c, scan_idx, xs, ys, prev_csbf: right + (below << 1), infer_dc, start };
+                let params =
+                    SigMapParams { log2, c, scan_idx, xs, ys, prev_csbf: right + (below << 1), infer_dc, start };
                 self.read_sig_map(&params, &mut list);
             }
             if list.n == 0 {
@@ -473,7 +490,15 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
     }
 
     /// Scaling, transform and addition to the prediction.
-    fn reconstruct(&mut self, (x0, y0): (i32, i32), log2: u32, c: usize, qp: i32, ts: bool, (max_x, max_y): (usize, usize)) -> Result<()> {
+    fn reconstruct(
+        &mut self,
+        (x0, y0): (i32, i32),
+        log2: u32,
+        c: usize,
+        qp: i32,
+        ts: bool,
+        (max_x, max_y): (usize, usize),
+    ) -> Result<()> {
         let n = 1usize << log2;
         let bd = if c == 0 { self.pic.bd_y } else { self.pic.bd_c };
         let coeffs = &mut self.coeffs[..n * n];

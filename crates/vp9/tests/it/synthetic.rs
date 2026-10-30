@@ -323,7 +323,8 @@ fn intra_only_frames() {
     // Error resilient source: the frame after the intra-only frame does not use the previous
     // frame's motion vectors either way, so its symbols parse as the encoder intended.
     let Some(src) = encode("syn_er_g8", 352, 288, 20, &["-g", "8", "-error-resilient", "1"]) else { return };
-    let keys: Vec<usize> = src.iter().enumerate().filter(|(_, f)| f[0] & 0x04 == 0 && f[0] & 0x08 == 0).map(|(i, _)| i).collect();
+    let keys: Vec<usize> =
+        src.iter().enumerate().filter(|(_, f)| f[0] & 0x04 == 0 && f[0] & 0x08 == 0).map(|(i, _)| i).collect();
     assert!(keys.len() >= 2, "need a second key frame: {keys:?}");
     for (reset, refresh, show_slot) in [(3u32, 0xffu8, 0u8), (2, 0x05, 2), (0, 0x10, 4)] {
         let mut frames = Vec::new();

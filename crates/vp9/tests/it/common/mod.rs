@@ -36,16 +36,97 @@ const P420_10: &str = "yuv420p10le";
 pub const FIXTURES: &[Fixture] = &[
     fx!("intra_only_keyframes", "testsrc2", 352, 288, 3, NOISE, P420, ["-g", "1", "-b:v", "1M"]),
     fx!("default_good", "testsrc2", 352, 288, 20, NOISE, P420, ["-b:v", "800k", "-frame-parallel", "0"]),
-    fx!("profile2_10bit", "testsrc2", 352, 288, 12, NOISE, P420_10, ["-b:v", "800k", "-profile:v", "2", "-frame-parallel", "0"]),
-    fx!("profile2_12bit", "mandelbrot", 176, 144, 8, NOISE, "yuv420p12le", ["-b:v", "500k", "-profile:v", "2", "-frame-parallel", "0"]),
-    fx!("profile1_444", "testsrc2", 176, 144, 8, NOISE, "yuv444p", ["-b:v", "500k", "-profile:v", "1", "-frame-parallel", "0"]),
-    fx!("profile1_422", "testsrc2", 176, 144, 8, NOISE, "yuv422p", ["-b:v", "500k", "-profile:v", "1", "-frame-parallel", "0"]),
-    fx!("profile1_440", "testsrc2", 176, 144, 8, NOISE, "yuv440p", ["-b:v", "500k", "-profile:v", "1", "-frame-parallel", "0"]),
-    fx!("profile3_444_10bit", "testsrc2", 176, 144, 6, NOISE, "yuv444p10le", ["-b:v", "500k", "-profile:v", "3", "-frame-parallel", "0"]),
-    fx!("profile3_422_12bit", "mandelbrot", 176, 144, 6, NOISE, "yuv422p12le", ["-b:v", "500k", "-profile:v", "3", "-frame-parallel", "0"]),
+    fx!(
+        "profile2_10bit",
+        "testsrc2",
+        352,
+        288,
+        12,
+        NOISE,
+        P420_10,
+        ["-b:v", "800k", "-profile:v", "2", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "profile2_12bit",
+        "mandelbrot",
+        176,
+        144,
+        8,
+        NOISE,
+        "yuv420p12le",
+        ["-b:v", "500k", "-profile:v", "2", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "profile1_444",
+        "testsrc2",
+        176,
+        144,
+        8,
+        NOISE,
+        "yuv444p",
+        ["-b:v", "500k", "-profile:v", "1", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "profile1_422",
+        "testsrc2",
+        176,
+        144,
+        8,
+        NOISE,
+        "yuv422p",
+        ["-b:v", "500k", "-profile:v", "1", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "profile1_440",
+        "testsrc2",
+        176,
+        144,
+        8,
+        NOISE,
+        "yuv440p",
+        ["-b:v", "500k", "-profile:v", "1", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "profile3_444_10bit",
+        "testsrc2",
+        176,
+        144,
+        6,
+        NOISE,
+        "yuv444p10le",
+        ["-b:v", "500k", "-profile:v", "3", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "profile3_422_12bit",
+        "mandelbrot",
+        176,
+        144,
+        6,
+        NOISE,
+        "yuv422p12le",
+        ["-b:v", "500k", "-profile:v", "3", "-frame-parallel", "0"]
+    ),
     fx!("lossless", "testsrc2", 176, 144, 5, NOISE, P420, ["-lossless", "1", "-frame-parallel", "0"]),
-    fx!("lossless_10bit", "mandelbrot", 176, 144, 4, NOISE, P420_10, ["-lossless", "1", "-profile:v", "2", "-frame-parallel", "0"]),
-    fx!("tiles_cols4", "testsrc2", 1280, 720, 6, NOISE, P420, ["-b:v", "2M", "-tile-columns", "2", "-speed", "4", "-frame-parallel", "0"]),
+    fx!(
+        "lossless_10bit",
+        "mandelbrot",
+        176,
+        144,
+        4,
+        NOISE,
+        P420_10,
+        ["-lossless", "1", "-profile:v", "2", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "tiles_cols4",
+        "testsrc2",
+        1280,
+        720,
+        6,
+        NOISE,
+        P420,
+        ["-b:v", "2M", "-tile-columns", "2", "-speed", "4", "-frame-parallel", "0"]
+    ),
     fx!(
         "tiles_rows_cols",
         "testsrc2",
@@ -56,7 +137,16 @@ pub const FIXTURES: &[Fixture] = &[
         P420,
         ["-b:v", "2M", "-tile-columns", "1", "-tile-rows", "2", "-speed", "4", "-frame-parallel", "0"]
     ),
-    fx!("tiles_rows4", "testsrc2", 640, 480, 5, NOISE, P420, ["-b:v", "1M", "-tile-columns", "0", "-tile-rows", "2", "-frame-parallel", "0"]),
+    fx!(
+        "tiles_rows4",
+        "testsrc2",
+        640,
+        480,
+        5,
+        NOISE,
+        P420,
+        ["-b:v", "1M", "-tile-columns", "0", "-tile-rows", "2", "-frame-parallel", "0"]
+    ),
     fx!(
         "altref_hidden",
         "testsrc2",
@@ -75,7 +165,19 @@ pub const FIXTURES: &[Fixture] = &[
         24,
         NOISE,
         P420_10,
-        ["2pass", "-b:v", "600k", "-profile:v", "2", "-auto-alt-ref", "1", "-lag-in-frames", "16", "-frame-parallel", "0"]
+        [
+            "2pass",
+            "-b:v",
+            "600k",
+            "-profile:v",
+            "2",
+            "-auto-alt-ref",
+            "1",
+            "-lag-in-frames",
+            "16",
+            "-frame-parallel",
+            "0"
+        ]
     ),
     fx!(
         "altref_tiles",
@@ -85,7 +187,21 @@ pub const FIXTURES: &[Fixture] = &[
         12,
         NOISE,
         P420,
-        ["2pass", "-b:v", "2M", "-auto-alt-ref", "1", "-lag-in-frames", "10", "-tile-columns", "2", "-speed", "2", "-frame-parallel", "0"]
+        [
+            "2pass",
+            "-b:v",
+            "2M",
+            "-auto-alt-ref",
+            "1",
+            "-lag-in-frames",
+            "10",
+            "-tile-columns",
+            "2",
+            "-speed",
+            "2",
+            "-frame-parallel",
+            "0"
+        ]
     ),
     fx!("frame_parallel", "testsrc2", 352, 288, 16, NOISE, P420, ["-b:v", "600k", "-frame-parallel", "1"]),
     fx!("error_resilient", "testsrc2", 352, 288, 16, NOISE, P420, ["-b:v", "600k", "-error-resilient", "1"]),
@@ -93,26 +209,134 @@ pub const FIXTURES: &[Fixture] = &[
     fx!("tiny_odd", "testsrc2", 33, 17, 8, NOISE, P420, ["-b:v", "200k", "-frame-parallel", "0"]),
     // Two superblock columns and twelve rows: the loop filter wavefront waits for whole rows.
     fx!("narrow_tall", "testsrc2", 120, 720, 6, NOISE, P420, ["-b:v", "400k", "-frame-parallel", "0"]),
-    fx!("row_mt", "testsrc2", 640, 360, 10, NOISE, P420, ["-b:v", "1M", "-row-mt", "1", "-tile-columns", "1", "-frame-parallel", "0"]),
-    fx!("speed0", "mandelbrot", 176, 144, 8, NOISE, P420, ["2pass", "-b:v", "300k", "-speed", "0", "-frame-parallel", "0"]),
+    fx!(
+        "row_mt",
+        "testsrc2",
+        640,
+        360,
+        10,
+        NOISE,
+        P420,
+        ["-b:v", "1M", "-row-mt", "1", "-tile-columns", "1", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "speed0",
+        "mandelbrot",
+        176,
+        144,
+        8,
+        NOISE,
+        P420,
+        ["2pass", "-b:v", "300k", "-speed", "0", "-frame-parallel", "0"]
+    ),
     fx!("speed1", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "1", "-frame-parallel", "0"]),
     fx!("speed2", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "2", "-frame-parallel", "0"]),
     fx!("speed3", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "3", "-frame-parallel", "0"]),
     fx!("speed4", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "4", "-frame-parallel", "0"]),
-    fx!("speed5", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "5", "-deadline", "realtime", "-frame-parallel", "0"]),
-    fx!("speed6", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "6", "-deadline", "realtime", "-frame-parallel", "0"]),
-    fx!("speed7", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "7", "-deadline", "realtime", "-frame-parallel", "0"]),
-    fx!("speed8", "testsrc2", 352, 288, 10, NOISE, P420, ["-b:v", "600k", "-speed", "8", "-deadline", "realtime", "-frame-parallel", "0"]),
+    fx!(
+        "speed5",
+        "testsrc2",
+        352,
+        288,
+        10,
+        NOISE,
+        P420,
+        ["-b:v", "600k", "-speed", "5", "-deadline", "realtime", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "speed6",
+        "testsrc2",
+        352,
+        288,
+        10,
+        NOISE,
+        P420,
+        ["-b:v", "600k", "-speed", "6", "-deadline", "realtime", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "speed7",
+        "testsrc2",
+        352,
+        288,
+        10,
+        NOISE,
+        P420,
+        ["-b:v", "600k", "-speed", "7", "-deadline", "realtime", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "speed8",
+        "testsrc2",
+        352,
+        288,
+        10,
+        NOISE,
+        P420,
+        ["-b:v", "600k", "-speed", "8", "-deadline", "realtime", "-frame-parallel", "0"]
+    ),
     fx!("cq_low", "testsrc2", 352, 288, 8, NOISE, P420, ["-crf", "0", "-b:v", "0", "-frame-parallel", "0"]),
     fx!("cq_q4", "testsrc2", 352, 288, 8, NOISE, P420, ["-crf", "4", "-b:v", "0", "-frame-parallel", "0"]),
     fx!("cq_high", "testsrc2", 352, 288, 12, NOISE, P420, ["-crf", "63", "-b:v", "0", "-frame-parallel", "0"]),
-    fx!("cq_10bit_low", "testsrc2", 176, 144, 6, NOISE, P420_10, ["-crf", "2", "-b:v", "0", "-profile:v", "2", "-frame-parallel", "0"]),
-    fx!("cq_12bit_high", "testsrc2", 176, 144, 6, NOISE, "yuv420p12le", ["-crf", "60", "-b:v", "0", "-profile:v", "2", "-frame-parallel", "0"]),
-    fx!("aq_segmentation", "testsrc2", 352, 288, 12, NOISE, P420, ["-b:v", "600k", "-aq-mode", "3", "-frame-parallel", "0"]),
-    fx!("aq_variance", "mandelbrot", 352, 288, 12, NOISE, P420, ["-b:v", "600k", "-aq-mode", "1", "-frame-parallel", "0"]),
-    fx!("aq_complexity", "testsrc2", 352, 288, 12, NOISE, P420, ["2pass", "-b:v", "600k", "-aq-mode", "2", "-frame-parallel", "0"]),
+    fx!(
+        "cq_10bit_low",
+        "testsrc2",
+        176,
+        144,
+        6,
+        NOISE,
+        P420_10,
+        ["-crf", "2", "-b:v", "0", "-profile:v", "2", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "cq_12bit_high",
+        "testsrc2",
+        176,
+        144,
+        6,
+        NOISE,
+        "yuv420p12le",
+        ["-crf", "60", "-b:v", "0", "-profile:v", "2", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "aq_segmentation",
+        "testsrc2",
+        352,
+        288,
+        12,
+        NOISE,
+        P420,
+        ["-b:v", "600k", "-aq-mode", "3", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "aq_variance",
+        "mandelbrot",
+        352,
+        288,
+        12,
+        NOISE,
+        P420,
+        ["-b:v", "600k", "-aq-mode", "1", "-frame-parallel", "0"]
+    ),
+    fx!(
+        "aq_complexity",
+        "testsrc2",
+        352,
+        288,
+        12,
+        NOISE,
+        P420,
+        ["2pass", "-b:v", "600k", "-aq-mode", "2", "-frame-parallel", "0"]
+    ),
     fx!("sharpness", "testsrc2", 352, 288, 8, NOISE, P420, ["-b:v", "400k", "-sharpness", "5", "-frame-parallel", "0"]),
-    fx!("fade_intra_heavy", "testsrc2", 352, 288, 20, "fade=in:0:15", P420, ["-b:v", "400k", "-g", "8", "-frame-parallel", "0"]),
+    fx!(
+        "fade_intra_heavy",
+        "testsrc2",
+        352,
+        288,
+        20,
+        "fade=in:0:15",
+        P420,
+        ["-b:v", "400k", "-g", "8", "-frame-parallel", "0"]
+    ),
     fx!("hd_1080p", "testsrc2", 1920, 1080, 3, NOISE, P420, ["-b:v", "4M", "-speed", "5", "-deadline", "realtime"]),
     // Two temporal layers: every other frame refreshes no reference slot (draft mode test).
     fx!(
@@ -359,9 +583,12 @@ pub fn compare(pics: &[Picture], reference: &[u8], pix_fmt: &str) -> Result<(), 
         }
         let f = &reference[off..off + fsize];
         off += fsize;
-        let sample = |buf: &[u8], k: usize| if bps == 2 { u16::from_le_bytes([buf[2 * k], buf[2 * k + 1]]) } else { buf[k] as u16 };
+        let sample = |buf: &[u8], k: usize| {
+            if bps == 2 { u16::from_le_bytes([buf[2 * k], buf[2 * k + 1]]) } else { buf[k] as u16 }
+        };
         let (ys, cs) = (w * h * bps, cw * ch * bps);
-        let planes = [("Y", &p.y, &f[..ys], w, h), ("U", &p.u, &f[ys..ys + cs], cw, ch), ("V", &p.v, &f[ys + cs..], cw, ch)];
+        let planes =
+            [("Y", &p.y, &f[..ys], w, h), ("U", &p.u, &f[ys..ys + cs], cw, ch), ("V", &p.v, &f[ys + cs..], cw, ch)];
         for (name, got, exp, pw, ph) in planes {
             let mut first = None;
             let mut count = 0usize;
@@ -411,7 +638,10 @@ pub fn check_files(name: &str, ivf: &Path, reference: &[u8], pix_fmt: &str) -> R
             Ok(p) => p,
             Err((fr, e, partial)) => {
                 let cmp = compare(&partial, reference, pix_fmt).err().unwrap_or_default();
-                return Err(format!("{name} (threads {threads}): decode error at chunk {fr}: {e} (after {} pictures) {cmp}", partial.len()));
+                return Err(format!(
+                    "{name} (threads {threads}): decode error at chunk {fr}: {e} (after {} pictures) {cmp}",
+                    partial.len()
+                ));
             }
         };
         compare(&pics, reference, pix_fmt).map_err(|e| format!("{name} (threads {threads}): {e}"))?;

@@ -8,8 +8,9 @@ use crate::frame::Mv;
 use crate::inter::{self, McBlock, RefPlane};
 use crate::intra::{self, IntraEdge};
 use crate::tables::{
-    BLOCK_8X8, CAT_PROBS, COEFBAND_4X4, COEFBAND_8X8PLUS, DCT_DCT, ENERGY_CLASS, EXTRA_BITS, INTERP_EXTEND, INTRA_FRAME, MAX_TXSIZE, MODE2TXFM, NUM_4X4_HIGH,
-    NUM_4X4_WIDE, NUM_8X8_HIGH, NUM_8X8_WIDE, SS_SIZE_LOOKUP, TX_4X4, TX_32X32, neighbors, pareto_full, scan,
+    BLOCK_8X8, CAT_PROBS, COEFBAND_4X4, COEFBAND_8X8PLUS, DCT_DCT, ENERGY_CLASS, EXTRA_BITS, INTERP_EXTEND,
+    INTRA_FRAME, MAX_TXSIZE, MODE2TXFM, NUM_4X4_HIGH, NUM_4X4_WIDE, NUM_8X8_HIGH, NUM_8X8_WIDE, SS_SIZE_LOOKUP, TX_4X4,
+    TX_32X32, neighbors, pareto_full, scan,
 };
 use crate::transform;
 
@@ -85,7 +86,11 @@ impl<'a> TileDecoder<'a> {
     pub(super) fn residual(&mut self, bd: &mut BoolDecoder, b: &mut Blk) {
         let bsize = b.size.max(BLOCK_8X8) as usize;
         let (ssx, ssy) = (self.ss_x, self.ss_y);
-        let uv_tx = if b.size < BLOCK_8X8 { 0 } else { b.tx_size.min(MAX_TXSIZE[SS_SIZE_LOOKUP[b.size as usize][ssx][ssy] as usize]) };
+        let uv_tx = if b.size < BLOCK_8X8 {
+            0
+        } else {
+            b.tx_size.min(MAX_TXSIZE[SS_SIZE_LOOKUP[b.size as usize][ssx][ssy] as usize])
+        };
         for plane in 0..3 {
             let tx_sz = if plane > 0 { uv_tx } else { b.tx_size };
             let step = 1usize << tx_sz;
@@ -99,7 +104,12 @@ impl<'a> TileDecoder<'a> {
                 if b.size < BLOCK_8X8 {
                     for y in 0..n4h {
                         for x in 0..n4w {
-                            self.predict_inter(b, plane, Region { x: base_x + 4 * x, y: base_y + 4 * y, w: 4, h: 4 }, y * n4w + x);
+                            self.predict_inter(
+                                b,
+                                plane,
+                                Region { x: base_x + 4 * x, y: base_y + 4 * y, w: 4, h: 4 },
+                                y * n4w + x,
+                            );
                         }
                     }
                 } else {
@@ -145,7 +155,14 @@ impl<'a> TileDecoder<'a> {
                                 let o = start_y * stride + start_x - x_off;
                                 transform::inverse_transform_add(
                                     &self.coefs,
-                                    &transform::InverseTx { tx_size: tx_sz, tx_type, lossless: self.h.lossless, eob, rows, bit_depth: self.bit_depth },
+                                    &transform::InverseTx {
+                                        tx_size: tx_sz,
+                                        tx_type,
+                                        lossless: self.h.lossless,
+                                        eob,
+                                        rows,
+                                        bit_depth: self.bit_depth,
+                                    },
                                     &mut self.strip.planes[plane][o..],
                                     stride,
                                 );
@@ -175,7 +192,11 @@ impl<'a> TileDecoder<'a> {
         if plane > 0 || tx_sz == TX_32X32 {
             DCT_DCT
         } else if tx_sz == TX_4X4 {
-            if self.h.lossless || b.is_inter { DCT_DCT } else { MODE2TXFM[if b.size < BLOCK_8X8 { b.sub_modes[block_idx] } else { b.y_mode } as usize] }
+            if self.h.lossless || b.is_inter {
+                DCT_DCT
+            } else {
+                MODE2TXFM[if b.size < BLOCK_8X8 { b.sub_modes[block_idx] } else { b.y_mode } as usize]
+            }
         } else {
             MODE2TXFM[b.y_mode as usize]
         }
@@ -292,9 +313,15 @@ impl<'a> TileDecoder<'a> {
             let mv = if plane == 0 || b.size >= BLOCK_8X8 || (sx == 0 && sy == 0) {
                 bm[block_idx]
             } else if sx == 0 && sy == 1 {
-                Mv::new(round_q2(bm[block_idx].row as i32 + bm[block_idx + 2].row as i32), round_q2(bm[block_idx].col as i32 + bm[block_idx + 2].col as i32))
+                Mv::new(
+                    round_q2(bm[block_idx].row as i32 + bm[block_idx + 2].row as i32),
+                    round_q2(bm[block_idx].col as i32 + bm[block_idx + 2].col as i32),
+                )
             } else if sx == 1 && sy == 0 {
-                Mv::new(round_q2(bm[block_idx].row as i32 + bm[block_idx + 1].row as i32), round_q2(bm[block_idx].col as i32 + bm[block_idx + 1].col as i32))
+                Mv::new(
+                    round_q2(bm[block_idx].row as i32 + bm[block_idx + 1].row as i32),
+                    round_q2(bm[block_idx].col as i32 + bm[block_idx + 1].col as i32),
+                )
             } else {
                 let sr: i32 = bm.iter().map(|m| m.row as i32).sum();
                 let sc: i32 = bm.iter().map(|m| m.col as i32).sum();
@@ -312,12 +339,15 @@ impl<'a> TileDecoder<'a> {
             let spel_right = spel_left - 16;
             let spel_top = (INTERP_EXTEND + ((bh * 8) >> sy)) << 4;
             let spel_bottom = spel_top - 16;
-            let cmv_row = ((2 * mv.row as i32) >> sy).clamp(to_top - spel_top, (to_bottom + spel_bottom).max(to_top - spel_top));
-            let cmv_col = ((2 * mv.col as i32) >> sx).clamp(to_left - spel_left, (to_right + spel_right).max(to_left - spel_left));
+            let cmv_row =
+                ((2 * mv.row as i32) >> sy).clamp(to_top - spel_top, (to_bottom + spel_bottom).max(to_top - spel_top));
+            let cmv_col = ((2 * mv.col as i32) >> sx)
+                .clamp(to_left - spel_left, (to_right + spel_right).max(to_left - spel_left));
             let ri = (b.ref_frame[rl] - 1).clamp(0, 2) as usize;
             let Some(rf) = &self.s.refs[ri] else {
                 if self.error.is_none() {
-                    self.error = Some(Error::MissingReference(format!("block uses unusable reference {}", b.ref_frame[rl])));
+                    self.error =
+                        Some(Error::MissingReference(format!("block uses unusable reference {}", b.ref_frame[rl])));
                 }
                 let out = if rl == 0 { &mut self.pred } else { &mut self.pred2 };
                 out[..w * h].fill(1 << (self.bit_depth - 1));
@@ -325,25 +355,39 @@ impl<'a> TileDecoder<'a> {
             };
             // Motion vector scaling (8.5.2.3).
             let (x_scale, y_scale) = (rf.x_scale as i64, rf.y_scale as i64);
-            let (start_x, start_y, step_x, step_y) = if rf.x_step == 16 && rf.y_step == 16 && x_scale == 1 << 14 && y_scale == 1 << 14 {
-                (((x as i32) << 4) + cmv_col, ((y as i32) << 4) + cmv_row, 16, 16)
-            } else {
-                self.strip.scaled_blocks += 1;
-                let base_x = (x as i64 * x_scale) >> 14;
-                let base_y = (y as i64 * y_scale) >> 14;
-                let luma_x = (x << sx) as i64;
-                let luma_y = (y << sy) as i64;
-                let frac_x = ((16 * luma_x * x_scale) >> 14) & 15;
-                let frac_y = ((16 * luma_y * y_scale) >> 14) & 15;
-                let dx = ((cmv_col as i64 * x_scale) >> 14) + frac_x;
-                let dy = ((cmv_row as i64 * y_scale) >> 14) + frac_y;
-                (((base_x << 4) + dx) as i32, ((base_y << 4) + dy) as i32, rf.x_step, rf.y_step)
-            };
+            let (start_x, start_y, step_x, step_y) =
+                if rf.x_step == 16 && rf.y_step == 16 && x_scale == 1 << 14 && y_scale == 1 << 14 {
+                    (((x as i32) << 4) + cmv_col, ((y as i32) << 4) + cmv_row, 16, 16)
+                } else {
+                    self.strip.scaled_blocks += 1;
+                    let base_x = (x as i64 * x_scale) >> 14;
+                    let base_y = (y as i64 * y_scale) >> 14;
+                    let luma_x = (x << sx) as i64;
+                    let luma_y = (y << sy) as i64;
+                    let frac_x = ((16 * luma_x * x_scale) >> 14) & 15;
+                    let frac_y = ((16 * luma_y * y_scale) >> 14) & 15;
+                    let dx = ((cmv_col as i64 * x_scale) >> 14) + frac_x;
+                    let dy = ((cmv_row as i64 * y_scale) >> 14) + frac_y;
+                    (((base_x << 4) + dx) as i32, ((base_y << 4) + dy) as i32, rf.x_step, rf.y_step)
+                };
             let f = rf.frame;
-            let rp =
-                RefPlane { frame: f, plane, last_x: ((f.info.width as i32 + sx as i32) >> sx) - 1, last_y: ((f.info.height as i32 + sy as i32) >> sy) - 1 };
+            let rp = RefPlane {
+                frame: f,
+                plane,
+                last_x: ((f.info.width as i32 + sx as i32) >> sx) - 1,
+                last_y: ((f.info.height as i32 + sy as i32) >> sy) - 1,
+            };
             let out = if rl == 0 { &mut self.pred } else { &mut self.pred2 };
-            let blk = McBlock { x: start_x, y: start_y, step_x, step_y, w, h, filter: b.interp_filter, bit_depth: self.bit_depth };
+            let blk = McBlock {
+                x: start_x,
+                y: start_y,
+                step_x,
+                step_y,
+                w,
+                h,
+                filter: b.interp_filter,
+                bit_depth: self.bit_depth,
+            };
             inter::predict(&rp, &blk, out, &mut self.mc_tmp, &mut self.mc_win);
         }
         let (stride, x_off) = (self.strip.strides[plane], self.strip.x_off[plane]);
@@ -352,7 +396,9 @@ impl<'a> TileDecoder<'a> {
             let o = (y + i) * stride + x - x_off;
             let row = &mut dst[o..o + w];
             if is_compound {
-                for ((d, &a), &bb) in row.iter_mut().zip(&self.pred[i * w..i * w + w]).zip(&self.pred2[i * w..i * w + w]) {
+                for ((d, &a), &bb) in
+                    row.iter_mut().zip(&self.pred[i * w..i * w + w]).zip(&self.pred2[i * w..i * w + w])
+                {
                     *d = ((a as u32 + bb as u32 + 1) >> 1) as u16;
                 }
             } else {

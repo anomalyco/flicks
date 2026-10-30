@@ -12,7 +12,10 @@ pub const MAX_LUMA_SAMPLES: u64 = 1 << 26;
 
 fn check_picture_size(width: u32, height: u32) -> Result<()> {
     ensure!(width > 0 && height > 0 && width <= 16888 && height <= 16888, "picture size {width}x{height} out of range");
-    ensure!(u64::from(width) * u64::from(height) <= MAX_LUMA_SAMPLES, "picture size {width}x{height} exceeds the decoded-frame budget");
+    ensure!(
+        u64::from(width) * u64::from(height) <= MAX_LUMA_SAMPLES,
+        "picture size {width}x{height} exceeds the decoded-frame budget"
+    );
     Ok(())
 }
 
@@ -154,7 +157,15 @@ pub struct Vui {
 
 impl Default for Vui {
     fn default() -> Self {
-        Vui { sar: (0, 0), full_range: false, colour_primaries: 2, transfer_characteristics: 2, matrix_coefficients: 2, field_seq: false, timing: None }
+        Vui {
+            sar: (0, 0),
+            full_range: false,
+            colour_primaries: 2,
+            transfer_characteristics: 2,
+            matrix_coefficients: 2,
+            field_seq: false,
+            timing: None,
+        }
     }
 }
 
@@ -514,26 +525,42 @@ impl Sps {
         let log2_max_tb = log2_min_tb + r.read_ue()?;
         ensure!((4..=6).contains(&log2_ctb) && log2_min_cb <= log2_ctb, "CTB size out of range");
         ensure!(log2_min_tb < log2_min_cb && log2_max_tb <= log2_ctb.min(5), "transform block sizes out of range");
-        ensure!(width % (1 << log2_min_cb) == 0 && height % (1 << log2_min_cb) == 0, "picture size not a multiple of MinCbSizeY");
+        ensure!(
+            width % (1 << log2_min_cb) == 0 && height % (1 << log2_min_cb) == 0,
+            "picture size not a multiple of MinCbSizeY"
+        );
         let max_th_depth_inter = r.read_ue()?;
         let max_th_depth_intra = r.read_ue()?;
-        ensure!(max_th_depth_inter <= log2_ctb - log2_min_tb && max_th_depth_intra <= log2_ctb - log2_min_tb, "transform hierarchy depth out of range");
+        ensure!(
+            max_th_depth_inter <= log2_ctb - log2_min_tb && max_th_depth_intra <= log2_ctb - log2_min_tb,
+            "transform hierarchy depth out of range"
+        );
         let scaling_list_enabled = r.read_flag()?;
         let mut scaling_list = None;
         if scaling_list_enabled {
-            scaling_list = Some(if r.read_flag()? { ScalingList::parse(&mut r)? } else { ScalingList::default_lists() });
+            scaling_list =
+                Some(if r.read_flag()? { ScalingList::parse(&mut r)? } else { ScalingList::default_lists() });
         }
         let amp = r.read_flag()?;
         let sao = r.read_flag()?;
         let pcm = r.read_flag()?;
-        let (mut pcm_bit_depth_luma, mut pcm_bit_depth_chroma, mut log2_min_pcm, mut log2_max_pcm, mut pcm_loop_filter_disabled) = (8, 8, 0, 0, false);
+        let (
+            mut pcm_bit_depth_luma,
+            mut pcm_bit_depth_chroma,
+            mut log2_min_pcm,
+            mut log2_max_pcm,
+            mut pcm_loop_filter_disabled,
+        ) = (8, 8, 0, 0, false);
         if pcm {
             pcm_bit_depth_luma = r.read_bits(4)? + 1;
             pcm_bit_depth_chroma = r.read_bits(4)? + 1;
             log2_min_pcm = r.read_ue()? + 3;
             log2_max_pcm = log2_min_pcm + r.read_ue()?;
             pcm_loop_filter_disabled = r.read_flag()?;
-            ensure!(pcm_bit_depth_luma <= bit_depth_luma && pcm_bit_depth_chroma <= bit_depth_chroma, "PCM bit depth out of range");
+            ensure!(
+                pcm_bit_depth_luma <= bit_depth_luma && pcm_bit_depth_chroma <= bit_depth_chroma,
+                "PCM bit depth out of range"
+            );
             ensure!(log2_max_pcm <= log2_ctb.min(5), "PCM size out of range");
         }
         let num_st = r.read_ue()? as usize;
@@ -720,7 +747,10 @@ impl Pps {
         let cabac_init_present = r.read_flag()?;
         let num_ref_idx_l0_default = r.read_ue()? + 1;
         let num_ref_idx_l1_default = r.read_ue()? + 1;
-        ensure!(num_ref_idx_l0_default <= 15 && num_ref_idx_l1_default <= 15, "num_ref_idx_default_active out of range");
+        ensure!(
+            num_ref_idx_l0_default <= 15 && num_ref_idx_l1_default <= 15,
+            "num_ref_idx_default_active out of range"
+        );
         let init_qp = 26 + r.read_se()?;
         let constrained_intra_pred = r.read_flag()?;
         let transform_skip = r.read_flag()?;
@@ -729,7 +759,10 @@ impl Pps {
         ensure!(diff_cu_qp_delta_depth <= 3, "diff_cu_qp_delta_depth out of range");
         let cb_qp_offset = r.read_se()?;
         let cr_qp_offset = r.read_se()?;
-        ensure!((-12..=12).contains(&cb_qp_offset) && (-12..=12).contains(&cr_qp_offset), "chroma QP offset out of range");
+        ensure!(
+            (-12..=12).contains(&cb_qp_offset) && (-12..=12).contains(&cr_qp_offset),
+            "chroma QP offset out of range"
+        );
         let slice_chroma_qp_offsets_present = r.read_flag()?;
         let weighted_pred = r.read_flag()?;
         let weighted_bipred = r.read_flag()?;
@@ -756,14 +789,18 @@ impl Pps {
         }
         let loop_filter_across_slices = r.read_flag()?;
         let deblocking_control_present = r.read_flag()?;
-        let (mut deblocking_override_enabled, mut deblocking_disabled, mut beta_offset_div2, mut tc_offset_div2) = (false, false, 0, 0);
+        let (mut deblocking_override_enabled, mut deblocking_disabled, mut beta_offset_div2, mut tc_offset_div2) =
+            (false, false, 0, 0);
         if deblocking_control_present {
             deblocking_override_enabled = r.read_flag()?;
             deblocking_disabled = r.read_flag()?;
             if !deblocking_disabled {
                 beta_offset_div2 = r.read_se()?;
                 tc_offset_div2 = r.read_se()?;
-                ensure!((-6..=6).contains(&beta_offset_div2) && (-6..=6).contains(&tc_offset_div2), "deblocking offsets out of range");
+                ensure!(
+                    (-6..=6).contains(&beta_offset_div2) && (-6..=6).contains(&tc_offset_div2),
+                    "deblocking offsets out of range"
+                );
             }
         }
         let scaling_list = if r.read_flag()? { Some(ScalingList::parse(&mut r)?) } else { None };

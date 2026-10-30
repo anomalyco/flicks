@@ -19,7 +19,11 @@ fn input(rate: u32, channels: usize) -> Vec<Vec<f32>> {
             let a = chords(rate, n, 0.003 * c as f32);
             let b = clicks(rate, n);
             let s = speech(rate, n, 5 + c as u64);
-            a.iter().zip(&b).zip(&s).map(|((x, y), z)| 0.6 * x + 0.3 * y + 0.3 * z * if c % 2 == 0 { 1.0 } else { -0.5 }).collect()
+            a.iter()
+                .zip(&b)
+                .zip(&s)
+                .map(|((x, y), z)| 0.6 * x + 0.3 * y + 0.3 * z * if c % 2 == 0 { 1.0 } else { -0.5 })
+                .collect()
         })
         .collect()
 }
@@ -39,8 +43,11 @@ fn compare(case: &Case) -> Option<(f32, usize)> {
     let mut worst = 0f32;
     let mut taken = vec![false; case.channels];
     for c in 0..case.channels {
-        let (best, err) =
-            (0..case.channels).filter(|&j| !taken[j]).map(|j| (j, max_abs_diff(&ours[c], &ref_pcm[j]))).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+        let (best, err) = (0..case.channels)
+            .filter(|&j| !taken[j])
+            .map(|j| (j, max_abs_diff(&ours[c], &ref_pcm[j])))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
         taken[best] = true;
         assert_eq!(ours[c].len(), ref_pcm[best].len(), "{}: length", case.name);
         worst = worst.max(err);
@@ -64,7 +71,12 @@ fn matches_ffmpeg_decoder() {
             channels: 2,
             args: &["-b:a", "96k", "-aac_pns", "0", "-aac_is", "1", "-aac_ms", "1", "-aac_tns", "1"],
         },
-        Case { name: "stereo_32k_48k_is", rate: 32000, channels: 2, args: &["-b:a", "48k", "-aac_pns", "0", "-aac_is", "1"] },
+        Case {
+            name: "stereo_32k_48k_is",
+            rate: 32000,
+            channels: 2,
+            args: &["-b:a", "48k", "-aac_pns", "0", "-aac_is", "1"],
+        },
         Case { name: "mono_22k_32k", rate: 22050, channels: 1, args: &["-b:a", "32k", "-aac_pns", "0"] },
         Case { name: "mono_16k_24k", rate: 16000, channels: 1, args: &["-b:a", "24k", "-aac_pns", "0"] },
         Case { name: "mono_8k_16k", rate: 8000, channels: 1, args: &["-b:a", "16k", "-aac_pns", "0"] },
@@ -72,7 +84,12 @@ fn matches_ffmpeg_decoder() {
         Case { name: "c3_48k", rate: 48000, channels: 3, args: &["-b:a", "192k", "-aac_pns", "0"] },
         Case { name: "c51_48k_320k", rate: 48000, channels: 6, args: &["-b:a", "320k", "-aac_pns", "0"] },
         Case { name: "c71_48k_448k", rate: 48000, channels: 8, args: &["-b:a", "448k", "-aac_pns", "0"] },
-        Case { name: "stereo_44k_fast_coder", rate: 44100, channels: 2, args: &["-b:a", "160k", "-aac_coder", "fast", "-aac_pns", "0"] },
+        Case {
+            name: "stereo_44k_fast_coder",
+            rate: 44100,
+            channels: 2,
+            args: &["-b:a", "160k", "-aac_coder", "fast", "-aac_pns", "0"],
+        },
     ];
     println!("{:<28} {:>10} {:>12}", "stream", "samples/ch", "max |err|");
     let mut fails = Vec::new();
@@ -162,8 +179,11 @@ fn pns_matches_ffmpeg() {
             }
             ab / (aa * bb).sqrt()
         };
-        let (c_ours, c_ff) = if channels == 2 { (corr(&ours[0], &ours[1]), corr(&ref_pcm[0], &ref_pcm[1])) } else { (0.0, 0.0) };
-        println!("PNS {channels}ch: per-frame energy max deviation {worst_db:.2} dB; L/R correlation ours {c_ours:.3} ffmpeg {c_ff:.3}");
+        let (c_ours, c_ff) =
+            if channels == 2 { (corr(&ours[0], &ours[1]), corr(&ref_pcm[0], &ref_pcm[1])) } else { (0.0, 0.0) };
+        println!(
+            "PNS {channels}ch: per-frame energy max deviation {worst_db:.2} dB; L/R correlation ours {c_ours:.3} ffmpeg {c_ff:.3}"
+        );
         if channels == 1 {
             assert!(worst_db < 1.0);
         } else {

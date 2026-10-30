@@ -106,7 +106,14 @@ pub(crate) struct TileState {
 }
 
 impl TileState {
-    fn with(cur: FrameBuf, mi: MiInfo, cdef: Vec<i8>, lf_tx_size: [Grid8; 3], lr: LrUnits, cdef_cols: usize) -> TileState {
+    fn with(
+        cur: FrameBuf,
+        mi: MiInfo,
+        cdef: Vec<i8>,
+        lf_tx_size: [Grid8; 3],
+        lr: LrUnits,
+        cdef_cols: usize,
+    ) -> TileState {
         let (mi_cols, mi_rows) = (mi.cols, mi.rows);
         TileState {
             cur,

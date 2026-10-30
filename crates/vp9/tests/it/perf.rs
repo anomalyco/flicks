@@ -31,7 +31,11 @@ fn run(name: &str, label: &str) {
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     for threads in [1, cores.min(16)] {
         let (n, secs) = bench(&frames, threads, 3);
-        println!("{label} ({} KB): {threads} thread(s): {n} frames in {secs:.3}s = {:.1} fps", data.len() / 1024, n as f64 / secs);
+        println!(
+            "{label} ({} KB): {threads} thread(s): {n} frames in {secs:.3}s = {:.1} fps",
+            data.len() / 1024,
+            n as f64 / secs
+        );
     }
 }
 

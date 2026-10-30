@@ -113,14 +113,20 @@ pub fn predict<S: Sample>(r: &Refs, mode: u32, n: usize, edge_filters: bool, bit
                 let l = r.left[1 + y] as i32;
                 for x in 0..n {
                     let t = r.top[1 + x] as i32;
-                    let v = ((n - 1 - x) as i32 * l + (x as i32 + 1) * tr + (n - 1 - y) as i32 * t + (y as i32 + 1) * bl + n as i32) >> (log2 + 1);
+                    let v = ((n - 1 - x) as i32 * l
+                        + (x as i32 + 1) * tr
+                        + (n - 1 - y) as i32 * t
+                        + (y as i32 + 1) * bl
+                        + n as i32)
+                        >> (log2 + 1);
                     out[y * os + x] = S::from_i32(v);
                 }
             }
         }
         1 => {
             let log2 = n.trailing_zeros();
-            let sum: u32 = r.top[1..=n].iter().map(|&v| v as u32).sum::<u32>() + r.left[1..=n].iter().map(|&v| v as u32).sum::<u32>();
+            let sum: u32 = r.top[1..=n].iter().map(|&v| v as u32).sum::<u32>()
+                + r.left[1..=n].iter().map(|&v| v as u32).sum::<u32>();
             let dc = ((sum + n as u32) >> (log2 + 1)) as u16;
             let dcs = S::from_u16(dc);
             for y in 0..n {

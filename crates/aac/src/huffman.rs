@@ -5,7 +5,8 @@ use std::sync::OnceLock;
 use flicks_container::bitstream::{BitReader, BitWriter};
 
 use crate::huffman_tables::{
-    SCALEFACTOR, SPECTRUM_1, SPECTRUM_2, SPECTRUM_3, SPECTRUM_4, SPECTRUM_5, SPECTRUM_6, SPECTRUM_7, SPECTRUM_8, SPECTRUM_9, SPECTRUM_10, SPECTRUM_11,
+    SCALEFACTOR, SPECTRUM_1, SPECTRUM_2, SPECTRUM_3, SPECTRUM_4, SPECTRUM_5, SPECTRUM_6, SPECTRUM_7, SPECTRUM_8,
+    SPECTRUM_9, SPECTRUM_10, SPECTRUM_11,
 };
 use crate::{Error, Result};
 
@@ -100,7 +101,9 @@ impl Tree {
 
 fn trees() -> &'static [Tree; 12] {
     static TREES: OnceLock<[Tree; 12]> = OnceLock::new();
-    TREES.get_or_init(|| std::array::from_fn(|i| if i == 0 { Tree::build(&SCALEFACTOR) } else { Tree::build(BOOKS[i - 1].codes) }))
+    TREES.get_or_init(|| {
+        std::array::from_fn(|i| if i == 0 { Tree::build(&SCALEFACTOR) } else { Tree::build(BOOKS[i - 1].codes) })
+    })
 }
 
 /// Decode one scalefactor difference (`-60..=60`).

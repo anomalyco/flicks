@@ -8,11 +8,17 @@ pub(crate) mod tables;
 
 use std::sync::OnceLock;
 
-use bands::{AntiCollapseInput, DenormaliseBandsInput, QuantAllBandsInput, anti_collapse, denormalise_bands, quant_all_bands, renormalise_vector};
+use bands::{
+    AntiCollapseInput, DenormaliseBandsInput, QuantAllBandsInput, anti_collapse, denormalise_bands, quant_all_bands,
+    renormalise_vector,
+};
 use energy::{EnergyFinalise, unquant_coarse_energy, unquant_energy_finalise, unquant_fine_energy};
 use mdct::ImdctScratch;
 use rate::{AllocationInput, Mode, compute_allocation};
-use tables::{COMB_GAINS, EBANDS, MAX_LM, NB_EBANDS, OVERLAP, PREEMPH, SHORT_MDCT, SPREAD_ICDF, TAPSET_ICDF, TF_SELECT_TABLE, TRIM_ICDF};
+use tables::{
+    COMB_GAINS, EBANDS, MAX_LM, NB_EBANDS, OVERLAP, PREEMPH, SHORT_MDCT, SPREAD_ICDF, TAPSET_ICDF, TF_SELECT_TABLE,
+    TRIM_ICDF,
+};
 
 use crate::range::{BITRES, RangeDecoder};
 
@@ -224,7 +230,8 @@ impl CeltDecoder {
         }
         let total_bits_raw = len as i32 * 8;
         let (silence, tell) = packet_silence(dec, total_bits_raw);
-        let (postfilter_gain, postfilter_pitch, postfilter_tapset, mut tell) = read_postfilter(dec, start, tell, total_bits_raw);
+        let (postfilter_gain, postfilter_pitch, postfilter_tapset, mut tell) =
+            read_postfilter(dec, start, tell, total_bits_raw);
         let is_transient = if lm > 0 && tell + 3 <= total_bits_raw {
             let t = dec.bit_logp(3);
             tell = dec.tell();
@@ -269,7 +276,8 @@ impl CeltDecoder {
         }
         let alloc_trim = if tellf + (6 << BITRES) <= total_bits { dec.icdf(&TRIM_ICDF, 7) as i32 } else { 5 };
         let mut bits = ((len as i32 * 8) << BITRES) - dec.tell_frac() as i32 - 1;
-        let anti_collapse_rsv = if is_transient && lm >= 2 && bits >= ((lm as i32 + 2) << BITRES) { 1 << BITRES } else { 0 };
+        let anti_collapse_rsv =
+            if is_transient && lm >= 2 && bits >= ((lm as i32 + 2) << BITRES) { 1 << BITRES } else { 0 };
         bits -= anti_collapse_rsv;
         let alloc = compute_allocation(AllocationInput {
             mode: m,
@@ -359,7 +367,16 @@ impl CeltDecoder {
                 *v = -28.0;
             }
         }
-        self.synthesis(SynthesisFrame { bands: &x, samples: n, start_band: start, end_band: eff_end, coded_channels: c, transient: is_transient, lm, silence });
+        self.synthesis(SynthesisFrame {
+            bands: &x,
+            samples: n,
+            start_band: start,
+            end_band: eff_end,
+            coded_channels: c,
+            transient: is_transient,
+            lm,
+            silence,
+        });
         self.x = x;
 
         // Post-filter.
@@ -439,11 +456,21 @@ impl CeltDecoder {
 
     /// Denormalisation + IMDCT into the decode memory (`celt_synthesis`).
     fn synthesis(&mut self, frame: SynthesisFrame<'_>) {
-        let SynthesisFrame { bands: x, samples: n, start_band: start, end_band: eff_end, coded_channels: c, transient: is_transient, lm, silence } = frame;
+        let SynthesisFrame {
+            bands: x,
+            samples: n,
+            start_band: start,
+            end_band: eff_end,
+            coded_channels: c,
+            transient: is_transient,
+            lm,
+            silence,
+        } = frame;
         let cc = self.channels;
         let m = self.m;
         let mm = 1usize << lm;
-        let (bcount, nb, shift) = if is_transient { (mm, SHORT_MDCT, MAX_LM) } else { (1, SHORT_MDCT << lm, MAX_LM - lm) };
+        let (bcount, nb, shift) =
+            if is_transient { (mm, SHORT_MDCT, MAX_LM) } else { (1, SHORT_MDCT << lm, MAX_LM - lm) };
         let ml = self.mem_len();
         let mut freq = std::mem::take(&mut self.freq);
         freq.clear();
@@ -465,7 +492,14 @@ impl CeltDecoder {
             for (ch, f) in [(0usize, &*f1), (1usize, &*f0)] {
                 let mem = &mut self.decode_mem[ch * ml..(ch + 1) * ml];
                 for b in 0..bcount {
-                    m.mdct[shift].backward(&f[b..], bcount, &mut mem[out_off + nb * b..], &m.window, OVERLAP, &mut self.imdct);
+                    m.mdct[shift].backward(
+                        &f[b..],
+                        bcount,
+                        &mut mem[out_off + nb * b..],
+                        &m.window,
+                        OVERLAP,
+                        &mut self.imdct,
+                    );
                 }
             }
         } else if cc == 1 && c == 2 {
@@ -494,7 +528,14 @@ impl CeltDecoder {
             }
             let mem = &mut self.decode_mem[..ml];
             for b in 0..bcount {
-                m.mdct[shift].backward(&f0[b..], bcount, &mut mem[out_off + nb * b..], &m.window, OVERLAP, &mut self.imdct);
+                m.mdct[shift].backward(
+                    &f0[b..],
+                    bcount,
+                    &mut mem[out_off + nb * b..],
+                    &m.window,
+                    OVERLAP,
+                    &mut self.imdct,
+                );
             }
         } else {
             for ch in 0..cc {
@@ -510,7 +551,14 @@ impl CeltDecoder {
                 });
                 let mem = &mut self.decode_mem[ch * ml..(ch + 1) * ml];
                 for b in 0..bcount {
-                    m.mdct[shift].backward(&f0[b..], bcount, &mut mem[out_off + nb * b..], &m.window, OVERLAP, &mut self.imdct);
+                    m.mdct[shift].backward(
+                        &f0[b..],
+                        bcount,
+                        &mut mem[out_off + nb * b..],
+                        &m.window,
+                        OVERLAP,
+                        &mut self.imdct,
+                    );
                 }
             }
         }
@@ -606,7 +654,11 @@ impl CeltDecoder {
                     *v += self.decode_mem[ch * ml + base + i];
                 }
             }
-            let period = if self.loss_count == 0 { find_pitch(&mono) } else { self.postfilter_period_old.max(PLC_PITCH_LAG_MIN as i32) as usize };
+            let period = if self.loss_count == 0 {
+                find_pitch(&mono)
+            } else {
+                self.postfilter_period_old.max(PLC_PITCH_LAG_MIN as i32) as usize
+            };
             let period = period.clamp(PLC_PITCH_LAG_MIN, PLC_PITCH_LAG_MAX);
             // Remember the period for subsequent losses in the (otherwise unused) old period slot.
             self.postfilter_period_old = period as i32;
@@ -616,7 +668,8 @@ impl CeltDecoder {
                 let mem = &mut self.decode_mem[ch * ml..(ch + 1) * ml];
                 // Energy decay across the last two periods.
                 let e1: f32 = mem[DECODE_BUFFER_SIZE - period..DECODE_BUFFER_SIZE].iter().map(|v| v * v).sum();
-                let e0: f32 = mem[DECODE_BUFFER_SIZE - 2 * period..DECODE_BUFFER_SIZE - period].iter().map(|v| v * v).sum();
+                let e0: f32 =
+                    mem[DECODE_BUFFER_SIZE - 2 * period..DECODE_BUFFER_SIZE - period].iter().map(|v| v * v).sum();
                 let decay = if e0 > 0.0 { (e1 / e0).sqrt().min(1.0) } else { 0.0 };
                 let mut g = 1.0f32;
                 for (i, e) in ext.iter_mut().enumerate() {
@@ -632,7 +685,8 @@ impl CeltDecoder {
                 mem[out_off..out_off + n].copy_from_slice(&ext[..n]);
                 let tail = &ext[n..n + OVERLAP];
                 for i in 0..OVERLAP / 2 {
-                    mem[DECODE_BUFFER_SIZE + i] = m.window[i] * tail[OVERLAP - 1 - i] + m.window[OVERLAP - 1 - i] * tail[i];
+                    mem[DECODE_BUFFER_SIZE + i] =
+                        m.window[i] * tail[OVERLAP - 1 - i] + m.window[OVERLAP - 1 - i] * tail[i];
                 }
             }
         }
@@ -664,7 +718,14 @@ fn find_pitch(x: &[f32]) -> usize {
     best
 }
 
-fn tf_decode(start: usize, end: usize, is_transient: bool, tf_res: &mut [i32; NB_EBANDS], lm: usize, dec: &mut RangeDecoder) {
+fn tf_decode(
+    start: usize,
+    end: usize,
+    is_transient: bool,
+    tf_res: &mut [i32; NB_EBANDS],
+    lm: usize,
+    dec: &mut RangeDecoder,
+) {
     let mut budget = dec.storage() as i32 * 8;
     let mut tell = dec.tell();
     let mut logp: u32 = if is_transient { 2 } else { 4 };
@@ -683,7 +744,9 @@ fn tf_decode(start: usize, end: usize, is_transient: bool, tf_res: &mut [i32; NB
     }
     let mut tf_select = 0;
     let ti = 4 * is_transient as usize;
-    if tf_select_rsv && TF_SELECT_TABLE[lm][ti + tf_changed as usize] != TF_SELECT_TABLE[lm][ti + 2 + tf_changed as usize] {
+    if tf_select_rsv
+        && TF_SELECT_TABLE[lm][ti + tf_changed as usize] != TF_SELECT_TABLE[lm][ti + 2 + tf_changed as usize]
+    {
         tf_select = dec.bit_logp(1) as usize;
     }
     for r in tf_res.iter_mut().take(end).skip(start) {
@@ -758,6 +821,9 @@ fn comb_filter(buf: &mut [f32], params: CombFilterParams<'_>) {
     let t = t1;
     for i in overlap..n {
         let p = off + i;
-        buf[p] = buf[p] + g10 * buf[p - t] + g11 * (buf[p + 1 - t] + buf[p - t - 1]) + g12 * (buf[p + 2 - t] + buf[p - t - 2]);
+        buf[p] = buf[p]
+            + g10 * buf[p - t]
+            + g11 * (buf[p + 1 - t] + buf[p - t - 1])
+            + g12 * (buf[p + 2 - t] + buf[p - t - 2]);
     }
 }

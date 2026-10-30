@@ -16,7 +16,11 @@ pub(crate) fn plain_stream(id: u8) -> bool {
 }
 
 pub(crate) fn timestamp(b: &[u8]) -> i64 {
-    (((b[0] >> 1) & 7) as i64) << 30 | (b[1] as i64) << 22 | ((b[2] >> 1) as i64) << 15 | (b[3] as i64) << 7 | (b[4] >> 1) as i64
+    (((b[0] >> 1) & 7) as i64) << 30
+        | (b[1] as i64) << 22
+        | ((b[2] >> 1) as i64) << 15
+        | (b[3] as i64) << 7
+        | (b[4] >> 1) as i64
 }
 
 /// Parse a PES header at the start of `b` (which begins with `00 00 01 stream_id`). `None` when
@@ -81,7 +85,13 @@ mod tests {
     use super::*;
 
     fn ts_bytes(prefix: u8, v: i64) -> [u8; 5] {
-        [(prefix << 4) | (((v >> 30) & 7) as u8) << 1 | 1, (v >> 22) as u8, (((v >> 15) & 0x7F) as u8) << 1 | 1, (v >> 7) as u8, ((v & 0x7F) as u8) << 1 | 1]
+        [
+            (prefix << 4) | (((v >> 30) & 7) as u8) << 1 | 1,
+            (v >> 22) as u8,
+            (((v >> 15) & 0x7F) as u8) << 1 | 1,
+            (v >> 7) as u8,
+            ((v & 0x7F) as u8) << 1 | 1,
+        ]
     }
 
     #[test]

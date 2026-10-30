@@ -57,7 +57,9 @@ pub fn spec(name: &str) -> Option<Vec<String>> {
     let x264: &[&str] = &["-c:v", "libx264", "-bf", "2", "-g", "12", "-pix_fmt", "yuv420p"];
     Some(match name {
         "h264_aac.mkv" => cat(&[V, A, &["-t", "2"], x264, &["-c:a", "aac"]]),
-        "vp9_opus.webm" => cat(&[V, A, &["-t", "2", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-g", "10", "-c:a", "libopus"]]),
+        "vp9_opus.webm" => {
+            cat(&[V, A, &["-t", "2", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-g", "10", "-c:a", "libopus"]])
+        }
         "flac.mkv" => cat(&[A, &["-t", "2", "-c:a", "flac"]]),
         "vorbis.mkv" => cat(&[A, &["-t", "2", "-ac", "2", "-c:a", "vorbis", "-strict", "-2"]]),
         "subs.mkv" => cat(&[
@@ -66,10 +68,28 @@ pub fn spec(name: &str) -> Option<Vec<String>> {
             x264,
             &["-c:s:0", "srt", "-c:s:1", "ass", "-metadata:s:s:0", "language=fre", "-metadata:s:s:1", "title=Styled"],
         ]),
-        "webvtt.webm" => {
-            cat(&[V, &["-i", "in.vtt", "-t", "2", "-map", "0:v", "-map", "1:s", "-c:v", "libvpx", "-deadline", "realtime", "-c:s", "webvtt"]])
+        "webvtt.webm" => cat(&[
+            V,
+            &[
+                "-i",
+                "in.vtt",
+                "-t",
+                "2",
+                "-map",
+                "0:v",
+                "-map",
+                "1:s",
+                "-c:v",
+                "libvpx",
+                "-deadline",
+                "realtime",
+                "-c:s",
+                "webvtt",
+            ],
+        ]),
+        "cues_front.mkv" => {
+            cat(&[V, A, &["-t", "3"], x264, &["-c:a", "aac", "-cues_to_front", "1", "-cluster_time_limit", "500"]])
         }
-        "cues_front.mkv" => cat(&[V, A, &["-t", "3"], x264, &["-c:a", "aac", "-cues_to_front", "1", "-cluster_time_limit", "500"]]),
         "hevc_hdr.mkv" => cat(&[
             V,
             &[
@@ -86,7 +106,11 @@ pub fn spec(name: &str) -> Option<Vec<String>> {
             ],
         ]),
         "prores_pcm.mkv" => cat(&[V, A, &["-t", "1", "-c:v", "prores_ks", "-profile:v", "2", "-c:a", "pcm_s24le"]]),
-        "mjpeg_ac3.mkv" => cat(&[V, A, &["-t", "1", "-c:v", "mjpeg", "-q:v", "5", "-c:a", "ac3", "-metadata", "title=flicks-container test"]]),
+        "mjpeg_ac3.mkv" => cat(&[
+            V,
+            A,
+            &["-t", "1", "-c:v", "mjpeg", "-q:v", "5", "-c:a", "ac3", "-metadata", "title=flicks-container test"],
+        ]),
         "av1.mkv" => cat(&[V, &["-t", "1", "-c:v", "libsvtav1", "-preset", "12", "-g", "10"]]),
         "live.mkv" => return None,
         _ => panic!("unknown fixture {name}"),
@@ -114,7 +138,10 @@ pub fn fixture(ffmpeg: &Path, name: &str) -> Option<PathBuf> {
             // streamed to a pipe: unknown-size Segment, no Cues, no Duration
             let f = std::fs::File::create(&tmp).unwrap();
             c.args(V).args(A);
-            c.args(["-t", "2", "-c:v", "libx264", "-bf", "2", "-g", "12", "-pix_fmt", "yuv420p", "-c:a", "aac", "-f", "matroska", "pipe:1"]);
+            c.args([
+                "-t", "2", "-c:v", "libx264", "-bf", "2", "-g", "12", "-pix_fmt", "yuv420p", "-c:a", "aac", "-f",
+                "matroska", "pipe:1",
+            ]);
             c.stdout(Stdio::from(f));
         }
     }

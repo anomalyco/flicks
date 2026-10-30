@@ -32,8 +32,8 @@ pub use error::{Error, HandlerError, Result};
 pub use node::Gate as MembershipGate;
 pub use node::{DEFAULT_MAX_FRAME_LEN, Node, NodeConfig, PeerAddr, Relays};
 pub use pair::{
-    ConfirmationCode, DEFAULT_PAIRING_TTL, Inviter, Joiner, PairingContext, PairingListener,
-    PairingOptions, PairingOutcome, PairingTicket,
+    ConfirmationCode, DEFAULT_PAIRING_TTL, Inviter, Joiner, PairingContext, PairingListener, PairingOptions,
+    PairingOutcome, PairingTicket,
 };
 #[cfg(feature = "sim")]
 pub use pair::{PairingStream, ProvenPairing};

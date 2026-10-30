@@ -1,15 +1,19 @@
 use super::{
-    AC_QLOOKUP, ADJUSTED_TX_SIZE, ADST_FLIPADST, BR_CDF_SIZE, COEFF_BASE_CTX_OFFSET, COEFF_BASE_POS_CTX_OFFSET, COEFF_BASE_RANGE, DC_QLOOKUP, DCT_DCT,
-    DCT_FLIPADST, DEFAULT_SCAN_4X4, DEFAULT_SCAN_4X8, DEFAULT_SCAN_4X16, DEFAULT_SCAN_8X4, DEFAULT_SCAN_8X8, DEFAULT_SCAN_8X16, DEFAULT_SCAN_8X32,
-    DEFAULT_SCAN_16X4, DEFAULT_SCAN_16X8, DEFAULT_SCAN_16X16, DEFAULT_SCAN_16X32, DEFAULT_SCAN_32X8, DEFAULT_SCAN_32X16, DEFAULT_SCAN_32X32,
-    FILTER_INTRA_MODE_TO_INTRA_DIR, FLIPADST_ADST, FLIPADST_DCT, FLIPADST_FLIPADST, H_ADST, H_DCT, H_FLIPADST, IDTX, MAG_REF_OFFSET_WITH_TX_CLASS,
-    MCOL_SCAN_4X4, MCOL_SCAN_4X8, MCOL_SCAN_4X16, MCOL_SCAN_8X4, MCOL_SCAN_8X8, MCOL_SCAN_8X16, MCOL_SCAN_16X4, MCOL_SCAN_16X8, MCOL_SCAN_16X16, MODE_TO_TXFM,
-    MROW_SCAN_4X4, MROW_SCAN_4X8, MROW_SCAN_4X16, MROW_SCAN_8X4, MROW_SCAN_8X8, MROW_SCAN_8X16, MROW_SCAN_16X4, MROW_SCAN_16X8, MROW_SCAN_16X16,
-    NUM_BASE_LEVELS, QM_OFFSET, QUANTIZER_MATRIX, SIG_REF_DIFF_OFFSET, SIG_REF_DIFF_OFFSET_NUM, TX_4X4, TX_4X8, TX_4X16, TX_8X4, TX_8X8, TX_8X16, TX_8X32,
-    TX_16X4, TX_16X8, TX_16X16, TX_16X32, TX_16X64, TX_32X8, TX_32X16, TX_32X32, TX_32X64, TX_64X16, TX_64X32, TX_64X64, TX_CLASS_2D, TX_CLASS_HORIZ,
-    TX_CLASS_VERT, TX_HEIGHT, TX_HEIGHT_LOG2, TX_SET_DCTONLY, TX_SET_INTER_1, TX_SET_INTER_2, TX_SET_INTER_3, TX_SET_INTRA_1, TX_SET_INTRA_2, TX_SIZE_SQR,
-    TX_SIZE_SQR_UP, TX_TYPE_IN_SET_INTER, TX_TYPE_IN_SET_INTRA, TX_TYPE_INTER_INV_SET1, TX_TYPE_INTER_INV_SET2, TX_TYPE_INTER_INV_SET3, TX_TYPE_INTRA_INV_SET1,
-    TX_TYPE_INTRA_INV_SET2, TX_WIDTH, TX_WIDTH_LOG2, TileDecoder, V_ADST, V_DCT, V_FLIPADST, block_height, block_width, inverse_transform_2d,
+    AC_QLOOKUP, ADJUSTED_TX_SIZE, ADST_FLIPADST, BR_CDF_SIZE, COEFF_BASE_CTX_OFFSET, COEFF_BASE_POS_CTX_OFFSET,
+    COEFF_BASE_RANGE, DC_QLOOKUP, DCT_DCT, DCT_FLIPADST, DEFAULT_SCAN_4X4, DEFAULT_SCAN_4X8, DEFAULT_SCAN_4X16,
+    DEFAULT_SCAN_8X4, DEFAULT_SCAN_8X8, DEFAULT_SCAN_8X16, DEFAULT_SCAN_8X32, DEFAULT_SCAN_16X4, DEFAULT_SCAN_16X8,
+    DEFAULT_SCAN_16X16, DEFAULT_SCAN_16X32, DEFAULT_SCAN_32X8, DEFAULT_SCAN_32X16, DEFAULT_SCAN_32X32,
+    FILTER_INTRA_MODE_TO_INTRA_DIR, FLIPADST_ADST, FLIPADST_DCT, FLIPADST_FLIPADST, H_ADST, H_DCT, H_FLIPADST, IDTX,
+    MAG_REF_OFFSET_WITH_TX_CLASS, MCOL_SCAN_4X4, MCOL_SCAN_4X8, MCOL_SCAN_4X16, MCOL_SCAN_8X4, MCOL_SCAN_8X8,
+    MCOL_SCAN_8X16, MCOL_SCAN_16X4, MCOL_SCAN_16X8, MCOL_SCAN_16X16, MODE_TO_TXFM, MROW_SCAN_4X4, MROW_SCAN_4X8,
+    MROW_SCAN_4X16, MROW_SCAN_8X4, MROW_SCAN_8X8, MROW_SCAN_8X16, MROW_SCAN_16X4, MROW_SCAN_16X8, MROW_SCAN_16X16,
+    NUM_BASE_LEVELS, QM_OFFSET, QUANTIZER_MATRIX, SIG_REF_DIFF_OFFSET, SIG_REF_DIFF_OFFSET_NUM, TX_4X4, TX_4X8,
+    TX_4X16, TX_8X4, TX_8X8, TX_8X16, TX_8X32, TX_16X4, TX_16X8, TX_16X16, TX_16X32, TX_16X64, TX_32X8, TX_32X16,
+    TX_32X32, TX_32X64, TX_64X16, TX_64X32, TX_64X64, TX_CLASS_2D, TX_CLASS_HORIZ, TX_CLASS_VERT, TX_HEIGHT,
+    TX_HEIGHT_LOG2, TX_SET_DCTONLY, TX_SET_INTER_1, TX_SET_INTER_2, TX_SET_INTER_3, TX_SET_INTRA_1, TX_SET_INTRA_2,
+    TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_TYPE_IN_SET_INTER, TX_TYPE_IN_SET_INTRA, TX_TYPE_INTER_INV_SET1,
+    TX_TYPE_INTER_INV_SET2, TX_TYPE_INTER_INV_SET3, TX_TYPE_INTRA_INV_SET1, TX_TYPE_INTRA_INV_SET2, TX_WIDTH,
+    TX_WIDTH_LOG2, TileDecoder, V_ADST, V_DCT, V_FLIPADST, block_height, block_width, inverse_transform_2d,
 };
 
 /// Position and size (in 4x4 units) of the transform block being coded.
@@ -89,22 +93,35 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
 
     fn transform_type(&mut self, x4: usize, y4: usize, tx_sz: usize) {
         let set = self.get_tx_set(tx_sz);
-        let qidx =
-            if self.fs.fh.seg.enabled { self.fs.fh.get_qindex(true, self.b.segment_id, self.current_q_index) } else { self.fs.fh.quant.base_q_idx as i32 };
+        let qidx = if self.fs.fh.seg.enabled {
+            self.fs.fh.get_qindex(true, self.b.segment_id, self.current_q_index)
+        } else {
+            self.fs.fh.quant.base_q_idx as i32
+        };
         let tx_type = if set > 0 && qidx > 0 {
             let sqr = TX_SIZE_SQR[tx_sz] as usize;
             if self.b.is_inter {
                 match set {
-                    TX_SET_INTER_1 => TX_TYPE_INTER_INV_SET1[self.sd.read_symbol(&mut self.cdf.inter_tx_type_set1[sqr])] as usize,
-                    TX_SET_INTER_2 => TX_TYPE_INTER_INV_SET2[self.sd.read_symbol(&mut self.cdf.inter_tx_type_set2)] as usize,
+                    TX_SET_INTER_1 => {
+                        TX_TYPE_INTER_INV_SET1[self.sd.read_symbol(&mut self.cdf.inter_tx_type_set1[sqr])] as usize
+                    }
+                    TX_SET_INTER_2 => {
+                        TX_TYPE_INTER_INV_SET2[self.sd.read_symbol(&mut self.cdf.inter_tx_type_set2)] as usize
+                    }
                     _ => TX_TYPE_INTER_INV_SET3[self.sd.read_symbol(&mut self.cdf.inter_tx_type_set3[sqr])] as usize,
                 }
             } else {
-                let intra_dir = if self.b.use_filter_intra { FILTER_INTRA_MODE_TO_INTRA_DIR[self.b.filter_intra_mode] as usize } else { self.b.y_mode };
-                if set == TX_SET_INTRA_1 {
-                    TX_TYPE_INTRA_INV_SET1[self.sd.read_symbol(&mut self.cdf.intra_tx_type_set1[sqr][intra_dir])] as usize
+                let intra_dir = if self.b.use_filter_intra {
+                    FILTER_INTRA_MODE_TO_INTRA_DIR[self.b.filter_intra_mode] as usize
                 } else {
-                    TX_TYPE_INTRA_INV_SET2[self.sd.read_symbol(&mut self.cdf.intra_tx_type_set2[sqr][intra_dir])] as usize
+                    self.b.y_mode
+                };
+                if set == TX_SET_INTRA_1 {
+                    TX_TYPE_INTRA_INV_SET1[self.sd.read_symbol(&mut self.cdf.intra_tx_type_set1[sqr][intra_dir])]
+                        as usize
+                } else {
+                    TX_TYPE_INTRA_INV_SET2[self.sd.read_symbol(&mut self.cdf.intra_tx_type_set2[sqr][intra_dir])]
+                        as usize
                 }
             }
         } else {
@@ -172,9 +189,18 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
 
     /// coeffs( ): returns eob.
     pub(super) fn coeffs(&mut self, plane: usize, start_x: usize, start_y: usize, tx_sz: usize) -> usize {
-        let pos = TxbPos { x4: start_x >> 2, y4: start_y >> 2, w4: TX_WIDTH[tx_sz] as usize >> 2, h4: TX_HEIGHT[tx_sz] as usize >> 2 };
+        let pos = TxbPos {
+            x4: start_x >> 2,
+            y4: start_y >> 2,
+            w4: TX_WIDTH[tx_sz] as usize >> 2,
+            h4: TX_HEIGHT[tx_sz] as usize >> 2,
+        };
         let tx_sz_ctx = (TX_SIZE_SQR[tx_sz] as usize + TX_SIZE_SQR_UP[tx_sz] as usize + 1) >> 1;
-        let seg_eob = if tx_sz == TX_16X64 || tx_sz == TX_64X16 { 512 } else { 1024.min(TX_WIDTH[tx_sz] as usize * TX_HEIGHT[tx_sz] as usize) };
+        let seg_eob = if tx_sz == TX_16X64 || tx_sz == TX_64X16 {
+            512
+        } else {
+            1024.min(TX_WIDTH[tx_sz] as usize * TX_HEIGHT[tx_sz] as usize)
+        };
         self.quant[..seg_eob].iter_mut().for_each(|q| *q = 0);
         let mut eob = 0usize;
         let mut cul_level = 0u32;
@@ -191,7 +217,8 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             }
             self.plane_tx_type = self.compute_tx_type(plane, tx_sz, pos.x4, pos.y4);
             let scan = self.get_scan(tx_sz);
-            let tc = TxbClass { tx_sz, tx_class: get_tx_class(self.plane_tx_type), tx_sz_ctx, ptype: (plane > 0) as usize };
+            let tc =
+                TxbClass { tx_sz, tx_class: get_tx_class(self.plane_tx_type), tx_sz_ctx, ptype: (plane > 0) as usize };
             eob = self.read_eob(&tc);
             self.read_levels(&tc, scan, eob);
             (cul_level, dc_category) = self.read_signs_and_remainders(plane, scan, eob, pos);
@@ -244,7 +271,8 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         let mut lev = std::mem::take(&mut self.levels);
         lev[..(height + TX_PAD) * stride].fill(0);
         let sig = &SIG_REF_DIFF_OFFSET[tx_class];
-        let sig_off: [usize; SIG_REF_DIFF_OFFSET_NUM] = std::array::from_fn(|i| sig[i][0] as usize * stride + sig[i][1] as usize);
+        let sig_off: [usize; SIG_REF_DIFF_OFFSET_NUM] =
+            std::array::from_fn(|i| sig[i][0] as usize * stride + sig[i][1] as usize);
         let magr = &MAG_REF_OFFSET_WITH_TX_CLASS[tx_class];
         let mag_off: [usize; 3] = std::array::from_fn(|i| magr[i][0] as usize * stride + magr[i][1] as usize);
         for c in (0..eob).rev() {
@@ -498,7 +526,8 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 }
                 let q = if i == 0 && j == 0 { dc_q } else { ac_q };
                 let q2 = if use_qm {
-                    let m = QUANTIZER_MATRIX[qm_level as usize][(plane > 0) as usize][QM_OFFSET[tx_sz] as usize + i * tw + j] as i64;
+                    let m = QUANTIZER_MATRIX[qm_level as usize][(plane > 0) as usize]
+                        [QM_OFFSET[tx_sz] as usize + i * tw + j] as i64;
                     (q * m + 16) >> 5
                 } else {
                     q

@@ -28,7 +28,8 @@ fn synthetic_files() -> Vec<Vec<u8>> {
         a.default_duration_ns = Some(10_000_000);
         let mut s = TrackSpec::new(TrackKind::Subtitle, "S_TEXT/UTF8");
         s.language = Some("ger".into());
-        let opts = MuxOptions { lacing, cluster_duration_ns: 200_000_000, title: Some("fuzz".into()), ..Default::default() };
+        let opts =
+            MuxOptions { lacing, cluster_duration_ns: 200_000_000, title: Some("fuzz".into()), ..Default::default() };
         let mut w = MkvWriter::new(Cursor::new(Vec::new()), vec![v, a, s], opts).unwrap();
         for i in 0..20i64 {
             w.write_frame(0, i * 40_000_000, i % 5 == 0, &[i as u8; 24], None).unwrap();

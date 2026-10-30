@@ -376,7 +376,8 @@ fn build_and_check(cabac: bool, threads: usize) {
     let pcm_pic = |seed: &mut u32| (0..NMB).map(|_| Some(random_mb(seed))).collect::<Vec<_>>();
     let a = pcm_pic(&mut seed);
     let b = pcm_pic(&mut seed);
-    let mixed: Vec<Option<Vec<u8>>> = (0..NMB).map(|i| if i % 3 == 1 { Some(random_mb(&mut seed)) } else { None }).collect();
+    let mixed: Vec<Option<Vec<u8>>> =
+        (0..NMB).map(|i| if i % 3 == 1 { Some(random_mb(&mut seed)) } else { None }).collect();
     let skip = vec![None; NMB];
     let pics = vec![
         // 0: IDR, all PCM, marked long-term (LongTermFrameIdx 0)
@@ -389,7 +390,14 @@ fn build_and_check(cabac: bool, threads: usize) {
         Pic { frame_num: 5, ref_idc: 2, mods: vec![(0, 2)], mbs: skip.clone(), ..Default::default() },
         // 4: mixed PCM / P_Skip from pic 1 (PicNum 1: 6 - 5); MMCO 4 raises MaxLongTermFrameIdx to 2,
         //    MMCO 2 drops long-term 0, MMCO 3 makes pic 1 (difference 6 - 1 - 1 = 4) long-term index 1
-        Pic { frame_num: 6, ref_idc: 2, mods: vec![(0, 4)], mmcos: vec![(4, 3, 0), (2, 0, 0), (3, 4, 1)], mbs: mixed.clone(), ..Default::default() },
+        Pic {
+            frame_num: 6,
+            ref_idc: 2,
+            mods: vec![(0, 4)],
+            mmcos: vec![(4, 3, 0), (2, 0, 0), (3, 4, 1)],
+            mbs: mixed.clone(),
+            ..Default::default()
+        },
         // 5: non-reference P_Skip from long-term index 1 (= pic 1)
         Pic { frame_num: 7, ref_idc: 0, mods: vec![(2, 1)], mbs: skip.clone(), ..Default::default() },
         // 6: P_Skip with the default list: short-term by descending PicNum -> pic 4 first
@@ -455,7 +463,12 @@ fn cross_check_ffmpeg(stream: &[u8], expected: &[Planes3], name: &str) {
     _ = std::fs::remove_file(&src);
     _ = std::fs::remove_file(&dst);
     let want: Vec<u8> = expected.iter().flat_map(|(y, u, v)| y.iter().chain(u).chain(v).copied()).collect();
-    assert!(got == want, "ffmpeg output differs from the expected output of {name} ({} vs {} bytes)", got.len(), want.len());
+    assert!(
+        got == want,
+        "ffmpeg output differs from the expected output of {name} ({} vs {} bytes)",
+        got.len(),
+        want.len()
+    );
 }
 
 #[test]
@@ -481,7 +494,15 @@ fn weighted_check(cabac: bool, threads: usize) {
     let pics = [
         Pic { idr: true, frame_num: 0, ref_idc: 3, poc_lsb: Some(0), mbs: a.clone(), ..Default::default() },
         Pic { frame_num: 1, ref_idc: 2, poc_lsb: Some(8), mbs: b.clone(), wt: Some(wp), ..Default::default() },
-        Pic { frame_num: 2, ref_idc: 0, poc_lsb: Some(4), b: true, mbs: skip.clone(), wt: Some(wb), ..Default::default() },
+        Pic {
+            frame_num: 2,
+            ref_idc: 0,
+            poc_lsb: Some(4),
+            b: true,
+            mbs: skip.clone(),
+            wt: Some(wb),
+            ..Default::default()
+        },
         Pic { frame_num: 2, ref_idc: 0, poc_lsb: Some(12), mbs: skip.clone(), wt: Some(wp), ..Default::default() },
     ];
     let mut stream = sps(77, 2, false, PocType::T0);
@@ -496,7 +517,10 @@ fn weighted_check(cabac: bool, threads: usize) {
         let (w0, o0) = wb[0][c];
         let (w1, o1) = wb[1][c];
         let d = if c == 0 { 5 } else { 3 };
-        x.iter().zip(y).map(|(&p, &q)| clip(((p as i32 * w0 + q as i32 * w1 + (1 << d)) >> (d + 1)) + ((o0 + o1 + 1) >> 1))).collect()
+        x.iter()
+            .zip(y)
+            .map(|(&p, &q)| clip(((p as i32 * w0 + q as i32 * w1 + (1 << d)) >> (d + 1)) + ((o0 + o1 + 1) >> 1)))
+            .collect()
     };
     let single = |x: &[u8], c: usize| -> Vec<u8> {
         let (w, o) = wp[0][c];
@@ -532,13 +556,21 @@ fn explicit_weighted_prediction_p_and_b_skip() {
 fn poc_type1_reordering() {
     for cabac in [false, true] {
         let mut seed = 5u32;
-        let contents: Vec<Vec<Option<Vec<u8>>>> = (0..5).map(|_| (0..NMB).map(|_| Some(random_mb(&mut seed))).collect()).collect();
+        let contents: Vec<Vec<Option<Vec<u8>>>> =
+            (0..5).map(|_| (0..NMB).map(|_| Some(random_mb(&mut seed))).collect()).collect();
         // (frame_num, ref_idc): POCs 0, 4, 1, 8, 5
         let spec = [(0, 3), (1, 2), (2, 0), (2, 2), (3, 0)];
         let mut stream = sps(77, 2, false, PocType::T1);
         stream.extend(pps(cabac, false));
         for (i, &(frame_num, ref_idc)) in spec.iter().enumerate() {
-            let p = Pic { idr: i == 0, frame_num, ref_idc, poc_delta: Some(0), mbs: contents[i].clone(), ..Default::default() };
+            let p = Pic {
+                idr: i == 0,
+                frame_num,
+                ref_idc,
+                poc_delta: Some(0),
+                mbs: contents[i].clone(),
+                ..Default::default()
+            };
             stream.extend(slice_nal(&p, cabac));
         }
         let expected_order = [0usize, 2, 1, 4, 3];

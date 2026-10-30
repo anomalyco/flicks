@@ -2,8 +2,8 @@
 //! (RFC 6716 §4.2.7.5, with the RFC 8251 §6/§7 overflow fixes).
 
 use super::tables::{
-    COS_Q12, LSF_ORDER_NBMB, LSF_ORDER_WB, NLSF_CB_NBMB, NLSF_CB_WB, NLSF_MIN_SPACING_NBMB, NLSF_MIN_SPACING_WB, NLSF_PRED_NBMB, NLSF_PRED_WB, NLSF_PSEL_NBMB,
-    NLSF_PSEL_WB,
+    COS_Q12, LSF_ORDER_NBMB, LSF_ORDER_WB, NLSF_CB_NBMB, NLSF_CB_WB, NLSF_MIN_SPACING_NBMB, NLSF_MIN_SPACING_WB,
+    NLSF_PRED_NBMB, NLSF_PRED_WB, NLSF_PSEL_NBMB, NLSF_PSEL_WB,
 };
 
 pub const MAX_LPC_ORDER: usize = 16;
@@ -163,7 +163,8 @@ pub fn nlsf_stabilize(nlsf: &mut [i32], dmin: &[i32]) {
             let mut max_center = 32768 - dmin[idx + 1..=l].iter().sum::<i32>();
             max_center -= dmin[idx] >> 1;
             let c = rshift_round(nlsf[idx - 1] + nlsf[idx], 1);
-            let c = if min_center > max_center { c.clamp(max_center, min_center) } else { c.clamp(min_center, max_center) };
+            let c =
+                if min_center > max_center { c.clamp(max_center, min_center) } else { c.clamp(min_center, max_center) };
             nlsf[idx - 1] = c - (dmin[idx] >> 1);
             nlsf[idx] = nlsf[idx - 1] + dmin[idx];
         }
@@ -231,11 +232,13 @@ fn lpc_inverse_pred_gain(a_q12: &[i32]) -> i32 {
         for n in 0..(k + 1) >> 1 {
             let t1 = a[n];
             let t2 = a[k - n - 1];
-            let v1 = rshift_round64(t1.saturating_sub(mul32_frac_q31(t2, rc_q31)) as i64 * rc_mult2 as i64, mult2q as u32);
+            let v1 =
+                rshift_round64(t1.saturating_sub(mul32_frac_q31(t2, rc_q31)) as i64 * rc_mult2 as i64, mult2q as u32);
             if v1 > i32::MAX as i64 || v1 < i32::MIN as i64 {
                 return 0;
             }
-            let v2 = rshift_round64(t2.saturating_sub(mul32_frac_q31(t1, rc_q31)) as i64 * rc_mult2 as i64, mult2q as u32);
+            let v2 =
+                rshift_round64(t2.saturating_sub(mul32_frac_q31(t1, rc_q31)) as i64 * rc_mult2 as i64, mult2q as u32);
             if v2 > i32::MAX as i64 || v2 < i32::MIN as i64 {
                 return 0;
             }

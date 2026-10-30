@@ -1,7 +1,7 @@
 use super::coeffs::inverse_recenter;
 use super::{
-    NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_WIENER, SGR_PARAMS, SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_BITS,
-    SGRPROJ_PRJ_SUBEXP_K, SUPERRES_NUM, TileDecoder,
+    NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_WIENER, SGR_PARAMS,
+    SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_BITS, SGRPROJ_PRJ_SUBEXP_K, SUPERRES_NUM, TileDecoder,
 };
 
 impl<'a, 'f> TileDecoder<'a, 'f> {
@@ -23,8 +23,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             let (unit_rows, unit_cols) = (self.fs.lr_unit_rows[plane], self.fs.lr_unit_cols[plane]);
             let unit_row_start = (r * (4 >> sub_y)).div_ceil(unit_size);
             let unit_row_end = unit_rows.min(((r + h) * (4 >> sub_y)).div_ceil(unit_size));
-            let (numerator, denominator) =
-                if self.fs.fh.use_superres { ((4 >> sub_x) * self.fs.fh.superres_denom as usize, unit_size * SUPERRES_NUM) } else { (4 >> sub_x, unit_size) };
+            let (numerator, denominator) = if self.fs.fh.use_superres {
+                ((4 >> sub_x) * self.fs.fh.superres_denom as usize, unit_size * SUPERRES_NUM)
+            } else {
+                (4 >> sub_x, unit_size)
+            };
             let unit_col_start = (c * numerator).div_ceil(denominator);
             let unit_col_end = unit_cols.min(((c + w) * numerator).div_ceil(denominator));
             for unit_row in unit_row_start..unit_row_end {
@@ -64,7 +67,12 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                     0
                 };
                 for j in first..3 {
-                    let v = self.decode_signed_subexp_with_ref_bool(MIN[j], MAX[j] + 1, K[j], self.ref_lr_wiener[plane][pass][j]);
+                    let v = self.decode_signed_subexp_with_ref_bool(
+                        MIN[j],
+                        MAX[j] + 1,
+                        K[j],
+                        self.ref_lr_wiener[plane][pass][j],
+                    );
                     self.t.lr.lr_wiener[plane][idx][pass][j] = v as i8;
                     self.ref_lr_wiener[plane][pass][j] = v;
                 }
@@ -77,7 +85,12 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             for i in 0..2 {
                 let radius = SGR_PARAMS[set][i * 2];
                 let v = if radius != 0 {
-                    self.decode_signed_subexp_with_ref_bool(MIN[i], MAX[i] + 1, SGRPROJ_PRJ_SUBEXP_K as u32, self.ref_sgr_xqd[plane][i])
+                    self.decode_signed_subexp_with_ref_bool(
+                        MIN[i],
+                        MAX[i] + 1,
+                        SGRPROJ_PRJ_SUBEXP_K as u32,
+                        self.ref_sgr_xqd[plane][i],
+                    )
                 } else if i == 1 {
                     ((1 << SGRPROJ_PRJ_BITS) - self.ref_sgr_xqd[plane][0]).clamp(MIN[i], MAX[i])
                 } else {

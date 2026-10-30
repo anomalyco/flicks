@@ -122,7 +122,7 @@ mod tests;
 pub use error::{Error, Result};
 pub use kdf::KdfParams;
 pub use store::{
-    DB_FILE, FORMAT_VERSION, LogIter, Unlocked, biometric_token, clear_biometric,
-    generate_biometric_key, init, init_with_params, is_initialized, unlock, unlock_biometric,
+    DB_FILE, FORMAT_VERSION, LogIter, Unlocked, biometric_token, clear_biometric, generate_biometric_key, init,
+    init_with_params, is_initialized, unlock, unlock_biometric,
 };
 pub use zeroize::Zeroizing;

@@ -74,7 +74,11 @@ fn run(case: &Case, bitrate: u32, cfg_mod: impl Fn(&mut EncoderConfig)) -> Optio
     let mut ours_vs_ff = 0f32;
     let mut counted = 0;
     for c in 0..case.channels {
-        let (j, err) = (0..case.channels).filter(|&j| !taken[j]).map(|j| (j, max_abs_diff(&ours[c], &dec[j]))).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+        let (j, err) = (0..case.channels)
+            .filter(|&j| !taken[j])
+            .map(|j| (j, max_abs_diff(&ours[c], &dec[j])))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
         taken[j] = true;
         ours_vs_ff = ours_vs_ff.max(err);
         let d = &dec[j][1024..1024 + n];

@@ -41,7 +41,8 @@ pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> Option<FrameBuf> {
 
 fn cdef_block(fs: &FrameState, out: &mut [RowBand; 3], r: usize, c: usize, idx: usize) -> bool {
     let mi = &fs.mi;
-    let sk = |rr: usize, cc: usize| -> bool { if rr < mi.rows && cc < mi.cols { mi.skip[mi.idx(rr, cc)] } else { true } };
+    let sk =
+        |rr: usize, cc: usize| -> bool { if rr < mi.rows && cc < mi.cols { mi.skip[mi.idx(rr, cc)] } else { true } };
     let skip = sk(r, c) && sk(r + 1, c) && sk(r, c + 1) && sk(r + 1, c + 1);
     if skip {
         return false;
@@ -109,7 +110,8 @@ fn direction(fs: &FrameState, r: usize, c: usize) -> (usize, i32) {
         }
         cost[i] *= DIV_TABLE[8] as i32;
         for j in 0..3 {
-            cost[i] += (partial[i][j] * partial[i][j] + partial[i][10 - j] * partial[i][10 - j]) * DIV_TABLE[2 * j + 2] as i32;
+            cost[i] +=
+                (partial[i][j] * partial[i][j] + partial[i][10 - j] * partial[i][10 - j]) * DIV_TABLE[2 * j + 2] as i32;
         }
         i += 2;
     }
@@ -180,7 +182,9 @@ fn filter(fs: &FrameState, out: &mut [RowBand; 3], plane: usize, (r, c): (usize,
         }
     }
     let pri_tap = ((pri >> coeff_shift) & 1) as usize;
-    let off = |d: usize, k: usize| CDEF_DIRECTIONS[d][k][0] as isize * PAD_STRIDE as isize + CDEF_DIRECTIONS[d][k][1] as isize;
+    let off = |d: usize, k: usize| {
+        CDEF_DIRECTIONS[d][k][0] as isize * PAD_STRIDE as isize + CDEF_DIRECTIONS[d][k][1] as isize
+    };
     let pri_off = [off(dir, 0), off(dir, 1)];
     let d_lo = (dir + 6) & 7;
     let d_hi = (dir + 2) & 7;

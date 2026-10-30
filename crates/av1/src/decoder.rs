@@ -15,11 +15,15 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::bits::{BitReader, leb128};
 use crate::cdf::Cdfs;
 use crate::frame::FrameBuf;
-use crate::header::{FilmGrainParams, FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader, default_gm_params};
+use crate::header::{
+    FilmGrainParams, FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader,
+    default_gm_params,
+};
 use crate::par::Pool;
 use crate::spec_tables::{
-    ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DIV_MULT, GOLDEN_FRAME, INTRA_FRAME, INTRA_ONLY_FRAME, KEY_FRAME, LAST_FRAME,
-    LAST2_FRAME, MAX_FRAME_DISTANCE, MAX_OFFSET_HEIGHT, MAX_OFFSET_WIDTH, MFMV_STACK_SIZE, NUM_REF_FRAMES, PRIMARY_REF_NONE, REFMVS_LIMIT, REFS_PER_FRAME,
+    ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DIV_MULT, GOLDEN_FRAME, INTRA_FRAME,
+    INTRA_ONLY_FRAME, KEY_FRAME, LAST_FRAME, LAST2_FRAME, MAX_FRAME_DISTANCE, MAX_OFFSET_HEIGHT, MAX_OFFSET_WIDTH,
+    MFMV_STACK_SIZE, NUM_REF_FRAMES, PRIMARY_REF_NONE, REFMVS_LIMIT, REFS_PER_FRAME,
 };
 use crate::state::{FrameShared, FrameState, TileState};
 use crate::stats::{DecodeStats, Stage, Timer};
@@ -534,12 +538,14 @@ impl Decoder {
                 }
             }
         }
-        if fh.primary_ref_frame != PRIMARY_REF_NONE && self.ref_frames[fh.ref_frame_idx[fh.primary_ref_frame]].is_none() {
+        if fh.primary_ref_frame != PRIMARY_REF_NONE && self.ref_frames[fh.ref_frame_idx[fh.primary_ref_frame]].is_none()
+        {
             return Err(Error::Invalid("primary reference frame missing"));
         }
         let picture = fh.show_frame.then(Slot::new);
         let draft = self.draft && fh.show_frame && fh.refresh_frame_flags == 0;
-        let tile_count = fh.tile_info.cols.checked_mul(fh.tile_info.rows).ok_or(Error::Invalid("tile count overflows"))?;
+        let tile_count =
+            fh.tile_info.cols.checked_mul(fh.tile_info.rows).ok_or(Error::Invalid("tile count overflows"))?;
         self.pending = Some(Box::new(FrameJob {
             seq,
             fh,
@@ -723,7 +729,9 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     let mut cdfs = if fh.primary_ref_frame == PRIMARY_REF_NONE {
         Cdfs::new(fh.quant.base_q_idx)
     } else {
-        let rf = fs.refs[fh.ref_frame_idx[fh.primary_ref_frame]].as_ref().ok_or(Error::Invalid("primary reference frame missing"))?;
+        let rf = fs.refs[fh.ref_frame_idx[fh.primary_ref_frame]]
+            .as_ref()
+            .ok_or(Error::Invalid("primary reference frame missing"))?;
         let mut c = rf.cdfs.clone();
         c.clear_counts();
         c
@@ -757,12 +765,25 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
         mi_cols: fs.mi.cols,
         mi_rows: fs.mi.rows,
         film_grain_present: seq.film_grain_params_present,
-        color: (seq.color.color_primaries, seq.color.transfer_characteristics, seq.color.matrix_coefficients, seq.color.color_range),
+        color: (
+            seq.color.color_primaries,
+            seq.color.transfer_characteristics,
+            seq.color.matrix_coefficients,
+            seq.color.color_range,
+        ),
         saved_ref_frames: mf_refs,
         saved_mvs: mf_mvs,
     });
     let pic = fh.show_frame.then(|| {
-        let mut p = output_picture(seq, &rf, fh.upscaled_width as usize, fh.frame_height as usize, &fh.film_grain, job.apply_film_grain, job.pts);
+        let mut p = output_picture(
+            seq,
+            &rf,
+            fh.upscaled_width as usize,
+            fh.frame_height as usize,
+            &fh.film_grain,
+            job.apply_film_grain,
+            job.pts,
+        );
         p.draft = job.draft;
         p
     });
@@ -772,7 +793,12 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
 
 /// Decode the tiles of a frame (tile number, data), in parallel when several; returns the final
 /// CDFs of tile context_update_tile_id.
-fn decode_tiles(pool: &Pool, fs: &mut FrameState, cdfs: &Cdfs, tiles: &[(usize, Vec<u8>)]) -> Result<Option<Box<Cdfs>>> {
+fn decode_tiles(
+    pool: &Pool,
+    fs: &mut FrameState,
+    cdfs: &Cdfs,
+    tiles: &[(usize, Vec<u8>)],
+) -> Result<Option<Box<Cdfs>>> {
     let ti = fs.fh.tile_info.clone();
     let ctx_tile = ti.context_update_tile_id as usize;
     let run = |sh: &FrameShared, t: &mut TileState, num: usize, data: &[u8]| -> Result<Option<Box<Cdfs>>> {
@@ -823,7 +849,15 @@ fn decode_tiles(pool: &Pool, fs: &mut FrameState, cdfs: &Cdfs, tiles: &[(usize, 
     res.map(|_| saved)
 }
 
-fn output_picture(seq: &SequenceHeader, rf: &RefFrame, w: usize, h: usize, grain: &FilmGrainParams, apply_film_grain: bool, pts: i64) -> Picture {
+fn output_picture(
+    seq: &SequenceHeader,
+    rf: &RefFrame,
+    w: usize,
+    h: usize,
+    grain: &FilmGrainParams,
+    apply_film_grain: bool,
+    pts: i64,
+) -> Picture {
     let ssx = rf.subsampling_x as usize;
     let ssy = rf.subsampling_y as usize;
     let num_planes = rf.buf.num_planes;
@@ -942,7 +976,11 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
     let w8 = fh.mi_cols as i32 >> 1;
     let h8 = fh.mi_rows as i32 >> 1;
     let ri = fs.ref_info[src_idx].clone();
-    if ri.mi_rows != fh.mi_rows || ri.mi_cols != fh.mi_cols || ri.frame_type == INTRA_ONLY_FRAME as u8 || ri.frame_type == KEY_FRAME as u8 {
+    if ri.mi_rows != fh.mi_rows
+        || ri.mi_cols != fh.mi_cols
+        || ri.frame_type == INTRA_ONLY_FRAME as u8
+        || ri.frame_type == KEY_FRAME as u8
+    {
         return false;
     }
     let Some(rf) = fs.refs[src_idx].clone() else { return false };
@@ -956,7 +994,9 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
             if src_ref > INTRA_FRAME as i8 {
                 let ref_to_cur = rd(fh.order_hints[src], fh.order_hint);
                 let ref_offset = rd(fh.order_hints[src], ri.saved_order_hints[src_ref as usize]);
-                let pos_valid = ref_to_cur.abs() <= MAX_FRAME_DISTANCE as i32 && ref_offset.abs() <= MAX_FRAME_DISTANCE as i32 && ref_offset > 0;
+                let pos_valid = ref_to_cur.abs() <= MAX_FRAME_DISTANCE as i32
+                    && ref_offset.abs() <= MAX_FRAME_DISTANCE as i32
+                    && ref_offset > 0;
                 if pos_valid {
                     let mv = rf.saved_mvs[row * mi_cols + col];
                     let proj = get_mv_projection(mv, ref_to_cur * dst_sign, ref_offset);

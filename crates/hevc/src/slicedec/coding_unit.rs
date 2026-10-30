@@ -1,7 +1,8 @@
 use super::transform_tree::TtNode;
 use super::{
-    Blk, CU_SKIP, CU_TRANSQUANT_BYPASS, E_PU_H, E_PU_V, E_TU_H, E_TU_V, F_CODED, F_INTRA, F_NOFILTER, F_SKIP, INTRA_CHROMA, PART_MODE, PRED_MODE,
-    PREV_INTRA_LUMA, PartMode, RQT_ROOT_CBF, Result, SPLIT_CU, Sample, SliceDecoder, ensure, qpc_420,
+    Blk, CU_SKIP, CU_TRANSQUANT_BYPASS, E_PU_H, E_PU_V, E_TU_H, E_TU_V, F_CODED, F_INTRA, F_NOFILTER, F_SKIP,
+    INTRA_CHROMA, PART_MODE, PRED_MODE, PREV_INTRA_LUMA, PartMode, RQT_ROOT_CBF, Result, SPLIT_CU, Sample,
+    SliceDecoder, ensure, qpc_420,
 };
 use crate::mvpred::PredBlock;
 
@@ -12,10 +13,12 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let split = if x0 + size <= w && y0 + size <= h && log2 > self.sps.log2_min_cb {
             // ctxInc from neighbouring depths (9.3.4.2.2)
             let mut inc = 0;
-            if self.pic.zavail(x0, y0, x0 - 1, y0, self.slice_addr) && self.pic.blk_at(x0 - 1, y0).depth as u32 > depth {
+            if self.pic.zavail(x0, y0, x0 - 1, y0, self.slice_addr) && self.pic.blk_at(x0 - 1, y0).depth as u32 > depth
+            {
                 inc += 1;
             }
-            if self.pic.zavail(x0, y0, x0, y0 - 1, self.slice_addr) && self.pic.blk_at(x0, y0 - 1).depth as u32 > depth {
+            if self.pic.zavail(x0, y0, x0, y0 - 1, self.slice_addr) && self.pic.blk_at(x0, y0 - 1).depth as u32 > depth
+            {
                 inc += 1;
             }
             self.dd(SPLIT_CU + inc) == 1
@@ -118,7 +121,10 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         self.mark_edges(x0, y0, n, n, E_TU_V | E_PU_V, E_TU_H | E_PU_H);
         if skip {
             self.cu_intra = false;
-            self.prediction_unit(&PredBlock { xc: x0, yc: y0, ncb: n, xp: x0, yp: y0, w: n, h: n, part_idx: 0, part: PartMode::P2Nx2N }, true)?;
+            self.prediction_unit(
+                &PredBlock { xc: x0, yc: y0, ncb: n, xp: x0, yp: y0, w: n, h: n, part_idx: 0, part: PartMode::P2Nx2N },
+                true,
+            )?;
             self.finish_cu(x0, y0, n);
             return Ok(());
         }
@@ -132,8 +138,11 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         if intra {
             self.fill_blk(x0, y0, n, n, |b| b.flags |= F_INTRA);
             self.intra_split = part == PartMode::PNxN;
-            let pcm =
-                part == PartMode::P2Nx2N && self.sps.pcm && log2 >= self.sps.log2_min_pcm && log2 <= self.sps.log2_max_pcm && self.c.decode_terminate() == 1;
+            let pcm = part == PartMode::P2Nx2N
+                && self.sps.pcm
+                && log2 >= self.sps.log2_min_pcm
+                && log2 <= self.sps.log2_max_pcm
+                && self.c.decode_terminate() == 1;
             if pcm {
                 self.pcm_sample(x0, y0, log2)?;
                 if self.sps.pcm_loop_filter_disabled {
@@ -161,7 +170,10 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 PartMode::PNxN => &[(0, 0, h, h), (h, 0, h, h), (0, h, h, h), (h, h, h, h)],
             };
             for (i, &(px, py, pw, ph)) in parts.iter().enumerate() {
-                let merge = self.prediction_unit(&PredBlock { xc: x0, yc: y0, ncb: n, xp: x0 + px, yp: y0 + py, w: pw, h: ph, part_idx: i, part }, false)?;
+                let merge = self.prediction_unit(
+                    &PredBlock { xc: x0, yc: y0, ncb: n, xp: x0 + px, yp: y0 + py, w: pw, h: ph, part_idx: i, part },
+                    false,
+                )?;
                 if part == PartMode::P2Nx2N {
                     merge2nx2n = merge;
                 }
@@ -292,14 +304,20 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 } else {
                     1
                 };
-                let cand_b = if self.pic.zavail(xp, yp, xp, yp - 1, self.slice_addr) && yp > ((yp >> self.sps.log2_ctb) << self.sps.log2_ctb) {
+                let cand_b = if self.pic.zavail(xp, yp, xp, yp - 1, self.slice_addr)
+                    && yp > ((yp >> self.sps.log2_ctb) << self.sps.log2_ctb)
+                {
                     let b = self.pic.blk_at(xp, yp - 1);
                     if b.flags & F_INTRA != 0 { b.ipm as u32 } else { 1 }
                 } else {
                     1
                 };
                 let mut list = if cand_a == cand_b {
-                    if cand_a < 2 { [0, 1, 26] } else { [cand_a, 2 + ((cand_a + 29) % 32), 2 + ((cand_a - 2 + 1) % 32)] }
+                    if cand_a < 2 {
+                        [0, 1, 26]
+                    } else {
+                        [cand_a, 2 + ((cand_a + 29) % 32), 2 + ((cand_a - 2 + 1) % 32)]
+                    }
                 } else {
                     let c = if cand_a != 0 && cand_b != 0 {
                         0

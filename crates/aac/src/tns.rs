@@ -291,11 +291,22 @@ mod tests {
 
     #[test]
     fn encoder_decoder_filters_are_inverse() {
-        let info = IcsInfo { window_sequence: WindowSequence::OnlyLong, window_shape: WindowShape::Sine, max_sfb: 49, ..Default::default() };
+        let info = IcsInfo {
+            window_sequence: WindowSequence::OnlyLong,
+            window_shape: WindowShape::Sine,
+            max_sfb: 49,
+            ..Default::default()
+        };
         let mut t = TnsData::default();
         t.windows[0].n_filt = 1;
         t.windows[0].coef_res = true;
-        t.windows[0].filt[0] = TnsFilter { length: 40, order: 4, direction: true, coef_compress: false, coef: [3, -2, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0] };
+        t.windows[0].filt[0] = TnsFilter {
+            length: 40,
+            order: 4,
+            direction: true,
+            coef_compress: false,
+            coef: [3, -2, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0],
+        };
         let orig: Vec<f32> = (0..1024).map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.1).collect();
         let mut s = orig.clone();
         apply_encoder(&mut s, &info, 4, &t);

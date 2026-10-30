@@ -235,7 +235,17 @@ impl AudioSpecificConfig {
         if frame_length_flag {
             return Err(Error::Unsupported("960-sample frames"));
         }
-        let cfg = AudioSpecificConfig { object_type: aot, sample_rate, sf_index, channel_config, frame_length_flag, sbr, ps, extension_sample_rate, pce };
+        let cfg = AudioSpecificConfig {
+            object_type: aot,
+            sample_rate,
+            sf_index,
+            channel_config,
+            frame_length_flag,
+            sbr,
+            ps,
+            extension_sample_rate,
+            pce,
+        };
         if cfg.channels() == 0 {
             return Err(Error::InvalidConfig("no channels"));
         }
@@ -317,17 +327,34 @@ impl AdtsHeader {
         if frame_length < header_length {
             return Err(Error::Bitstream("ADTS frame shorter than its header"));
         }
-        Ok(AdtsHeader { object_type, sf_index, channel_config, frame_length, buffer_fullness, header_length, raw_data_blocks })
+        Ok(AdtsHeader {
+            object_type,
+            sf_index,
+            channel_config,
+            frame_length,
+            buffer_fullness,
+            header_length,
+            raw_data_blocks,
+        })
     }
 
     /// The equivalent `AudioSpecificConfig`. Channel configuration 0 (PCE in-band) is resolved by the
     /// decoder from the first frame; this returns stereo-less layout in that case.
     pub fn to_asc(&self) -> AudioSpecificConfig {
-        AudioSpecificConfig { object_type: self.object_type, ..AudioSpecificConfig::lc(self.sf_index, self.channel_config) }
+        AudioSpecificConfig {
+            object_type: self.object_type,
+            ..AudioSpecificConfig::lc(self.sf_index, self.channel_config)
+        }
     }
 
     /// Write a 7-byte header (no CRC) for a frame whose raw payload is `payload_len` bytes.
-    pub fn write(object_type: u8, sf_index: u8, channel_config: u8, payload_len: usize, buffer_fullness: u16) -> [u8; 7] {
+    pub fn write(
+        object_type: u8,
+        sf_index: u8,
+        channel_config: u8,
+        payload_len: usize,
+        buffer_fullness: u16,
+    ) -> [u8; 7] {
         let len = (payload_len + 7) as u32;
         let mut bw = BitWriter::new();
         bw.write_bits(0xFFF, 12);
@@ -393,7 +420,8 @@ mod tests {
     #[test]
     fn amd4_channel_configurations() {
         // 6.1 and 7.1 back (#922); 22.2 and 7.1 with heights stay unsupported
-        let channels = |c| AudioSpecificConfig::parse(&AudioSpecificConfig::lc(3, c).to_bytes()).map(|a| a.channels()).ok();
+        let channels =
+            |c| AudioSpecificConfig::parse(&AudioSpecificConfig::lc(3, c).to_bytes()).map(|a| a.channels()).ok();
         assert_eq!([7, 11, 12].map(channels), [Some(8), Some(7), Some(8)]);
         assert_eq!([13, 14].map(config_layout), [None, None]);
     }

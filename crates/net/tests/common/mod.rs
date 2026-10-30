@@ -62,13 +62,8 @@ impl Store {
     }
 
     pub fn sorted(&self) -> Vec<String> {
-        let mut v: Vec<String> = self
-            .entries
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|e| String::from_utf8(e.clone()).unwrap())
-            .collect();
+        let mut v: Vec<String> =
+            self.entries.lock().unwrap().iter().map(|e| String::from_utf8(e.clone()).unwrap()).collect();
         v.sort();
         v
     }
@@ -84,25 +79,14 @@ impl SyncHandler for Store {
         Ok(self.entries.lock().unwrap().join(&b'\n'))
     }
 
-    async fn missing_for(
-        &self,
-        _peer: PeerId,
-        peer_heads: Vec<u8>,
-    ) -> Result<Vec<Vec<u8>>, HandlerError> {
+    async fn missing_for(&self, _peer: PeerId, peer_heads: Vec<u8>) -> Result<Vec<Vec<u8>>, HandlerError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if let Some((entered, release)) = &self.block {
             entered.notify_one();
             release.notified().await;
         }
         let theirs: HashSet<&[u8]> = peer_heads.split(|b| *b == b'\n').collect();
-        Ok(self
-            .entries
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|e| !theirs.contains(e.as_slice()))
-            .cloned()
-            .collect())
+        Ok(self.entries.lock().unwrap().iter().filter(|e| !theirs.contains(e.as_slice())).cloned().collect())
     }
 
     async fn receive(&self, _peer: PeerId, entries: Vec<Vec<u8>>) -> Result<(), HandlerError> {
@@ -122,18 +106,8 @@ pub struct TestNode {
 impl TestNode {
     pub async fn new(store: Arc<Store>) -> Self {
         let members = Arc::new(Members::default());
-        let node = Node::spawn(
-            NodeConfig::local_only(key()),
-            members.clone(),
-            store.clone(),
-        )
-        .await
-        .unwrap();
-        Self {
-            node,
-            members,
-            store,
-        }
+        let node = Node::spawn(NodeConfig::local_only(key()), members.clone(), store.clone()).await.unwrap();
+        Self { node, members, store }
     }
 
     pub fn id(&self) -> PeerId {

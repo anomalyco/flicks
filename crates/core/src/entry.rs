@@ -10,13 +10,7 @@ const SIGNATURE_DOMAIN: &[u8] = b"flicks entry signature v1\0";
 const CONSENT_DOMAIN: &[u8] = b"flicks join consent v2\0";
 
 pub(crate) fn consent_message(vault: &VaultId, inviter: &DeviceId, device: &DeviceId) -> Vec<u8> {
-    [
-        CONSENT_DOMAIN,
-        vault.as_bytes(),
-        inviter.as_bytes(),
-        device.as_bytes(),
-    ]
-    .concat()
+    [CONSENT_DOMAIN, vault.as_bytes(), inviter.as_bytes(), device.as_bytes()].concat()
 }
 
 fn signature_message(hash: &Hash) -> Vec<u8> {
@@ -62,22 +56,12 @@ impl Payload {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MembershipOp {
     /// Genesis. The vault id is derived from `device` and `nonce`.
-    Create {
-        device: DeviceId,
-        nonce: [u8; 32],
-        name: String,
-    },
+    Create { device: DeviceId, nonce: [u8; 32], name: String },
     /// Adds `device`; `consent` is its [`DeviceSecret::join_consent`] for this
     /// vault and the entry's author.
-    Add {
-        device: DeviceId,
-        consent: Signature,
-    },
+    Add { device: DeviceId, consent: Signature },
     /// Removes `device`. Its data entries with seq above `last_seen_seq` are ignored.
-    Remove {
-        device: DeviceId,
-        last_seen_seq: Option<u64>,
-    },
+    Remove { device: DeviceId, last_seen_seq: Option<u64> },
     /// Renames the vault. See [`valid_name`].
     Rename { name: String },
 }
@@ -88,9 +72,7 @@ pub fn valid_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     (1..=64).contains(&bytes.len())
         && bytes[0].is_ascii_lowercase()
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
+        && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
 }
 
 /// One data op. See [`crate::item`] for the rules ops must follow.
@@ -140,12 +122,7 @@ impl DataOp {
         name: Option<String>,
         fields: impl IntoIterator<Item = (String, Field)>,
     ) -> Self {
-        Self::Create {
-            kind: kind.into(),
-            name,
-            fields: fields.into_iter().collect(),
-            source: None,
-        }
+        Self::Create { kind: kind.into(), name, fields: fields.into_iter().collect(), source: None }
     }
 
     /// A `Create` that mirrors an item held elsewhere.
@@ -155,12 +132,7 @@ impl DataOp {
         fields: impl IntoIterator<Item = (String, Field)>,
         source: Source,
     ) -> Self {
-        Self::Create {
-            kind: kind.into(),
-            name,
-            fields: fields.into_iter().collect(),
-            source: Some(source),
-        }
+        Self::Create { kind: kind.into(), name, fields: fields.into_iter().collect(), source: Some(source) }
     }
 
     pub fn source(item: ItemId, source: Option<Source>) -> Self {
@@ -219,23 +191,12 @@ impl Entry {
         write_body(&mut w, &vault, &author, seq, &deps, &payload);
         let hash = Hash(blake3::derive_key(HASH_CONTEXT, &w.finish()));
         let signature = secret.sign(&signature_message(&hash));
-        Self {
-            vault,
-            author,
-            seq,
-            deps,
-            payload,
-            signature,
-            hash,
-        }
+        Self { vault, author, seq, deps, payload, signature, hash }
     }
 
     /// Checks the author's signature.
     pub fn verify(&self) -> Result<(), Error> {
-        if self
-            .author
-            .verify(&signature_message(&self.hash), &self.signature)
-        {
+        if self.author.verify(&signature_message(&self.hash), &self.signature) {
             Ok(())
         } else {
             Err(Error::BadSignature)
@@ -245,24 +206,14 @@ impl Entry {
     /// Canonical wire/storage encoding: body followed by the 64-byte signature.
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::default();
-        write_body(
-            &mut w,
-            &self.vault,
-            &self.author,
-            self.seq,
-            &self.deps,
-            &self.payload,
-        );
+        write_body(&mut w, &self.vault, &self.author, self.seq, &self.deps, &self.payload);
         w.bytes(self.signature.as_bytes());
         w.finish()
     }
 
     /// Strictly decodes [`Entry::encode`] output. Does not check the signature.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let split = bytes
-            .len()
-            .checked_sub(64)
-            .ok_or(DecodeError::UnexpectedEnd)?;
+        let split = bytes.len().checked_sub(64).ok_or(DecodeError::UnexpectedEnd)?;
         let (body, signature) = bytes.split_at(split);
         let mut r = Reader::new(body);
         let vault = VaultId(r.array()?);
@@ -325,21 +276,11 @@ impl Entry {
     }
 
     pub fn log_id(&self) -> LogId {
-        LogId {
-            author: self.author,
-            log: self.log(),
-        }
+        LogId { author: self.author, log: self.log() }
     }
 }
 
-fn write_body(
-    w: &mut Writer,
-    vault: &VaultId,
-    author: &DeviceId,
-    seq: u64,
-    deps: &[Hash],
-    payload: &Payload,
-) {
+fn write_body(w: &mut Writer, vault: &VaultId, author: &DeviceId, seq: u64, deps: &[Hash], payload: &Payload) {
     w.bytes(vault.as_bytes());
     w.bytes(author.as_bytes());
     w.u64(seq);
@@ -349,11 +290,7 @@ fn write_body(
         Payload::Membership(op) => {
             w.u8(0);
             match op {
-                MembershipOp::Create {
-                    device,
-                    nonce,
-                    name,
-                } => {
+                MembershipOp::Create { device, nonce, name } => {
                     w.u8(0);
                     w.bytes(device.as_bytes());
                     w.bytes(nonce);
@@ -364,10 +301,7 @@ fn write_body(
                     w.bytes(device.as_bytes());
                     w.bytes(consent.as_bytes());
                 }
-                MembershipOp::Remove {
-                    device,
-                    last_seen_seq,
-                } => {
+                MembershipOp::Remove { device, last_seen_seq } => {
                     w.u8(2);
                     w.bytes(device.as_bytes());
                     match last_seen_seq {
@@ -409,12 +343,7 @@ fn write_field(w: &mut Writer, field: &Field) {
 
 fn write_data_op(w: &mut Writer, op: &DataOp) {
     match op {
-        DataOp::Create {
-            kind,
-            name,
-            fields,
-            source,
-        } => {
+        DataOp::Create { kind, name, fields, source } => {
             // A mirror's `Create` has its own tag, so every other entry
             // encodes (and hashes) as it did before sources existed.
             w.u8(if source.is_some() { 2 } else { 0 });
@@ -471,10 +400,7 @@ fn write_source(w: &mut Writer, source: Option<&Source>) {
 fn read_source(r: &mut Reader<'_>) -> Result<Option<Source>, DecodeError> {
     match r.u8()? {
         0 => Ok(None),
-        1 => Ok(Some(Source {
-            id: r.string()?,
-            version: r.string()?,
-        })),
+        1 => Ok(Some(Source { id: r.string()?, version: r.string()? })),
         tag => Err(DecodeError::InvalidTag(tag)),
     }
 }
@@ -488,10 +414,7 @@ fn read_opt_str(r: &mut Reader<'_>) -> Result<Option<String>, DecodeError> {
 }
 
 fn read_field(r: &mut Reader<'_>) -> Result<Field, DecodeError> {
-    Ok(Field {
-        kind: FieldType::parse(&r.string()?),
-        value: r.string()?,
-    })
+    Ok(Field { kind: FieldType::parse(&r.string()?), value: r.string()? })
 }
 
 fn read_data_op(r: &mut Reader<'_>) -> Result<DataOp, DecodeError> {
@@ -502,35 +425,21 @@ fn read_data_op(r: &mut Reader<'_>) -> Result<DataOp, DecodeError> {
             let mut fields = BTreeMap::new();
             for _ in 0..r.u32()? {
                 let name = r.string()?;
-                if fields
-                    .last_key_value()
-                    .is_some_and(|(last, _)| *last >= name)
-                {
+                if fields.last_key_value().is_some_and(|(last, _)| *last >= name) {
                     return Err(DecodeError::NotCanonical);
                 }
                 fields.insert(name, read_field(r)?);
             }
             let source = match tag {
-                2 => Some(Source {
-                    id: r.string()?,
-                    version: r.string()?,
-                }),
+                2 => Some(Source { id: r.string()?, version: r.string()? }),
                 _ => None,
             };
-            DataOp::Create {
-                kind,
-                name,
-                fields,
-                source,
-            }
+            DataOp::Create { kind, name, fields, source }
         }
         1 => {
             let item = ItemId(r.array()?);
             let change = match r.u8()? {
-                0 => Change::Set {
-                    field: r.string()?,
-                    value: read_field(r)?,
-                },
+                0 => Change::Set { field: r.string()?, value: read_field(r)? },
                 1 => Change::Remove { field: r.string()? },
                 2 => Change::Name(read_opt_str(r)?),
                 3 => Change::Delete,
@@ -546,15 +455,8 @@ fn read_data_op(r: &mut Reader<'_>) -> Result<DataOp, DecodeError> {
 fn read_payload(r: &mut Reader<'_>) -> Result<Payload, DecodeError> {
     Ok(match r.u8()? {
         0 => Payload::Membership(match r.u8()? {
-            0 => MembershipOp::Create {
-                device: DeviceId(r.array()?),
-                nonce: r.array()?,
-                name: r.string()?,
-            },
-            1 => MembershipOp::Add {
-                device: DeviceId(r.array()?),
-                consent: Signature(r.array()?),
-            },
+            0 => MembershipOp::Create { device: DeviceId(r.array()?), nonce: r.array()?, name: r.string()? },
+            1 => MembershipOp::Add { device: DeviceId(r.array()?), consent: Signature(r.array()?) },
             2 => MembershipOp::Remove {
                 device: DeviceId(r.array()?),
                 last_seen_seq: match r.u8()? {
@@ -587,11 +489,7 @@ mod tests {
             secret,
             VaultId::from_bytes([1; 32]),
             3,
-            [
-                Hash::from_bytes([9; 32]),
-                Hash::from_bytes([2; 32]),
-                Hash::from_bytes([9; 32]),
-            ],
+            [Hash::from_bytes([9; 32]), Hash::from_bytes([2; 32]), Hash::from_bytes([9; 32])],
             Payload::Data(vec![
                 DataOp::create(
                     "login",
@@ -601,11 +499,7 @@ mod tests {
                         ("password".into(), Field::new(FieldType::Secret, "hunter2")),
                     ],
                 ),
-                DataOp::set(
-                    item,
-                    "x",
-                    Field::new(FieldType::Other("future".into()), "v"),
-                ),
+                DataOp::set(item, "x", Field::new(FieldType::Other("future".into()), "v")),
                 DataOp::remove(item, "notes"),
                 DataOp::name(item, None),
                 DataOp::name(item, Some("n".into())),
@@ -614,18 +508,9 @@ mod tests {
                     "note",
                     Some("Mirrored".into()),
                     [],
-                    Source {
-                        id: "op/a/v/i".into(),
-                        version: "2026-10-26T00:00:00Z".into(),
-                    },
+                    Source { id: "op/a/v/i".into(), version: "2026-10-26T00:00:00Z".into() },
                 ),
-                DataOp::source(
-                    item,
-                    Some(Source {
-                        id: "op/a/v/i".into(),
-                        version: String::new(),
-                    }),
-                ),
+                DataOp::source(item, Some(Source { id: "op/a/v/i".into(), version: String::new() })),
                 DataOp::source(item, None),
             ]),
         )
@@ -635,10 +520,7 @@ mod tests {
     fn round_trip_is_canonical() {
         let secret = DeviceSecret::generate();
         let entry = sample(&secret);
-        assert_eq!(
-            entry.deps(),
-            &[Hash::from_bytes([2; 32]), Hash::from_bytes([9; 32])]
-        );
+        assert_eq!(entry.deps(), &[Hash::from_bytes([2; 32]), Hash::from_bytes([9; 32])]);
         let bytes = entry.encode();
         let decoded = Entry::decode(&bytes).unwrap();
         assert_eq!(decoded, entry);
@@ -646,26 +528,11 @@ mod tests {
         decoded.verify().unwrap();
 
         for op in [
-            MembershipOp::Create {
-                device: secret.device_id(),
-                nonce: [4; 32],
-                name: "personal".into(),
-            },
-            MembershipOp::Add {
-                device: secret.device_id(),
-                consent: Signature([5; 64]),
-            },
-            MembershipOp::Remove {
-                device: secret.device_id(),
-                last_seen_seq: None,
-            },
-            MembershipOp::Remove {
-                device: secret.device_id(),
-                last_seen_seq: Some(8),
-            },
-            MembershipOp::Rename {
-                name: "work".into(),
-            },
+            MembershipOp::Create { device: secret.device_id(), nonce: [4; 32], name: "personal".into() },
+            MembershipOp::Add { device: secret.device_id(), consent: Signature([5; 64]) },
+            MembershipOp::Remove { device: secret.device_id(), last_seen_seq: None },
+            MembershipOp::Remove { device: secret.device_id(), last_seen_seq: Some(8) },
+            MembershipOp::Rename { name: "work".into() },
         ] {
             let entry = Entry::sign(&secret, VaultId([0; 32]), 0, [], Payload::Membership(op));
             assert_eq!(Entry::decode(&entry.encode()).unwrap(), entry);
@@ -733,16 +600,8 @@ mod tests {
     #[test]
     fn unknown_field_types_survive_decoding() {
         let entry = sample(&DeviceSecret::generate());
-        let Payload::Data(ops) = Entry::decode(&entry.encode()).unwrap().payload().clone() else {
-            unreachable!()
-        };
-        let DataOp::Edit {
-            change: Change::Set { value, .. },
-            ..
-        } = &ops[1]
-        else {
-            unreachable!()
-        };
+        let Payload::Data(ops) = Entry::decode(&entry.encode()).unwrap().payload().clone() else { unreachable!() };
+        let DataOp::Edit { change: Change::Set { value, .. }, .. } = &ops[1] else { unreachable!() };
         assert_eq!(value.kind, FieldType::Other("future".into()));
     }
 }

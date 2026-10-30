@@ -18,7 +18,17 @@
 //!
 //! The crate does no decoding; `flicks-codecs` pairs the streams with decoders.
 
-#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unimplemented,
+        clippy::todo,
+        clippy::unreachable
+    )
+)]
 
 mod es;
 pub use es::{FrameInfo, frame_bytes, frame_info};
@@ -179,9 +189,15 @@ impl Codec {
     pub fn kind(&self) -> Kind {
         match self {
             Codec::Mpeg1Video | Codec::Mpeg2Video | Codec::H264 | Codec::Hevc => Kind::Video,
-            Codec::MpegAudio | Codec::AacAdts | Codec::AacLatm | Codec::Ac3 | Codec::Eac3 | Codec::Dts | Codec::TrueHd | Codec::LpcmBluray | Codec::LpcmDvd => {
-                Kind::Audio
-            }
+            Codec::MpegAudio
+            | Codec::AacAdts
+            | Codec::AacLatm
+            | Codec::Ac3
+            | Codec::Eac3
+            | Codec::Dts
+            | Codec::TrueHd
+            | Codec::LpcmBluray
+            | Codec::LpcmDvd => Kind::Audio,
             Codec::Subtitle(_) => Kind::Subtitle,
             Codec::Unknown(_) => Kind::Other,
         }

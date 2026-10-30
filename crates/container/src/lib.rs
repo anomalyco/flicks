@@ -1,4 +1,11 @@
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unimplemented,
+    clippy::todo,
+    clippy::unreachable
+)]
 //! Media containers and bit-level I/O for Flicks.
 //!
 //! - `bitstream` (feature `bitstream`): MSB-first bit reader and writer, Exp-Golomb codes,

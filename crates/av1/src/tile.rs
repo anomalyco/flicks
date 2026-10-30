@@ -7,23 +7,30 @@ use crate::frame::{MiInfo, Mv};
 use crate::header::{FrameHeader, NONE, SequenceHeader};
 use crate::intra::{IntraParams, is_directional_mode, predict_intra, round2_signed};
 use crate::spec_tables::{
-    AC_QLOOKUP, ADJUSTED_TX_SIZE, ADST_FLIPADST, BLOCK_4X4, BLOCK_8X8, BLOCK_64X64, BLOCK_128X128, BLOCK_INVALID, BR_CDF_SIZE, CFL_SIGN_NEG, CFL_SIGN_ZERO,
-    COEFF_BASE_CTX_OFFSET, COEFF_BASE_POS_CTX_OFFSET, COEFF_BASE_RANGE, COMPOUND_AVERAGE, DC_PRED, DC_QLOOKUP, DCT_DCT, DCT_FLIPADST, DEFAULT_SCAN_4X4,
-    DEFAULT_SCAN_4X8, DEFAULT_SCAN_4X16, DEFAULT_SCAN_8X4, DEFAULT_SCAN_8X8, DEFAULT_SCAN_8X16, DEFAULT_SCAN_8X32, DEFAULT_SCAN_16X4, DEFAULT_SCAN_16X8,
-    DEFAULT_SCAN_16X16, DEFAULT_SCAN_16X32, DEFAULT_SCAN_32X8, DEFAULT_SCAN_32X16, DEFAULT_SCAN_32X32, DELTA_LF_SMALL, DELTA_Q_SMALL,
-    FILTER_INTRA_MODE_TO_INTRA_DIR, FLIPADST_ADST, FLIPADST_DCT, FLIPADST_FLIPADST, FRAME_LF_COUNT, H_ADST, H_DCT, H_FLIPADST, H_PRED, IDTX, II_DC_PRED,
-    II_H_PRED, II_V_PRED, INTRA_FRAME, INTRA_MODE_CONTEXT, MAG_REF_OFFSET_WITH_TX_CLASS, MAX_ANGLE_DELTA, MAX_LOOP_FILTER, MAX_TX_DEPTH_TABLE,
-    MAX_TX_SIZE_RECT, MAX_VARTX_DEPTH, MCOL_SCAN_4X4, MCOL_SCAN_4X8, MCOL_SCAN_4X16, MCOL_SCAN_8X4, MCOL_SCAN_8X8, MCOL_SCAN_8X16, MCOL_SCAN_16X4,
-    MCOL_SCAN_16X8, MCOL_SCAN_16X16, MI_HEIGHT_LOG2, MI_WIDTH_LOG2, MODE_TO_TXFM, MROW_SCAN_4X4, MROW_SCAN_4X8, MROW_SCAN_4X16, MROW_SCAN_8X4, MROW_SCAN_8X8,
-    MROW_SCAN_8X16, MROW_SCAN_16X4, MROW_SCAN_16X8, MROW_SCAN_16X16, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, NUM_BASE_LEVELS, PALETTE_COLOR_CONTEXT,
-    PALETTE_COLOR_HASH_MULTIPLIERS, PALETTE_COLORS, PALETTE_NUM_NEIGHBORS, PARTITION_HORZ, PARTITION_HORZ_4, PARTITION_HORZ_A, PARTITION_HORZ_B,
-    PARTITION_NONE, PARTITION_SPLIT, PARTITION_SUBSIZE, PARTITION_VERT, PARTITION_VERT_4, PARTITION_VERT_A, PARTITION_VERT_B, QM_OFFSET, QUANTIZER_MATRIX,
-    RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_WIENER, SEG_LVL_SKIP, SGR_PARAMS, SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_BITS, SGRPROJ_PRJ_SUBEXP_K, SIG_REF_DIFF_OFFSET,
-    SIG_REF_DIFF_OFFSET_NUM, SIMPLE, SMOOTH_H_PRED, SMOOTH_PRED, SMOOTH_V_PRED, SPLIT_TX_SIZE, SUPERRES_NUM, TX_4X4, TX_4X8, TX_4X16, TX_8X4, TX_8X8, TX_8X16,
-    TX_8X32, TX_16X4, TX_16X8, TX_16X16, TX_16X32, TX_16X64, TX_32X8, TX_32X16, TX_32X32, TX_32X64, TX_64X16, TX_64X32, TX_64X64, TX_CLASS_2D, TX_CLASS_HORIZ,
-    TX_CLASS_VERT, TX_HEIGHT, TX_HEIGHT_LOG2, TX_MODE_SELECT, TX_SET_DCTONLY, TX_SET_INTER_1, TX_SET_INTER_2, TX_SET_INTER_3, TX_SET_INTRA_1, TX_SET_INTRA_2,
-    TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_SIZES, TX_SIZES_ALL, TX_TYPE_IN_SET_INTER, TX_TYPE_IN_SET_INTRA, TX_TYPE_INTER_INV_SET1, TX_TYPE_INTER_INV_SET2,
-    TX_TYPE_INTER_INV_SET3, TX_TYPE_INTRA_INV_SET1, TX_TYPE_INTRA_INV_SET2, TX_WIDTH, TX_WIDTH_LOG2, UV_CFL_PRED, V_ADST, V_DCT, V_FLIPADST, V_PRED,
+    AC_QLOOKUP, ADJUSTED_TX_SIZE, ADST_FLIPADST, BLOCK_4X4, BLOCK_8X8, BLOCK_64X64, BLOCK_128X128, BLOCK_INVALID,
+    BR_CDF_SIZE, CFL_SIGN_NEG, CFL_SIGN_ZERO, COEFF_BASE_CTX_OFFSET, COEFF_BASE_POS_CTX_OFFSET, COEFF_BASE_RANGE,
+    COMPOUND_AVERAGE, DC_PRED, DC_QLOOKUP, DCT_DCT, DCT_FLIPADST, DEFAULT_SCAN_4X4, DEFAULT_SCAN_4X8,
+    DEFAULT_SCAN_4X16, DEFAULT_SCAN_8X4, DEFAULT_SCAN_8X8, DEFAULT_SCAN_8X16, DEFAULT_SCAN_8X32, DEFAULT_SCAN_16X4,
+    DEFAULT_SCAN_16X8, DEFAULT_SCAN_16X16, DEFAULT_SCAN_16X32, DEFAULT_SCAN_32X8, DEFAULT_SCAN_32X16,
+    DEFAULT_SCAN_32X32, DELTA_LF_SMALL, DELTA_Q_SMALL, FILTER_INTRA_MODE_TO_INTRA_DIR, FLIPADST_ADST, FLIPADST_DCT,
+    FLIPADST_FLIPADST, FRAME_LF_COUNT, H_ADST, H_DCT, H_FLIPADST, H_PRED, IDTX, II_DC_PRED, II_H_PRED, II_V_PRED,
+    INTRA_FRAME, INTRA_MODE_CONTEXT, MAG_REF_OFFSET_WITH_TX_CLASS, MAX_ANGLE_DELTA, MAX_LOOP_FILTER,
+    MAX_TX_DEPTH_TABLE, MAX_TX_SIZE_RECT, MAX_VARTX_DEPTH, MCOL_SCAN_4X4, MCOL_SCAN_4X8, MCOL_SCAN_4X16, MCOL_SCAN_8X4,
+    MCOL_SCAN_8X8, MCOL_SCAN_8X16, MCOL_SCAN_16X4, MCOL_SCAN_16X8, MCOL_SCAN_16X16, MI_HEIGHT_LOG2, MI_WIDTH_LOG2,
+    MODE_TO_TXFM, MROW_SCAN_4X4, MROW_SCAN_4X8, MROW_SCAN_4X16, MROW_SCAN_8X4, MROW_SCAN_8X8, MROW_SCAN_8X16,
+    MROW_SCAN_16X4, MROW_SCAN_16X8, MROW_SCAN_16X16, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, NUM_BASE_LEVELS,
+    PALETTE_COLOR_CONTEXT, PALETTE_COLOR_HASH_MULTIPLIERS, PALETTE_COLORS, PALETTE_NUM_NEIGHBORS, PARTITION_HORZ,
+    PARTITION_HORZ_4, PARTITION_HORZ_A, PARTITION_HORZ_B, PARTITION_NONE, PARTITION_SPLIT, PARTITION_SUBSIZE,
+    PARTITION_VERT, PARTITION_VERT_4, PARTITION_VERT_A, PARTITION_VERT_B, QM_OFFSET, QUANTIZER_MATRIX, RESTORE_NONE,
+    RESTORE_SGRPROJ, RESTORE_WIENER, SEG_LVL_SKIP, SGR_PARAMS, SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_BITS,
+    SGRPROJ_PRJ_SUBEXP_K, SIG_REF_DIFF_OFFSET, SIG_REF_DIFF_OFFSET_NUM, SIMPLE, SMOOTH_H_PRED, SMOOTH_PRED,
+    SMOOTH_V_PRED, SPLIT_TX_SIZE, SUPERRES_NUM, TX_4X4, TX_4X8, TX_4X16, TX_8X4, TX_8X8, TX_8X16, TX_8X32, TX_16X4,
+    TX_16X8, TX_16X16, TX_16X32, TX_16X64, TX_32X8, TX_32X16, TX_32X32, TX_32X64, TX_64X16, TX_64X32, TX_64X64,
+    TX_CLASS_2D, TX_CLASS_HORIZ, TX_CLASS_VERT, TX_HEIGHT, TX_HEIGHT_LOG2, TX_MODE_SELECT, TX_SET_DCTONLY,
+    TX_SET_INTER_1, TX_SET_INTER_2, TX_SET_INTER_3, TX_SET_INTRA_1, TX_SET_INTRA_2, TX_SIZE_SQR, TX_SIZE_SQR_UP,
+    TX_SIZES, TX_SIZES_ALL, TX_TYPE_IN_SET_INTER, TX_TYPE_IN_SET_INTRA, TX_TYPE_INTER_INV_SET1, TX_TYPE_INTER_INV_SET2,
+    TX_TYPE_INTER_INV_SET3, TX_TYPE_INTRA_INV_SET1, TX_TYPE_INTRA_INV_SET2, TX_WIDTH, TX_WIDTH_LOG2, UV_CFL_PRED,
+    V_ADST, V_DCT, V_FLIPADST, V_PRED,
 };
 use crate::state::{FrameShared, TileState};
 use crate::symbol::SymbolDecoder;
@@ -138,7 +145,14 @@ fn block_height(bs: usize) -> usize {
 }
 
 impl<'a, 'f> TileDecoder<'a, 'f> {
-    pub fn new(fs: &'f FrameShared, t: &'f mut TileState, data: &'a [u8], cdf: Box<Cdfs>, tile_row: usize, tile_col: usize) -> Self {
+    pub fn new(
+        fs: &'f FrameShared,
+        t: &'f mut TileState,
+        data: &'a [u8],
+        cdf: Box<Cdfs>,
+        tile_row: usize,
+        tile_col: usize,
+    ) -> Self {
         let ti = &fs.fh.tile_info;
         let (rs, re) = (ti.mi_row_starts[tile_row] as usize, ti.mi_row_starts[tile_row + 1] as usize);
         let (cs, ce) = (ti.mi_col_starts[tile_col] as usize, ti.mi_col_starts[tile_col + 1] as usize);
@@ -184,7 +198,10 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
 
     #[inline]
     fn is_inside(&self, r: isize, c: isize) -> bool {
-        c >= self.mi_col_start as isize && c < self.mi_col_end as isize && r >= self.mi_row_start as isize && r < self.mi_row_end as isize
+        c >= self.mi_col_start as isize
+            && c < self.mi_col_end as isize
+            && r >= self.mi_row_start as isize
+            && r < self.mi_row_end as isize
     }
 
     /// decode_tile( )
@@ -306,13 +323,21 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 let pr = |k: usize| pcdf[k] as i32 - if k == 0 { 0 } else { pcdf[k - 1] as i32 };
                 let psum = if has_cols {
                     // split_or_horz
-                    let mut s = pr(PARTITION_VERT) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_VERT_A) + pr(PARTITION_VERT_B);
+                    let mut s = pr(PARTITION_VERT)
+                        + pr(PARTITION_SPLIT)
+                        + pr(PARTITION_HORZ_A)
+                        + pr(PARTITION_VERT_A)
+                        + pr(PARTITION_VERT_B);
                     if bsize != BLOCK_128X128 {
                         s += pr(PARTITION_VERT_4);
                     }
                     s
                 } else {
-                    let mut s = pr(PARTITION_HORZ) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_HORZ_B) + pr(PARTITION_VERT_A);
+                    let mut s = pr(PARTITION_HORZ)
+                        + pr(PARTITION_SPLIT)
+                        + pr(PARTITION_HORZ_A)
+                        + pr(PARTITION_HORZ_B)
+                        + pr(PARTITION_VERT_A);
                     if bsize != BLOCK_128X128 {
                         s += pr(PARTITION_HORZ_4);
                     }
@@ -401,9 +426,17 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         // partition k is cdf[k] - cdf[k - 1].
         let pr = |k: usize| pcdf[k] as i32 - if k == 0 { 0 } else { pcdf[k - 1] as i32 };
         let mut psum = if split_or_horz {
-            pr(PARTITION_VERT) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_VERT_A) + pr(PARTITION_VERT_B)
+            pr(PARTITION_VERT)
+                + pr(PARTITION_SPLIT)
+                + pr(PARTITION_HORZ_A)
+                + pr(PARTITION_VERT_A)
+                + pr(PARTITION_VERT_B)
         } else {
-            pr(PARTITION_HORZ) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_HORZ_B) + pr(PARTITION_VERT_A)
+            pr(PARTITION_HORZ)
+                + pr(PARTITION_SPLIT)
+                + pr(PARTITION_HORZ_A)
+                + pr(PARTITION_HORZ_B)
+                + pr(PARTITION_VERT_A)
         };
         if bsize != BLOCK_128X128 {
             psum += if split_or_horz { pr(PARTITION_VERT_4) } else { pr(PARTITION_HORZ_4) };
@@ -427,7 +460,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         let mut b = Block { mi_row: r, mi_col: c, mi_size: sub_size, ..Default::default() };
         b.bw4 = NUM_4X4_BLOCKS_WIDE[sub_size] as usize;
         b.bh4 = NUM_4X4_BLOCKS_HIGH[sub_size] as usize;
-        b.has_chroma = if b.bh4 == 1 && ssy == 1 && (r & 1) == 0 || b.bw4 == 1 && ssx == 1 && (c & 1) == 0 { false } else { num_planes > 1 };
+        b.has_chroma = if b.bh4 == 1 && ssy == 1 && (r & 1) == 0 || b.bw4 == 1 && ssx == 1 && (c & 1) == 0 {
+            false
+        } else {
+            num_planes > 1
+        };
         b.avail_u = self.is_inside(r as isize - 1, c as isize);
         b.avail_l = self.is_inside(r as isize, c as isize - 1);
         b.avail_u_chroma = b.avail_u;
@@ -549,7 +586,8 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         self.read_delta_lf();
         self.read_deltas = false;
         self.b.ref_frame = [INTRA_FRAME as i8, NONE];
-        self.b.use_intrabc = if self.fs.fh.allow_intrabc { self.sd.read_symbol(&mut self.cdf.intrabc) == 1 } else { false };
+        self.b.use_intrabc =
+            if self.fs.fh.allow_intrabc { self.sd.read_symbol(&mut self.cdf.intrabc) == 1 } else { false };
         if self.b.use_intrabc {
             self.b.is_inter = true;
             self.b.y_mode = DC_PRED;
@@ -599,8 +637,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             !self.b.lossless && block_width(ms).max(block_height(ms)) <= 32
         };
         let y = self.b.y_mode;
-        self.b.uv_mode =
-            if cfl_allowed { self.sd.read_symbol(&mut self.cdf.uv_mode_cfl_allowed[y]) } else { self.sd.read_symbol(&mut self.cdf.uv_mode_cfl_not_allowed[y]) };
+        self.b.uv_mode = if cfl_allowed {
+            self.sd.read_symbol(&mut self.cdf.uv_mode_cfl_allowed[y])
+        } else {
+            self.sd.read_symbol(&mut self.cdf.uv_mode_cfl_not_allowed[y])
+        };
     }
 
     pub(crate) fn intra_angle_info_y(&mut self) {
@@ -753,11 +794,19 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         }
         let fh = &self.fs.fh;
         if self.read_deltas && fh.delta_lf_present {
-            let count = if fh.delta_lf_multi { if self.fs.num_planes > 1 { FRAME_LF_COUNT } else { FRAME_LF_COUNT - 2 } } else { 1 };
+            let count = if fh.delta_lf_multi {
+                if self.fs.num_planes > 1 { FRAME_LF_COUNT } else { FRAME_LF_COUNT - 2 }
+            } else {
+                1
+            };
             let multi = fh.delta_lf_multi;
             let res = fh.delta_lf_res;
             for i in 0..count {
-                let mut abs = if multi { self.sd.read_symbol(&mut self.cdf.delta_lf_multi[i]) } else { self.sd.read_symbol(&mut self.cdf.delta_lf) } as i32;
+                let mut abs = if multi {
+                    self.sd.read_symbol(&mut self.cdf.delta_lf_multi[i])
+                } else {
+                    self.sd.read_symbol(&mut self.cdf.delta_lf)
+                } as i32;
                 if abs == DELTA_LF_SMALL as i32 {
                     let n = self.sd.read_literal(3) + 1;
                     let bits = self.sd.read_literal(n) as i32;
@@ -766,7 +815,8 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 if abs != 0 {
                     let sign = self.sd.read_literal(1);
                     let reduced = if sign == 1 { -abs } else { abs };
-                    self.delta_lf[i] = (self.delta_lf[i] + (reduced << res)).clamp(-(MAX_LOOP_FILTER as i32), MAX_LOOP_FILTER as i32);
+                    self.delta_lf[i] =
+                        (self.delta_lf[i] + (reduced << res)).clamp(-(MAX_LOOP_FILTER as i32), MAX_LOOP_FILTER as i32);
                 }
             }
         }
@@ -775,7 +825,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     pub(crate) fn filter_intra_mode_info(&mut self) {
         self.b.use_filter_intra = false;
         let ms = self.b.mi_size;
-        if self.fs.seq.enable_filter_intra && self.b.y_mode == DC_PRED && self.b.palette_size_y == 0 && block_width(ms).max(block_height(ms)) <= 32 {
+        if self.fs.seq.enable_filter_intra
+            && self.b.y_mode == DC_PRED
+            && self.b.palette_size_y == 0
+            && block_width(ms).max(block_height(ms)) <= 32
+        {
             self.b.use_filter_intra = self.sd.read_symbol(&mut self.cdf.filter_intra[ms]) == 1;
             if self.b.use_filter_intra {
                 self.b.filter_intra_mode = self.sd.read_symbol(&mut self.cdf.filter_intra_mode);

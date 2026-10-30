@@ -156,7 +156,12 @@ pub struct HrdParameters {
 fn parse_hrd(r: &mut BitReader) -> Result<HrdParameters> {
     let cpb_cnt = r.read_ue()? + 1;
     ensure!(cpb_cnt <= 32, "cpb_cnt_minus1 out of range");
-    let mut h = HrdParameters { cpb_cnt, bit_rate_scale: r.read_bits(4)? as u8, cpb_size_scale: r.read_bits(4)? as u8, ..Default::default() };
+    let mut h = HrdParameters {
+        cpb_cnt,
+        bit_rate_scale: r.read_bits(4)? as u8,
+        cpb_size_scale: r.read_bits(4)? as u8,
+        ..Default::default()
+    };
     for _ in 0..cpb_cnt {
         h.bit_rate_value_minus1.push(r.read_ue()?);
         h.cpb_size_value_minus1.push(r.read_ue()?);
@@ -398,7 +403,8 @@ impl Sps {
         let frame_mbs_only = r.read_flag()?;
         let mb_adaptive_frame_field = if !frame_mbs_only { r.read_flag()? } else { false };
         let direct_8x8_inference = r.read_flag()?;
-        let frame_crop = if r.read_flag()? { Some((r.read_ue()?, r.read_ue()?, r.read_ue()?, r.read_ue()?)) } else { None };
+        let frame_crop =
+            if r.read_flag()? { Some((r.read_ue()?, r.read_ue()?, r.read_ue()?, r.read_ue()?)) } else { None };
         let vui = if r.read_flag()? { Some(parse_vui(&mut r)?) } else { None };
         let scaling = if seq_scaling_matrix_present { scaling_lists.to_matrices() } else { ScalingMatrices::flat() };
         let sps = Sps {
@@ -462,7 +468,11 @@ impl Sps {
             2 => (2, 1),
             _ => (1, 1),
         };
-        if self.chroma_array_type() == 0 { (1, 2 - self.frame_mbs_only as u32) } else { (sub_w, sub_h * (2 - self.frame_mbs_only as u32)) }
+        if self.chroma_array_type() == 0 {
+            (1, 2 - self.frame_mbs_only as u32)
+        } else {
+            (sub_w, sub_h * (2 - self.frame_mbs_only as u32))
+        }
     }
     /// Cropping rectangle in luma samples: (x, y, width, height).
     pub fn crop_rect(&self) -> (u32, u32, u32, u32) {
@@ -530,7 +540,10 @@ impl Sps {
             return unsupported(format!("chroma_format_idc {} (only 4:2:0 is implemented)", self.chroma_format_idc));
         }
         if self.bit_depth_luma != 8 || self.bit_depth_chroma != 8 {
-            return unsupported(format!("bit depth luma {} chroma {} (only 8-bit is implemented)", self.bit_depth_luma, self.bit_depth_chroma));
+            return unsupported(format!(
+                "bit depth luma {} chroma {} (only 8-bit is implemented)",
+                self.bit_depth_luma, self.bit_depth_chroma
+            ));
         }
         if self.qpprime_y_zero_transform_bypass {
             return unsupported("qpprime_y_zero_transform_bypass (lossless)");
@@ -573,7 +586,10 @@ impl Pps {
         ensure!(id < 256, "pic_parameter_set_id out of range");
         let sps_id = r.read_ue()?;
         ensure!(sps_id < 32, "seq_parameter_set_id out of range");
-        let sps = spss.get(sps_id as usize).and_then(|s| s.as_ref()).ok_or_else(|| crate::Error::MissingParameterSet(format!("SPS {sps_id} for PPS {id}")))?;
+        let sps = spss
+            .get(sps_id as usize)
+            .and_then(|s| s.as_ref())
+            .ok_or_else(|| crate::Error::MissingParameterSet(format!("SPS {sps_id} for PPS {id}")))?;
         let entropy_coding_mode = r.read_flag()?;
         let bottom_field_pic_order_in_frame_present = r.read_flag()?;
         let num_slice_groups_minus1 = r.read_ue()?;
@@ -602,7 +618,10 @@ impl Pps {
                 6 => {
                     let n_minus1 = r.read_ue()?;
                     // pic_size_in_map_units_minus1: one slice_group_id per map unit of the picture.
-                    ensure!(n_minus1 < sps.pic_width_in_mbs.saturating_mul(sps.pic_height_in_map_units), "pic_size_in_map_units out of range");
+                    ensure!(
+                        n_minus1 < sps.pic_width_in_mbs.saturating_mul(sps.pic_height_in_map_units),
+                        "pic_size_in_map_units out of range"
+                    );
                     let n = n_minus1 + 1;
                     let bits = 32 - (num_slice_groups - 1).leading_zeros();
                     for _ in 0..n {
