@@ -86,8 +86,41 @@ Progress is stored per (profile, item) on every server that holds that item, as 
 ## Client
 
 - **Library:** a home screen merged across servers (Continue Watching, Next Up, Recently Added, by library and genre), detail pages, search, versions and sources. Servers that are offline grey out their titles instead of hiding them.
-- **Player:** the client core (Rust) fetches from the chosen server over the best address and serves the player from loopback. On macOS that's Rune's `Player` (AVPlayer: MP4, MOV, HLS; MKV goes through the server's remux). Windows and Linux need a player backend in Rune first (below).
 - **Add server:** scan a QR, paste a link, or type an address and enter the server's short code.
+- **Client core:** one Rust crate (`client`) holds the server list, address racing, auth, catalog and progress merge, and media fetching. Every Flicks app uses it: the Rune desktop app directly, and the iOS, tvOS and Android TV apps through UniFFI bindings.
+
+## Player
+
+Our own player, built on FilmCraft's media crates (`../filmcraft` is `storytold/filmcraft`, MIT or Apache-2.0, pure Rust, no FFmpeg):
+
+- **Containers:** Matroska/WebM (with Cues), MP4/MOV (fragmented too), MPEG-TS. MKV plays directly, so our apps never need the server to remux.
+- **Video:** H.264 (500–600 fps at 1080p in software), HEVC Main/Main 10 (~225 fps at 1080p), AV1 (8/10-bit, film grain), VP9 (8/10/12-bit), all in Rust. Hardware decode through VideoToolbox (macOS), Media Foundation (Windows) and VA-API (Linux, H.264 and HEVC).
+- **Audio:** AAC, Opus, AC-3, FLAC, MP3, Vorbis, PCM.
+- **Gaps we'd add:** E-AC-3, DTS, TrueHD (and passthrough to receivers), PGS and ASS subtitles, Dolby Vision, HDR output and tone mapping for SDR screens.
+
+The `player` crate does demux, decode (hardware first), audio output with A/V sync, subtitles, and draws frames into a wgpu texture that Rune shows. The same crate compiles for iOS, tvOS and Android, so every Flicks app plays the same files the same way, which is how Infuse plays everything on Apple TV.
+
+**Fallback while those gaps close:** libmpv, installed as a dependency (Homebrew on macOS, the package manager on Linux, bundled on Windows). The client checks each file's codecs against what our player supports and uses libmpv only for the rest, so coverage is complete from day one and shrinks to zero as the gaps close. The server's remux and transcode remain for third-party clients and slow connections.
+
+## Apps and platforms
+
+| Platform | App | Plays with |
+|---|---|---|
+| macOS, Windows, Linux | Flicks (Rune) | Our player, libmpv fallback |
+| Server admin, all three | Flicks Server window (Rune) or CLI | — |
+| iOS, iPadOS, tvOS | Flicks (SwiftUI shell + client core) | Our player; AVPlayer for AirPlay and Picture in Picture |
+| Android, Android TV, Fire TV | Flicks (Compose shell + client core) | Our player; Media3 as fallback |
+| Anything else (Roku, LG, Samsung, Kodi, browsers) and until our apps ship | Infuse, Swiftfin, Streamyfin, Findroid, Jellyfin apps, jellyfin-web | Through the Jellyfin-compatible API |
+
+### Jellyfin-compatible API
+
+The server serves a subset of the Jellyfin 12 API (about 30–50 operations: login, views, items, resume, Next Up, PlaybackInfo, streams and HLS, images, sessions and progress, media segments), written from Jellyfin's OpenAPI spec. It merges nothing: each Jellyfin client sees the one server it points at.
+
+Jellyfin clients sign in with a username and password or with **Quick Connect**, where the app shows a 6-character code and an already signed-in device approves it. Flicks uses Quick Connect only: the code is approved in the Flicks admin window or app, which matches our TV pairing, so there's still no password on the server. Jellyfin clients get a long-lived bearer token, which is weaker than a device key, so those tokens are:
+
+- **viewer only**, never admin;
+- **listed and revocable** per device, like any other device;
+- **LAN and tailnet only by default**, with a setting to allow them from a tunnel.
 
 ## Crates
 
@@ -99,19 +132,23 @@ Progress is stored per (profile, item) on every server that holds that item, as 
 | `library` | Scanner, header parsing, OSHash, TMDB matching, SQLite catalog | New |
 | `media` | Play planner, fMP4 HLS remux, ffmpeg supervisor, analysis | New |
 | `server` | HTTPS API, auth and tokens, pairing windows, service install, `flicks` CLI | New |
-| `client` | Server list, address racing, catalog merge, progress merge, loopback media proxy | New |
+| `jellyfin` | Jellyfin 12 API subset and Quick Connect | New |
+| `client` | Server list, address racing, auth, catalog and progress merge, media fetching; UniFFI bindings | New |
+| `player` | Demux, decode, audio, A/V sync, subtitles, wgpu frames; libmpv fallback | New, on FilmCraft's media crates |
 | `app` | Rune client UI (library, player) | New |
 | `admin` | Rune server admin window | New |
+
+The server's header parsing and remux can use FilmCraft's `matroska` and `isobmff` crates too, instead of a new EBML reader.
 
 ## Rune dependencies
 
 To report to Rune, not work around:
 
-1. **Video on Windows and Linux.** Rune's `Player` uses AVPlayer and reports "video playback isn't supported on this platform yet" elsewhere. Flicks needs a backend there; libmpv rendering into a `NativeSurface` would also play MKV directly.
-2. **TV platforms.** tvOS and Android TV aren't on Rune's platform list. Until they are, TVs use existing Jellyfin apps through a Jellyfin-compatible API on the server.
+1. **Showing our frames on Windows and Linux.** Rune's `NativeSurface` imports frames without copies only on macOS. The player needs a way to hand Rune a wgpu texture (or decoded frames) on every platform.
+2. **TV platforms.** tvOS and Android TV aren't on Rune's platform list, so those apps start as native shells around the Rust client core and player.
 
 ## Open questions
 
 1. Ports: is 7686 free of common conflicts, and should the server try UPnP for a public port when iroh is off?
-2. Jellyfin-compatible API in version 1, or after our own TV client exists?
+2. FilmCraft's crates: depend on them from git, or vendor the ones we use?
 3. Live TV and DVR: later?
