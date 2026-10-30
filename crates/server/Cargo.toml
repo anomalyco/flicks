@@ -40,5 +40,6 @@ flicks-platform = { path = "../platform" }
 socket2 = "0.6"
 
 [dev-dependencies]
+flicks-testkit = { path = "../testkit" }
 tempfile = "3"
 tokio = { version = "1.54.1", features = ["test-util"] }
