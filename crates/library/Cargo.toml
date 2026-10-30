@@ -1,0 +1,21 @@
+[package]
+name = "flicks-library"
+description = "Library scanner and catalog: folder-hash walk, file watching, probe through container, OSHash, catalog tables in SQLite."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+flicks-container = { path = "../container", features = ["matroska"] }
+flicks-metadata = { path = "../metadata" }
+notify = "8"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
