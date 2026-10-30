@@ -75,15 +75,20 @@ impl Window {
     }
 }
 
-/// A link address: `host:port`, with no whitespace, control characters, `&`, `=` or `#`.
+/// A link address: `host:port` (IPv6 must be bracketed), not a URL or query.
 pub fn valid_addr(addr: &str) -> bool {
     let Some((host, port)) = addr.rsplit_once(':') else {
         return false;
     };
     addr.len() <= MAX_ADDR
         && !host.is_empty()
+        && (!host.contains(':')
+            || host
+                .strip_prefix('[')
+                .and_then(|h| h.strip_suffix(']'))
+                .is_some_and(|h| h.parse::<std::net::Ipv6Addr>().is_ok()))
         && port.parse::<u16>().is_ok()
-        && !addr.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '&' | '=' | '#'))
+        && !addr.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '&' | '=' | '#' | '/' | '?'))
 }
 
 /// A user or device name: 1 to 64 bytes, no control characters, no surrounding spaces.
@@ -250,7 +255,27 @@ mod tests {
         assert_eq!(&link.server_key, key.verifying_key());
         assert_eq!(link.code, [3; CODE_LEN]);
         assert_eq!(link.addrs, addrs);
-        for bad in ["", "nas", "nas:", ":7686", "nas:99999", "a b:1", "a&b=c:1", "a#b:1", "a\nb:1"] {
+        for bad in [
+            "",
+            "nas",
+            "nas:",
+            ":7686",
+            "nas:99999",
+            "a b:1",
+            "a&b=c:1",
+            "a#b:1",
+            "a\nb:1",
+            "https://host:443",
+            "host/path:443",
+            "host?query:443",
+            "host:443/path",
+            "host:443?query",
+            "fd7a::1:7686",
+            "host:other:443",
+            "[host:other]:443",
+            "[::1:443",
+            "::1]:443",
+        ] {
             assert!(!valid_addr(bad), "{bad:?}");
         }
     }
