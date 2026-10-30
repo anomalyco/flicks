@@ -1,0 +1,35 @@
+1
+00:00:01,000 --> 00:00:03,500
+Good morning, {\an8}everyone.
+
+2
+00:00:04,000 --> 00:00:06,000
+<i>The kettle is on</i>
+and <b>the</b> <u>toast</u> is <font color="#ff0000">burning</font>.
+
+3
+00:00:05,500 --> 00:00:08,000
+Overlaps the cue above.
+
+4
+00:00:09;000 --> 00:00:10,000
+Bad separator in the start time: skipped.
+
+5
+00:00:11,000 --> 00:00:10,000
+Ends before it starts: skipped.
+
+6
+00:00:12,000 --> 00:00:14,000
+Seven o'clock.
+7
+00:00:14,500 --> 00:00:15,000
+No blank line before this cue's index.
+
+8
+00:00:20,000 --> 00:00:21,000
+42
+
+9
+01:02:03,004 --> 01:02:04,5
+Tom &amp; Jerry &lt;3

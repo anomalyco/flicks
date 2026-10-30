@@ -1,0 +1,33 @@
+WEBVTT - made-up sample
+
+STYLE
+::cue { color: lime }
+
+REGION
+id:r1
+width:40%
+
+NOTE this is a comment
+spanning two lines
+
+intro
+00:01.000 --> 00:03.500 align:start position:10%
+<v Ana>Hello there.</v>
+
+00:04.000 --> 00:06.000
+<i>Soft <b>and loud</b></i>
+second line <c.yellow>coloured</c>
+
+00:05:00.000 --> 00:05:02.000
+Five minutes in, <00:05:01.000>with a timestamp tag.
+
+00:06.000 --> 00:07.000
+Overlapping start
+00:06.500 --> 00:08.000
+No blank line before this cue.
+
+00:09.000 --> 00:08.000
+Reversed: skipped.
+
+1:00:00.000 --> 1:00:01.000
+Hour form &amp; entity&nbsp;ok.

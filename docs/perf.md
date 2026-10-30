@@ -176,3 +176,24 @@ Demuxer with `matroska::open` and `cue_keyframes` gives **704 ms** for the first
 scan and **22.7 ms** for the unchanged rescan (241 listings, zero media opens). The earlier
 runs were 770–850 ms and 24–29 ms respectively; warm-cache run-to-run variation applies.
 Command: `CARGO_PROFILE_RELEASE_STRIP=none cargo test -p flicks-library --release -- --ignored --nocapture first_scan_of_10k_files`.
+
+## FLK-22 — subtitle parse and active-cue lookup (2026-10-30)
+
+Apple M5 Max, macOS 27.2, rustc 1.99.0, release profile, code `dec9210`. One thread; the player
+asks "which cues are active" once per displayed frame, so lookup is the hot path.
+
+| File (2 hours, 2 lines per cue) | Parse | `active_at`, 171,428 lookups (every 42 ms) |
+|---|---:|---:|
+| 1,500 cues (141 KiB) | 1.2 ms | **43 ns** avg, worst 17–63 µs |
+| 2,500 cues (237 KiB) | 1.8–2.3 ms | **45 ns** avg, worst 21–47 µs |
+| 10,000 cues (954 KiB) | 6.0–6.9 ms | **49 ns** avg, worst 23–44 µs |
+| 99,999 short cues plus one cue lasting the whole film (worst case for the lookup) | not measured (above the 8 MiB input cap as SRT) | **24 µs** avg, worst 147–179 µs |
+
+Lookup is a binary search on start time plus a walk back while some earlier cue may still be
+showing (a running maximum of end times). Normal files walk back 0–2 cues. The last row is the
+adversarial case: a cue that never ends keeps the walk going to the first cue, so cost grows with
+the cue count, here 100,000 (the cap). That is 24 µs against a 16,667 µs frame at 60 fps, so it is
+left as is. "Worst" is the slowest single call, which includes timer noise and one-off cache misses.
+
+Reproduce: `cargo test -p flicks-subtitle --release -- --ignored --nocapture lookup_cost`.
+The file is generated in the test (made-up text); three runs for the first three rows, two for the last.
