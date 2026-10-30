@@ -1,6 +1,6 @@
 # Fastest P2P transport for streaming large video between home media servers and clients (late 2026)
 
-Scope note: runtime performance only (throughput, startup/seek latency, CPU per Gbit, NAT traversal). Baseline is the Deadbolt sync layer: `iroh = "1.3.0"` (`/Users/vogel/dev/deadbolt/crates/net/Cargo.toml`), endpoint built with `Endpoint::builder(presets::Minimal)`, n0 default relays or custom relay URLs, and **no custom `transport_config`**, so it runs on stock QUIC flow-control windows and the default congestion controller (`/Users/vogel/dev/deadbolt/crates/net/src/node.rs`, lines ~195–228). Data older than 2024 is marked **[older]**.
+Scope note: runtime performance only (throughput, startup/seek latency, CPU per Gbit, NAT traversal). Baseline is the Deadbolt sync layer: `iroh = "1.3.0"` (`~/dev/deadbolt/crates/net/Cargo.toml`), endpoint built with `Endpoint::builder(presets::Minimal)`, n0 default relays or custom relay URLs, and **no custom `transport_config`**, so it runs on stock QUIC flow-control windows and the default congestion controller (`~/dev/deadbolt/crates/net/src/node.rs`, lines ~195–228). Data older than 2024 is marked **[older]**.
 
 ## 1. iroh / iroh-blobs real throughput (single vs multi-stream, BBR vs CUBIC, windows, CPU, GSO/GRO, LAN vs WAN)
 
