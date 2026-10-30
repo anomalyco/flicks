@@ -16,6 +16,17 @@ pub(crate) enum Demux {
 }
 
 impl Demux {
+    pub fn exhausted(&self, track: usize) -> bool {
+        match self {
+            Self::Mp4 { file, cursors, .. } => file
+                .tracks
+                .get(track)
+                .zip(cursors.get(track))
+                .is_some_and(|(track, cursor)| *cursor >= track.samples.len()),
+            Self::Mkv(_) => false,
+        }
+    }
+
     pub fn open(source: Source) -> Result<(Self, Vec<Track>, f64)> {
         let bytes = Bytes::open(source)?;
         let mut magic = [0; 4];

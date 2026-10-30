@@ -54,6 +54,43 @@ fn player(path: &Path) -> Player {
     Player::with_audio(Source::Local(path.to_owned()), AudioSink::Null).unwrap()
 }
 
+// Store whole tracks consecutively to exercise distant DTS-interleaved range reads.
+fn separate_tracks(seed: &Path, output: &Path, audio_end: Option<f64>) {
+    use flicks_container::isobmff::{self as mp4, Brand, Mp4Writer, TrackConfig, WriteSample, WriterOptions};
+    let source = std::fs::File::open(seed).unwrap();
+    let file = mp4::open(&source).unwrap();
+    let mut writer = Mp4Writer::new(std::fs::File::create(output).unwrap(), WriterOptions::new(Brand::Mp4)).unwrap();
+    for track in &file.tracks {
+        let mut config = TrackConfig::new(track.entries[0].clone(), track.timescale);
+        config.media_start = Some(-track.edit_offset);
+        writer.add_track(config).unwrap();
+    }
+    for (id, track) in file.tracks.iter().enumerate() {
+        for (i, sample) in track.samples.iter().enumerate() {
+            if track.kind == mp4::TrackKind::Audio
+                && audio_end.is_some_and(|end| {
+                    end == 0.0 || (sample.pts + track.edit_offset) as f64 / track.timescale as f64 >= end
+                })
+            {
+                break;
+            }
+            let data = file.read_sample(&source, id, i).unwrap();
+            writer
+                .write_sample(
+                    id,
+                    WriteSample {
+                        data: &data,
+                        duration: sample.duration,
+                        composition_offset: (sample.pts - sample.dts) as i32,
+                        is_sync: sample.is_sync,
+                    },
+                )
+                .unwrap();
+        }
+    }
+    writer.finish().unwrap().sync_all().unwrap();
+}
+
 fn run(p: &mut Player, seconds: f64, paced: bool) -> (f64, f64) {
     p.play();
     let start = Instant::now();
@@ -63,6 +100,10 @@ fn run(p: &mut Player, seconds: f64, paced: bool) -> (f64, f64) {
         let now = start + Duration::from_secs_f64(tick as f64 / 240.0);
         if paced {
             std::thread::sleep(now.saturating_duration_since(Instant::now()));
+        } else {
+            // A driven clock must let the background decoder finish before advancing
+            // media time; real-time tests deliberately do not wait here.
+            p.fill().unwrap();
         }
         if let Some(frame) = p.next_frame_for_display(if paced { Instant::now() } else { now }).unwrap() {
             assert!(frame.pts() >= last, "out of presentation order");
@@ -120,13 +161,64 @@ fn playback_seek_pause_tracks_and_subtitles() {
 }
 
 #[test]
+fn video_tail_and_empty_audio_reach_ended() {
+    let _ff = flicks_testkit::require_ffmpeg!();
+    let path = fixture("mp4", "libx264", "aac", "160x96", 1);
+    for end in [0.0, 0.791, 0.995] {
+        let short = flicks_testkit::temp_path(&path);
+        separate_tracks(&path, &short, Some(end));
+        let mut decoder = worker::Decoder::open(Source::Local(short.clone())).unwrap();
+        // Shorten the audio table, including an enabled track with zero samples.
+        decoder.duration = end; // Trim the last decoded AAC frame to the precise audio end.
+        let mut p = Player::from_decoder(decoder, AudioSink::Null).unwrap();
+        run(&mut p, 1.0, false);
+        assert_eq!(p.stats().displayed, 24, "audio end {end}");
+        assert_eq!(p.stats().dropped, 0);
+        assert!((p.position() - 1.0).abs() < 0.003);
+        std::fs::remove_file(short).unwrap();
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn missing_output_uses_null_sink_but_other_errors_propagate() {
+    let _ff = flicks_testkit::require_ffmpeg!();
+    let path = fixture("mp4", "libx264", "aac", "64x64", 1);
+    let mut p = Player::with_output(Source::Local(path.clone()), Err(flicks_audio::Error::NoDevice)).unwrap();
+    assert!(matches!(p.sink, AudioSink::Null));
+    run(&mut p, 1.0, false);
+    assert_eq!(p.stats().displayed, 24);
+    assert!(matches!(
+        Player::with_output(Source::Local(path.clone()), Err(flicks_audio::Error::Device("test failure".into()))),
+        Err(Error::Audio(flicks_audio::Error::Device(_)))
+    ));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn seek_recovers_from_a_failed_pending_batch() {
+    let _ff = flicks_testkit::require_ffmpeg!();
+    let path = fixture("mp4", "libx264", "aac", "64x64", 1);
+    let mut p = player(&path);
+    // A worker failure not yet observed by the display caller must not prevent
+    // replacing the old decode operation with a valid seek.
+    p.worker.request(worker::Command::Seek { target: 0.0, audio: Some(999), subtitle: None }).unwrap();
+    p.seek(0.0).unwrap();
+    run(&mut p, 1.0, false);
+    assert_eq!(p.stats().displayed, 24);
+    assert_eq!(p.stats().dropped, 0);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn software_codecs_and_audio_layouts() {
     let _ff = flicks_testkit::require_ffmpeg!();
     for (video, audio) in [("libx264", "aac"), ("libx265", "ac3"), ("libvpx-vp9", "libopus"), ("libsvtav1", "eac3")] {
         let path = fixture("mkv", video, audio, "128x96", 1);
-        let mut p = player(&path);
-        p.software = true;
-        p.seek(0.0).unwrap();
+        let mut decoder = worker::Decoder::open(Source::Local(path.clone())).unwrap();
+        decoder.software = true;
+        decoder.restart(0.0).unwrap();
+        let mut p = Player::from_decoder(decoder, AudioSink::Null).unwrap();
         let (_, offset) = run(&mut p, 1.0, false);
         assert_eq!(p.stats().displayed, 24);
         assert_eq!(p.stats().dropped, 0);
@@ -148,6 +240,7 @@ fn truncated_and_hostile_files_fail_without_panicking() {
                 p.play();
                 let start = Instant::now();
                 for tick in 0..1000 {
+                    p.fill()?;
                     p.next_frame_for_display(start + Duration::from_millis(tick * 5))?;
                 }
                 Ok(())
@@ -163,11 +256,13 @@ fn truncated_and_hostile_files_fail_without_panicking() {
 fn hardware_failure_replays_from_keyframe_and_late_display_counts_drops() {
     let _ff = flicks_testkit::require_ffmpeg!();
     let path = fixture("mp4", "libx264", "aac", "160x96", 2);
-    let mut p = player(&path);
-    if p.is_hardware() {
-        let Codec::Avc { mut avcc } = p.tracks[p.video_track].codec.clone() else { panic!("avc") };
+    let mut decoder = worker::Decoder::open(Source::Local(path.clone())).unwrap();
+    if decoder.video.hardware() {
+        let Codec::Avc { mut avcc } = decoder.tracks[decoder.video_track].codec.clone() else { panic!("avc") };
         avcc[4] &= 0xfc; // A valid configuration with the wrong NAL length field size.
-        p.video = video::Decoder::Hardware(flicks_platform::Decoder::new(flicks_platform::Codec::H264, &avcc).unwrap());
+        decoder.video =
+            video::Decoder::Hardware(flicks_platform::Decoder::new(flicks_platform::Codec::H264, &avcc).unwrap());
+        let mut p = Player::from_decoder(decoder, AudioSink::Null).unwrap();
         run(&mut p, 2.0, false);
         assert_eq!(p.stats().hardware_fallbacks, 1);
         assert_eq!(p.stats().displayed, 48);
@@ -232,6 +327,7 @@ fn embedded_tracks_and_active_subtitles() {
     p.play();
     let start = Instant::now();
     for tick in 0..241 {
+        p.fill().unwrap();
         p.next_frame_for_display(start + Duration::from_secs_f64(tick as f64 / 240.0)).unwrap();
     }
     assert_eq!(p.active_cues()[0].text(), "hello");
@@ -254,9 +350,10 @@ fn embedded_tracks_and_active_subtitles() {
 #[ignore = "4K software throughput, not a real-time requirement"]
 fn software_4k_throughput() {
     let path = fixture("mkv", "libx265", "aac", "3840x2160", 1);
-    let mut p = player(&path);
-    p.software = true;
-    p.seek(0.0).unwrap();
+    let mut decoder = worker::Decoder::open(Source::Local(path.clone())).unwrap();
+    decoder.software = true;
+    decoder.restart(0.0).unwrap();
+    let mut p = Player::from_decoder(decoder, AudioSink::Null).unwrap();
     let (elapsed, _) = run(&mut p, 1.0, false);
     eprintln!(
         "4K HEVC software: {} frames / {elapsed:.3}s = {:.1}fps",
@@ -311,6 +408,7 @@ fn real_file() {
     p.play();
     let start = Instant::now();
     for tick in 0..2400 {
+        p.fill().unwrap();
         p.next_frame_for_display(start + Duration::from_secs_f64(tick as f64 / 240.0)).unwrap();
     }
     eprintln!("real-file first 10s: {:?}, wall={:?}", p.stats(), start.elapsed());
@@ -329,16 +427,49 @@ fn network_ranges_and_seeks() {
     use flicks_container::matroska::ByteSource;
     use flicks_server::{db, server};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let _ff = flicks_testkit::require_ffmpeg!();
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     let temp = tempfile::tempdir_in(flicks_testkit::fixtures_dir("player")).unwrap();
     let media = temp.path().join("media");
     std::fs::create_dir(&media).unwrap();
-    let path = fixture("mp4", "libx264", "aac", "1920x1080", 4);
+    let seed = fixture("mp4", "libx264", "aac", "1920x1080", 16);
+    let path = flicks_testkit::temp_path(&seed);
+    separate_tracks(&seed, &path, None);
+    std::fs::remove_file(seed).unwrap();
     let bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.len() > 8 * 1024 * 1024, "tracks must be separated beyond the read-ahead window");
     std::fs::rename(&path, media.join("Fixture.2026.mp4")).unwrap();
+    // Count TCP/TLS connections without terminating TLS or bypassing signatures.
+    // The client uses exactly one HTTP request per connection.
+    let connections = Arc::new(AtomicUsize::new(0));
+    let blocked = Arc::new(AtomicBool::new(false));
+    let stalled = Arc::new(AtomicBool::new(false));
+    let fail_once = Arc::new(AtomicBool::new(false));
     let (connection, item, server_key) = runtime.block_on(async {
         let (addr, state) = server::spawn(&temp.path().join("server"), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = listener.local_addr().unwrap();
+        let (connections, blocked, stalled, fail_once) =
+            (connections.clone(), blocked.clone(), stalled.clone(), fail_once.clone());
+        tokio::spawn(async move {
+            while let Ok((mut incoming, _)) = listener.accept().await {
+                connections.fetch_add(1, Ordering::SeqCst);
+                if fail_once.swap(false, Ordering::SeqCst) {
+                    continue;
+                }
+                let (blocked, stalled) = (blocked.clone(), stalled.clone());
+                tokio::spawn(async move {
+                    while blocked.load(Ordering::SeqCst) {
+                        stalled.store(true, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    let mut outgoing = tokio::net::TcpStream::connect(addr).await.unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut incoming, &mut outgoing).await;
+                });
+            }
+        });
+        let addr = proxy;
         let root =
             flicks_client::Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
         let _: db::Folder = root
@@ -384,9 +515,16 @@ fn network_ranges_and_seeks() {
     reader.read_at(2, &mut buf).unwrap();
     assert_eq!(buf, bytes[2..2 + buf.len()]);
     drop(reader);
+    let before = connections.load(Ordering::SeqCst);
     let mut p = Player::with_audio(source(), AudioSink::Null).unwrap();
-    let (_, offset) = run(&mut p, 4.0, false);
-    assert_eq!(p.stats().displayed, 96);
+    let (_, offset) = run(&mut p, 16.0, false);
+    let ranges = connections.load(Ordering::SeqCst) - before;
+    eprintln!(
+        "distant interleaved MP4: {} bytes, 384 frames, {ranges} signed range requests / TLS connections",
+        bytes.len()
+    );
+    assert!(ranges < 100, "range-cache thrash: {ranges}");
+    assert_eq!(p.stats().displayed, 384);
     assert_eq!(p.stats().dropped, 0);
     assert!(offset < 0.020);
     for at in [1.0, 3.0, 0.0, 2.0] {
@@ -398,6 +536,65 @@ fn network_ranges_and_seeks() {
         assert!(elapsed < Duration::from_millis(300));
     }
     drop(p);
+    fail_once.store(true, Ordering::SeqCst);
+    let before = connections.load(Ordering::SeqCst);
+    let retry = source::Bytes::open(source()).unwrap();
+    let mut first = [0; 16];
+    retry.read_at(0, &mut first).unwrap();
+    assert_eq!(first, bytes[..16]);
+    assert!(connections.load(Ordering::SeqCst) - before >= 2);
+    drop(retry);
+
+    for silent in [false, true] {
+        let mut p = Player::with_audio(source(), AudioSink::Null).unwrap();
+        if silent {
+            p.select_audio(None).unwrap();
+        }
+        blocked.store(true, Ordering::SeqCst);
+        stalled.store(false, Ordering::SeqCst);
+        p.play();
+        let start = Instant::now();
+        let mut now = start;
+        let mut calls = Vec::new();
+        for _ in 0..4800 {
+            now += Duration::from_secs_f64(1.0 / 240.0);
+            let call = Instant::now();
+            p.next_frame_for_display(now).unwrap();
+            calls.push(call.elapsed());
+            if p.state() == State::Buffering && stalled.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(p.state(), State::Buffering);
+        assert!(stalled.load(Ordering::SeqCst), "must stall on real network I/O");
+        let at = p.position();
+        now += Duration::from_secs(5);
+        let call = Instant::now();
+        assert!(p.next_frame_for_display(now).unwrap().is_none());
+        let stalled_call = call.elapsed();
+        assert_eq!(p.position(), at);
+        blocked.store(false, Ordering::SeqCst);
+        calls.sort();
+        eprintln!(
+            "network stall silent={silent}: display p99={:?}, max={:?}, stalled call={stalled_call:?}",
+            calls[calls.len() * 99 / 100],
+            calls.last()
+        );
+        assert!(stalled_call < Duration::from_millis(1));
+        assert!(calls[calls.len() * 99 / 100] < Duration::from_millis(1));
+        for _ in 0..4800 {
+            p.fill().unwrap();
+            now += Duration::from_secs_f64(1.0 / 240.0);
+            p.next_frame_for_display(now).unwrap();
+            if p.state() == State::Ended {
+                break;
+            }
+        }
+        assert_eq!(p.state(), State::Ended);
+        assert_eq!(p.stats().dropped, 0, "underrun must re-anchor the clock");
+        assert_eq!(p.stats().displayed, 384);
+    }
     let downloads = flicks_client::download::Downloads::open(&temp.path().join("client")).unwrap();
     assert!(matches!(source().prefer_download(&downloads, &server_key), Source::Network { .. }));
     runtime.block_on(async {
@@ -426,8 +623,8 @@ fn network_ranges_and_seeks() {
     assert!(matches!(local, Source::Local(_)));
     let mut offline = Player::with_audio(local, AudioSink::Null).unwrap();
     drop(runtime);
-    run(&mut offline, 4.0, false);
-    assert_eq!(offline.stats().displayed, 96);
+    run(&mut offline, 16.0, false);
+    assert_eq!(offline.stats().displayed, 384);
 }
 
 #[test]
@@ -476,49 +673,53 @@ fn two_hour_playback() {
             .unwrap()
             .success()
     );
-    let mut players = [player(&mp4), player(&mkv)];
-    if let demux::Demux::Mp4 { file, .. } = &players[0].demux {
-        assert_eq!(file.tracks[players[0].video_track].samples.len(), 172_800);
+    for path in [&mp4, &mkv] {
+        std::fs::File::open(path).unwrap().sync_all().unwrap();
     }
-    for p in &mut players {
-        p.fill().unwrap(); // Initial buffering completes before starting either clock.
-        p.play();
+    let decoder = worker::Decoder::open(Source::Local(mp4.clone())).unwrap();
+    if let demux::Demux::Mp4 { file, .. } = &decoder.demux {
+        assert_eq!(file.tracks[decoder.video_track].samples.len(), 172_800);
     }
-    let start = Instant::now();
-    let mut offsets = [0f64; 2];
-    let mut max_call = Duration::ZERO;
-    let mut max_gap = Duration::ZERO;
-    let mut previous = start;
-    for tick in 0..(7202 * 120) {
-        let deadline = start + Duration::from_secs_f64(tick as f64 / 120.0);
-        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
-        let now = Instant::now();
-        max_gap = max_gap.max(now.duration_since(previous));
-        previous = now;
-        for (p, max) in players.iter_mut().zip(&mut offsets) {
-            let call = Instant::now();
-            if p.next_frame_for_display(Instant::now()).unwrap().is_some() {
-                *max = max.max(p.stats().av_offset.abs());
+    drop(decoder);
+    let runs = [mp4.clone(), mkv.clone()].map(|path| {
+        std::thread::spawn(move || {
+            let mut p = player(&path);
+            p.play();
+            let start = Instant::now();
+            let mut offset = 0f64;
+            let mut max_call = Duration::ZERO;
+            let mut max_gap = Duration::ZERO;
+            let mut previous = start;
+            for tick in 0..(7202 * 120) {
+                let deadline = start + Duration::from_secs_f64(tick as f64 / 120.0);
+                std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                let now = Instant::now();
+                max_gap = max_gap.max(now.duration_since(previous));
+                previous = now;
+                let call = Instant::now();
+                if p.next_frame_for_display(now).unwrap().is_some() {
+                    offset = offset.max(p.stats().av_offset.abs());
+                }
+                max_call = max_call.max(call.elapsed());
+                if p.state() == State::Ended {
+                    break;
+                }
             }
-            max_call = max_call.max(call.elapsed());
-        }
-        if players.iter().all(|p| p.state() == State::Ended) {
-            break;
-        }
-    }
-    eprintln!("2h scheduling: max display-call={max_call:?}, max caller gap={max_gap:?}");
-    for (p, offset) in players.iter().zip(offsets) {
-        eprintln!(
-            "2h: {:?}, max offset={:.3}ms, wall={:?}, position={}",
-            p.stats(),
-            offset * 1000.0,
-            start.elapsed(),
-            p.position()
-        );
-    }
-    assert!(players.iter().all(|p| p.state() == State::Ended));
-    assert!(players.iter().all(|p| p.stats().displayed == 172_800 && p.stats().dropped == 0));
-    assert!(offsets.iter().all(|&offset| offset < 0.020));
+            eprintln!(
+                "2h {}: {:?}, max offset={:.3}ms, wall={:?}, position={}, max call={max_call:?}, max gap={max_gap:?}",
+                path.extension().unwrap().to_string_lossy(),
+                p.stats(),
+                offset * 1000.0,
+                start.elapsed(),
+                p.position()
+            );
+            (p.state(), p.stats(), offset)
+        })
+    });
+    let results = runs.map(|run| run.join().unwrap());
+    assert!(results.iter().all(|(state, _, _)| *state == State::Ended));
+    assert!(results.iter().all(|(_, stats, _)| stats.displayed == 172_800 && stats.dropped == 0));
+    assert!(results.iter().all(|(_, _, offset)| *offset < 0.020));
     for path in [seed, mp4, mkv] {
         std::fs::remove_file(path).unwrap();
     }
