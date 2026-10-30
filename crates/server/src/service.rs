@@ -34,24 +34,33 @@ pub async fn run(command: Command) -> Result<(), Error> {
     match (command, linux) {
         (Command::Service(ServiceCommand::Install), false) => install(&home, LABEL, &std::env::current_exe()?),
         (Command::Service(ServiceCommand::Uninstall), false) => uninstall(&home, LABEL),
-        (Command::Service(ServiceCommand::Install), true) => install_systemd(&home, &std::env::current_exe()?),
-        (Command::Service(ServiceCommand::Uninstall), true) => uninstall_systemd(&home),
+        (Command::Service(ServiceCommand::Install), true) => {
+            install_systemd(&unit_path(&home, config_home().as_deref()), &std::env::current_exe()?)
+        }
+        (Command::Service(ServiceCommand::Uninstall), true) => {
+            uninstall_systemd(&unit_path(&home, config_home().as_deref()))
+        }
     }
+}
+
+/// `$XDG_CONFIG_HOME`, if set to an absolute path (the spec says to ignore a relative one).
+fn config_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
 /// The systemd user unit's name.
 const UNIT: &str = "flicks.service";
 
-fn unit_path(home: &Path) -> PathBuf {
-    home.join(".config/systemd/user").join(UNIT)
+/// Where systemd looks for user units: `$XDG_CONFIG_HOME/systemd/user`, else `~/.config/...`.
+fn unit_path(home: &Path, config_home: Option<&Path>) -> PathBuf {
+    config_home.map_or_else(|| home.join(".config"), Path::to_path_buf).join("systemd/user").join(UNIT)
 }
 
-fn install_systemd(home: &Path, exe: &Path) -> Result<(), Error> {
-    let unit = unit_path(home);
+fn install_systemd(unit: &Path, exe: &Path) -> Result<(), Error> {
     if let Some(dir) = unit.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(&unit, unit_file(exe))?;
+    std::fs::write(unit, unit_file(exe))?;
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", UNIT])?;
     // Restart rather than `enable --now`, so a reinstall (an update, or a moved binary) takes effect.
@@ -68,17 +77,16 @@ fn install_systemd(home: &Path, exe: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn uninstall_systemd(home: &Path) -> Result<(), Error> {
-    let unit = unit_path(home);
+fn uninstall_systemd(unit: &Path) -> Result<(), Error> {
     if !unit.exists() {
         println!("Not installed.");
         return Ok(());
     }
     // Stops it and removes the enable link; fine if it was never enabled.
     let _ = systemctl(&["disable", "--now", UNIT]);
-    std::fs::remove_file(&unit)?;
+    std::fs::remove_file(unit)?;
     systemctl(&["daemon-reload"])?;
-    let _ = Process::new("loginctl").args(["disable-linger", &user_name()?]).output();
+    // Lingering stays as it is: it's account-wide, and other user services may rely on it.
     println!("Uninstalled.");
     Ok(())
 }
@@ -111,7 +119,7 @@ fn unit_file(exe: &Path) -> String {
     // Quoted, with the characters systemd expands in a command line escaped.
     let exe = exe.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%").replace('$', "$$");
     format!(
-        "[Unit]\nDescription=Flicks media server\n\n[Service]\nExecStart=\"{exe}\" serve\nRestart=on-failure\n\n\
+        "[Unit]\nDescription=Flicks media server\n\n[Service]\nExecStart=\"{exe}\" serve\nRestart=on-failure\nRestartSec=2\n\n\
          [Install]\nWantedBy=default.target\n"
     )
 }
@@ -217,6 +225,26 @@ fn plist_xml(label: &str, exe: &Path, log: &Path) -> String {
 
 fn xml(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod systemd_tests {
+    use super::*;
+
+    #[test]
+    fn unit_path_honours_xdg_config_home() {
+        let home = Path::new("/home/ana");
+        assert_eq!(unit_path(home, None), Path::new("/home/ana/.config/systemd/user/flicks.service"));
+        let config = Path::new("/srv/config");
+        assert_eq!(unit_path(home, Some(config)), Path::new("/srv/config/systemd/user/flicks.service"));
+    }
+
+    #[test]
+    fn unit_restarts_after_a_pause() {
+        let unit = unit_file(Path::new("/opt/flicks 1/50%/flicks"));
+        assert!(unit.contains("ExecStart=\"/opt/flicks 1/50%%/flicks\" serve\n"), "{unit}");
+        assert!(unit.contains("Restart=on-failure\nRestartSec=2\n"), "{unit}");
+    }
 }
 
 /// Drives the real launchd with a throwaway label, a stub binary and a temp HOME:

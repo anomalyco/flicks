@@ -95,7 +95,8 @@ through signed `/artwork/{name}` requests. Clients never contact TMDB. Streams a
 
 Progress PUT takes exactly `{position, played, updated_at}`: nonnegative integer milliseconds
 (position within the media; updated_at since Unix epoch). A strictly newer timestamp wins;
-equal/older updates return the existing value. The signed user selects the record, never a
+equal/older updates return the existing value. An updated_at more than 60 s ahead of the server's
+clock gets 400, and clients ignore such values when merging, so one server can't freeze progress on others. The signed user selects the record, never a
 request field. The local root key has no user and gets 403 on progress routes. Continue Watching
 means positive position and not played, newest update first; Recently Added means newest scan
 addition first. Missing/removed items return 404.
