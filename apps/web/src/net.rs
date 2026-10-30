@@ -31,6 +31,8 @@ extern "C" {
     #[wasm_bindgen(catch)]
     async fn sign(message: &[u8]) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(catch)]
+    async fn acquire() -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch)]
     async fn request(method: &str, path: &str, authorization: Option<String>, body: &[u8]) -> Result<JsValue, JsValue>;
 }
 
@@ -62,7 +64,11 @@ impl Net {
                 Request::Artwork(key, name) => {
                     let server = saved.borrow().clone();
                     let bytes = match server {
-                        Some(server) if server.key == key => signed(&server, &format!("/artwork/{name}")).await.ok(),
+                        Some(server) if server.key == key => {
+                            // Held until the fetch ends, and taken before signing.
+                            let _slot = Slot::take().await;
+                            signed(&server, &format!("/artwork/{name}")).await.ok()
+                        }
                         _ => None,
                     };
                     app.update(move |s, _| s.artwork(&key, &name, bytes));
@@ -76,6 +82,23 @@ impl Net {
                 Request::Progress(..) => {}
             }
         });
+    }
+}
+
+/// One of six artwork fetches at a time; dropping it gives the slot back.
+struct Slot(Option<js_sys::Function>);
+
+impl Slot {
+    async fn take() -> Slot {
+        Slot(acquire().await.ok().map(js_sys::Function::from))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if let Some(release) = &self.0 {
+            let _ = release.call0(&JsValue::NULL);
+        }
     }
 }
 

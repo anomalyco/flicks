@@ -1,14 +1,13 @@
 use std::collections::VecDeque;
-use std::io;
+use std::io::{self, BufReader, Read, Seek};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use flicks_container::matroska::ByteSource;
 
-/// Network size comes from the server's `/play` item. Opening and reading are blocking;
-/// keep the player on the app's playback thread, not its UI or async executor thread.
+/// Network size comes from the server's `/play` item. Opening and seeking are blocking;
+/// display calls never perform source I/O.
 pub enum Source {
     Local(PathBuf),
     Network { connection: Arc<flicks_client::Connection>, file: i64, size: u64 },
@@ -28,14 +27,18 @@ impl Source {
 }
 
 pub(crate) enum Bytes {
-    Local(std::fs::File),
+    Local { reader: Mutex<(BufReader<std::fs::File>, u64)>, size: u64 },
     Network(ReadAhead),
 }
 
 impl Bytes {
     pub fn open(source: Source) -> io::Result<Self> {
         match source {
-            Source::Local(path) => Ok(Self::Local(std::fs::File::open(path)?)),
+            Source::Local(path) => {
+                let file = std::fs::File::open(path)?;
+                let size = file.metadata()?.len();
+                Ok(Self::Local { reader: Mutex::new((BufReader::with_capacity(BLOCK as usize, file), 0)), size })
+            }
             Source::Network { connection, file, size } => Ok(Self::Network(ReadAhead::new(connection, file, size)?)),
         }
     }
@@ -46,7 +49,8 @@ impl Bytes {
             s.blocks.clear();
             s.generation += 1;
             s.error = None;
-            s.cursor = n.size;
+            s.cursor = None;
+            s.demand = None;
             n.shared.1.notify_all();
         }
         Ok(())
@@ -56,13 +60,25 @@ impl Bytes {
 impl ByteSource for Bytes {
     fn len(&self) -> u64 {
         match self {
-            Self::Local(f) => ByteSource::len(f),
+            Self::Local { size, .. } => *size,
             Self::Network(n) => n.size,
         }
     }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         match self {
-            Self::Local(f) => ByteSource::read_at(f, offset, buf),
+            Self::Local { reader, size } => {
+                if offset.checked_add(buf.len() as u64).is_none_or(|end| end > *size) {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "range past EOF"));
+                }
+                let mut guard = reader.lock().map_err(|_| io::Error::other("local reader poisoned"))?;
+                let (reader, position) = &mut *guard;
+                let delta = i64::try_from(i128::from(offset) - i128::from(*position))
+                    .map_err(|_| io::Error::other("file offset too large"))?;
+                reader.seek_relative(delta)?;
+                let result = reader.read_exact(buf);
+                *position = if result.is_ok() { offset + buf.len() as u64 } else { reader.stream_position()? };
+                result
+            }
             Self::Network(n) => n.read_at(offset, buf),
         }
     }
@@ -78,11 +94,12 @@ impl flicks_container::isobmff::ByteSource for Bytes {
 }
 
 const BLOCK: u64 = 256 * 1024;
-const BLOCKS: usize = 32; // 8 MiB ahead, not a whole-file cache.
+const BLOCKS: usize = 32; // 8 MiB LRU, not a whole-file cache.
 
 struct Cache {
     blocks: VecDeque<(u64, Vec<u8>)>,
-    cursor: u64,
+    cursor: Option<u64>,
+    demand: Option<u64>,
     generation: u64,
     error: Option<String>,
     stop: bool,
@@ -97,7 +114,14 @@ pub(crate) struct ReadAhead {
 impl ReadAhead {
     fn new(connection: Arc<flicks_client::Connection>, file: i64, size: u64) -> io::Result<Self> {
         let shared = Arc::new((
-            Mutex::new(Cache { blocks: VecDeque::new(), cursor: 0, generation: 0, error: None, stop: false }),
+            Mutex::new(Cache {
+                blocks: VecDeque::new(),
+                cursor: Some(0),
+                demand: None,
+                generation: 0,
+                error: None,
+                stop: false,
+            }),
             Condvar::new(),
         ));
         let state = shared.clone();
@@ -110,27 +134,64 @@ impl ReadAhead {
                         if s.stop {
                             return;
                         }
-                        let next = s.blocks.back().map_or(s.cursor, |(at, b)| at + b.len() as u64);
-                        if s.error.is_none() && s.blocks.len() < BLOCKS && next < size {
-                            break (next, s.generation);
+                        if s.error.is_none() {
+                            if let Some(offset) = s.demand.take() {
+                                break (offset, s.generation);
+                            }
+                            if let Some(offset) = s.cursor.take()
+                                && offset < size
+                                && !s.blocks.iter().any(|(at, _)| *at == offset)
+                            {
+                                break (offset, s.generation);
+                            }
                         }
                         let Ok(next) = state.1.wait(s) else { return };
                         s = next;
                     }
                 };
                 let end = offset.saturating_add(BLOCK).min(size);
-                let result = runtime.block_on(async {
-                    tokio::time::timeout(Duration::from_secs(10), connection.read(file, offset, end - 1)).await
-                });
+                // The client bounds connect/header and idle-byte waits. Do not abort an
+                // actively progressing response just because the link takes >10 seconds.
+                let mut result = Err(io::Error::other("range read failed"));
+                for attempt in 0..2 {
+                    if attempt > 0 {
+                        let Ok(s) = state.0.lock() else { return };
+                        if s.stop {
+                            return;
+                        }
+                        if s.generation != generation {
+                            break;
+                        }
+                    }
+                    result = runtime
+                        .block_on(connection.read(file, offset, end - 1))
+                        .map_err(io::Error::other)
+                        .and_then(|bytes| {
+                            if bytes.len() as u64 == end - offset {
+                                Ok(bytes.to_vec())
+                            } else {
+                                Err(io::Error::other("truncated range response"))
+                            }
+                        });
+                    if result.is_ok() {
+                        break;
+                    }
+                }
                 let Ok(mut s) = state.0.lock() else { return };
                 if s.generation != generation {
                     continue;
                 }
                 match result {
-                    Ok(Ok(bytes)) if bytes.len() as u64 == end - offset => s.blocks.push_back((offset, bytes.to_vec())),
-                    Ok(Ok(_)) => s.error = Some("truncated range response".into()),
-                    Ok(Err(e)) => s.error = Some(e.to_string()),
-                    Err(_) => s.error = Some("range request timed out".into()),
+                    Ok(bytes) => {
+                        if s.blocks.len() == BLOCKS {
+                            s.blocks.pop_front();
+                        }
+                        s.blocks.push_back((offset, bytes));
+                        if s.demand == Some(offset) {
+                            s.demand = None;
+                        }
+                    }
+                    Err(e) => s.error = Some(e.to_string()),
                 }
                 state.1.notify_all();
             }
@@ -152,21 +213,18 @@ impl ReadAhead {
                 buf[..n].copy_from_slice(&data[..n]);
                 buf = &mut buf[n..];
                 offset += n as u64;
-                // Keep one preceding block for small demuxer look-backs.
-                for _ in 0..i.saturating_sub(1) {
-                    s.blocks.pop_front();
-                }
+                let block = s.blocks.remove(i).ok_or_else(|| io::Error::other("missing cache block"))?;
+                s.blocks.push_back(block);
+                // Follow each active track one block ahead, including when the LRU is
+                // full. Do not fill the cache with speculative blocks: that can evict
+                // the other track's working set before it is consumed.
+                s.cursor = Some(aligned.saturating_add(BLOCK));
                 self.shared.1.notify_all();
                 continue;
             }
-            let next = s.blocks.back().map_or(s.cursor, |(at, b)| at + b.len() as u64);
-            let first = s.blocks.front().map_or(s.cursor, |(at, _)| *at);
-            if aligned < first || aligned > next || s.blocks.len() == BLOCKS {
-                s.blocks.clear();
-                s.cursor = aligned;
-                s.generation += 1;
-                s.error = None;
-            }
+            // Interleaved tracks can be far apart in the file. Keep both working sets
+            // and let the in-flight range finish; only an explicit seek invalidates it.
+            s.demand = Some(aligned);
             if let Some(error) = &s.error {
                 return Err(io::Error::other(error.clone()));
             }

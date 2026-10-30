@@ -3,13 +3,20 @@
 
 const STORE = 'flicks';
 
+let opened;
+
+// The database, opened once. A failed open is tried again on the next use.
 function db() {
-  return new Promise((resolve, reject) => {
+  opened ??= new Promise((resolve, reject) => {
     const open = indexedDB.open('flicks', 1);
     open.onupgradeneeded = () => open.result.createObjectStore(STORE);
     open.onsuccess = () => resolve(open.result);
     open.onerror = () => reject(open.error);
+  }).catch((error) => {
+    opened = undefined;
+    throw error;
   });
+  return opened;
 }
 
 async function access(mode, use) {
@@ -62,4 +69,23 @@ export async function request(method, path, authorization, body) {
   if (body.length) headers['Content-Type'] = 'application/json';
   const response = await fetch(path, { method, headers, body: body.length ? body : undefined, cache: 'no-store' });
   return [response.status, new Uint8Array(await response.arrayBuffer())];
+}
+
+let free = 6;
+const waiting = [];
+
+// Waits for one of six slots (the browser queues requests past its own connection limit, and a
+// signature made before that wait would expire); resolves to the function that gives the slot back.
+export function acquire() {
+  return new Promise((resolve) => {
+    const take = () => {
+      free--;
+      resolve(() => {
+        free++;
+        waiting.shift()?.();
+      });
+    };
+    if (free > 0) take();
+    else waiting.push(take);
+  });
 }

@@ -22,20 +22,57 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hls_forged_tokens_never_wait_for_database_and_are_rate_limited() {
+    let server = start("hls-forgery").await;
+    let (release, blocked) = std::sync::mpsc::channel();
+    let (ready, entered) = tokio::sync::oneshot::channel();
+    let db = server.state.db.clone();
+    let job = tokio::spawn(async move {
+        db.call(move |_| {
+            ready.send(()).unwrap();
+            blocked.recv().unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    });
+    entered.await.unwrap();
+    let path = format!(
+        "/hls/1/master.m3u8?token=1.{}.{}.{}",
+        flicks_server::unix_now() + 300,
+        keys::encode(&[7; 16]),
+        keys::encode(&[0; 32])
+    );
+    let outcome = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+        for i in 0..25 {
+            let reply = server::handle(&server.state, get(&path)).await;
+            assert_eq!(reply.status(), if i < 20 { StatusCode::UNAUTHORIZED } else { StatusCode::TOO_MANY_REQUESTS });
+            assert_eq!(reply.headers()["referrer-policy"], "no-referrer");
+        }
+    })
+    .await;
+    release.send(()).unwrap();
+    job.await.unwrap();
+    outcome.expect("forged tokens must not queue behind the database");
+}
+
 /// Real HTTPS HLS oracle, including native-player grants (the oracle cannot sign
 /// individual requests). FLICKS_HLS_MEDIA optionally supplies read-only real media.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hls_oracle() {
     if std::env::var_os("FLICKS_HLS_MEDIA").is_some() {
-        hls_case("h264", "aac").await;
+        hls_case("h264", "aac", false).await;
     } else {
         for (video, audio) in [("h264", "aac"), ("hevc", "aac"), ("h264", "ac3"), ("hevc", "eac3")] {
-            hls_case(video, audio).await;
+            hls_case(video, audio, false).await;
         }
+        hls_case("hevc", "aac", true).await;
+        hls_case("h264", "aac", true).await;
     }
 }
 
-async fn hls_case(video_codec: &str, audio_codec: &str) {
+async fn hls_case(video_codec: &str, audio_codec: &str, open_gop: bool) {
     use serde_json::Value;
     use std::process::Command;
     use std::time::Instant;
@@ -59,7 +96,11 @@ async fn hls_case(video_codec: &str, audio_codec: &str) {
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:sample_rate=48000",
+            if open_gop && video_codec == "h264" {
+                "sine=frequency=440:sample_rate=44100"
+            } else {
+                "sine=frequency=440:sample_rate=48000"
+            },
             "-t",
             "12",
             "-c:v",
@@ -69,14 +110,47 @@ async fn hls_case(video_codec: &str, audio_codec: &str) {
             "-bf",
             "3",
             if video_codec == "h264" { "-x264-params" } else { "-x265-params" },
-            "scenecut=0:open-gop=0",
+            if open_gop { "scenecut=0:open-gop=1" } else { "scenecut=0:open-gop=0" },
             "-c:a",
             audio_codec,
         ]);
     }
     let output = generator.arg(&input).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let server = start(&format!("hls-{video_codec}-{audio_codec}")).await;
+    let reference = tempfile::tempdir().unwrap();
+    let source_input = reference.path().join("source.mkv");
+    std::fs::copy(&input, &source_input).unwrap();
+    // The audio sync flag is a property of the codec, not SimpleBlock's bit.
+    // Clear every generated audio block's bit in-place without changing offsets.
+    if std::env::var_os("FLICKS_HLS_MEDIA").is_none() {
+        use flicks_container::matroska::{ebml, element_ids::*};
+        let mut bytes = std::fs::read(&input).unwrap();
+        let mut flags = Vec::new();
+        let segment = ebml::Children::new(&bytes).find(|e| e.id == SEGMENT).unwrap();
+        let base = segment.offset + segment.header_len;
+        for cluster in ebml::Children::new(segment.data).filter(|e| e.id == CLUSTER) {
+            for block in ebml::Children::new(cluster.data).filter(|e| e.id == SIMPLE_BLOCK) {
+                let (track, len, _) = ebml::read_vint(block.data).unwrap();
+                if track == 2 {
+                    flags.push(base + cluster.offset + cluster.header_len + block.offset + block.header_len + len + 2);
+                }
+            }
+        }
+        assert!(flags.len() > 100);
+        for offset in flags {
+            bytes[offset] &= !0x80;
+        }
+        std::fs::write(&input, bytes).unwrap();
+        let mut demux = flicks_container::matroska::Demuxer::new(std::fs::File::open(&input).unwrap()).unwrap();
+        let mut audio = 0;
+        while let Some(p) = demux.next_packet().unwrap() {
+            if p.track == 1 && !p.keyframe {
+                audio += 1;
+            }
+        }
+        assert!(audio > 100);
+    }
+    let server = start(&format!("hls-{video_codec}-{audio_codec}-{open_gop}")).await;
     let viewer = pair_device(&server, server.addr, pinned(&server.state), "hls", false).await;
     let _: Folder = server
         .root
@@ -111,10 +185,23 @@ async fn hls_case(video_codec: &str, audio_codec: &str) {
         }
     });
     let url = format!("http://{oracle_addr}{grant}");
+    if let Some(script) = std::env::var_os("FLICKS_HLS_AVPLAYER") {
+        let output = Command::new("swift").arg(script).arg(&url).output().unwrap();
+        eprintln!(
+            "HLS_AVPLAYER {video_codec}/{audio_codec} open={open_gop} exit={} {} {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success());
+    }
     let response = fetch(&server, &viewer, &format!("{root}/master.m3u8")).await;
     assert_eq!(response.status, StatusCode::OK, "{}", String::from_utf8_lossy(&response.body));
     let master = String::from_utf8(response.body.to_vec()).unwrap();
     assert!(master.contains("TYPE=AUDIO"));
+    assert!(!master.contains("#EXT-X-INDEPENDENT-SEGMENTS"));
+    assert!(master.contains("CHANNELS=\""));
+    assert!(master.contains("LANGUAGE=\""));
     let video = master.lines().last().unwrap().strip_suffix(".m3u8").unwrap();
     let segment_path = format!("{root}/{video}/0.m4s");
     let start = Instant::now();
@@ -131,6 +218,7 @@ async fn hls_case(video_codec: &str, audio_codec: &str) {
     times.sort_by(f64::total_cmp);
     // Fetch out of order as well as repeatedly; each fragment is self-contained
     // with an absolute decode time, and audio segment zero must not disappear.
+    let mut last_video = Vec::new();
     for track in [0, 1] {
         let playlist = fetch(&server, &viewer, &format!("{root}/{track}.m3u8")).await;
         assert_eq!(playlist.status, StatusCode::OK);
@@ -145,12 +233,25 @@ async fn hls_case(video_codec: &str, audio_codec: &str) {
             assert_eq!(a.body, b.body);
             let mut bytes = init.body.to_vec();
             bytes.extend(&a.body);
+            if track == 0 && last_video.is_empty() {
+                last_video = bytes.clone();
+            }
             let parsed = flicks_container::isobmff::open(bytes.as_slice()).unwrap();
             assert!(!parsed.tracks[0].samples.is_empty());
+            if track == 1 {
+                assert_eq!(
+                    parsed.tracks[0].timescale,
+                    parsed.tracks[0].entries[0].audio.as_ref().unwrap().sample_rate as u32
+                );
+                assert!(parsed.tracks[0].samples.iter().all(|s| s.is_sync));
+                if audio_codec == "aac" {
+                    assert!(parsed.tracks[0].samples.iter().all(|s| s.duration == 1024));
+                }
+            }
         }
     }
     eprintln!(
-        "HLS_PERF {video_codec}/{audio_codec} bytes={} cold_ms={cold:.3} n=20 p50_ms={:.3} p95_ms={:.3} max_ms={:.3}",
+        "HLS_PERF {video_codec}/{audio_codec} open={open_gop} bytes={} cold_ms={cold:.3} n=20 p50_ms={:.3} p95_ms={:.3} max_ms={:.3}",
         first.body.len(),
         times[9],
         times[18],
@@ -180,7 +281,20 @@ async fn hls_case(video_codec: &str, audio_codec: &str) {
             .output()
             .unwrap();
         assert!(decoded.status.success(), "seek {seek}: {}", String::from_utf8_lossy(&decoded.stderr));
-        assert!(decoded.stderr.is_empty(), "seek {seek}: {}", String::from_utf8_lossy(&decoded.stderr));
+        if open_gop && video_codec == "h264" {
+            // x264 recovery-point seeks also warn on the original MKV. Require
+            // the same pixels below; do not mistake a source warning for remux loss.
+            let source = Command::new(&ffmpeg)
+                .args(["-v", "error", "-xerror", "-ss", seek, "-i"])
+                .arg(&source_input)
+                .args(["-t", "2", "-f", "null", "-"])
+                .output()
+                .unwrap();
+            assert!(source.status.success());
+            assert_eq!(decoded.stderr.is_empty(), source.stderr.is_empty());
+        } else {
+            assert!(decoded.stderr.is_empty(), "seek {seek}: {}", String::from_utf8_lossy(&decoded.stderr));
+        }
     }
     // All decoded video pixels, not merely a parser accepting the boxes.
     let hashes = |source: &str, network: bool, seek: Option<&str>| {
@@ -203,19 +317,35 @@ async fn hls_case(video_codec: &str, audio_codec: &str) {
     };
     let all = hashes(&url, true, None);
     assert!(all.len() >= 280);
-    assert_eq!(all, hashes(input.to_str().unwrap(), false, None));
+    assert_eq!(all, hashes(source_input.to_str().unwrap(), false, None));
+    if open_gop {
+        // Start a new decoder directly on the later segment, not on a preceding
+        // HLS rendition. Leading pictures must not appear or corrupt its frames.
+        let path = reference.path().join("last-segment.mp4");
+        std::fs::write(&path, last_video).unwrap();
+        let standalone = hashes(path.to_str().unwrap(), false, None);
+        assert!(standalone.len() >= 90);
+        assert!(all.ends_with(&standalone), "standalone open-GOP segment differs from source tail");
+    }
     // Account for the common reordering delay when comparing absolute audio PTS.
     // Player seeks remain relative to playback start, as with an ordinary file.
     let init = fetch(&server, &viewer, &format!("{root}/{video}/init.mp4")).await;
-    let init_doc = flicks_container::isobmff::open(init.body.as_ref()).unwrap();
-    let depth = flicks_container::isobmff::cmaf::timing::reorder_depth(&init_doc.tracks[0].entries[0].codec).unwrap();
-    let mkv = flicks_container::matroska::open(std::fs::File::open(&input).unwrap()).unwrap();
-    let duration = mkv.tracks.iter().find(|t| t.video.is_some()).unwrap().default_duration_ns.unwrap() / 1000;
-    let delay = (duration * u64::from(depth)) as f64 / 1_000_000.0;
+    let mut bytes = init.body.to_vec();
+    bytes.extend(&first.body);
+    let doc = flicks_container::isobmff::open(bytes.as_slice()).unwrap();
+    let first_sample = doc.tracks[0].samples.get(0).unwrap();
+    let delay = (first_sample.pts - first_sample.dts) as f64 / f64::from(doc.tracks[0].timescale);
     let sought = hashes(&url, true, Some("8"));
     assert!(sought.len() >= 90);
-    let source_sought = hashes(input.to_str().unwrap(), false, Some("8"));
-    assert!(sought == source_sought, "seek video frames differ");
+    let source_sought = hashes(source_input.to_str().unwrap(), false, Some("8"));
+    assert!(
+        sought == source_sought,
+        "seek video frames differ: HLS {} source {}, first HLS/source positions {:?}/{:?}",
+        sought.len(),
+        source_sought.len(),
+        all.iter().position(|h| h == &sought[0]),
+        all.iter().position(|h| h == &source_sought[0])
+    );
     let audio_time = |source: &str, target: f64| {
         let output = Command::new(&ffprobe)
             .args([
@@ -249,7 +379,7 @@ async fn hls_case(video_codec: &str, audio_codec: &str) {
     };
     for target in [0.0, 8.0] {
         let (hls, frame) = audio_time(&url, target + delay);
-        let (source, _) = audio_time(input.to_str().unwrap(), target);
+        let (source, _) = audio_time(source_input.to_str().unwrap(), target);
         let error = (hls - delay - source).abs();
         eprintln!(
             "HLS_AUDIO {video_codec}/{audio_codec} target={target} error_ms={:.3} frame_ms={:.3}",

@@ -389,7 +389,150 @@ cargo test -p flicks-player --release software_4k_throughput -- --ignored --noca
 FLICKS_PLAYER_MEDIA=/absolute/path/to/video.mp4 cargo test -p flicks-player --release scheduling_diagnostic -- --ignored --nocapture
 # Generates ~10 GiB, then runs for two wall-clock hours:
 cargo test -p flicks-player --release two_hour_playback -- --ignored --nocapture
+```
 
+### Review fixes — bounded decode worker and retained range cache (2026-10-30)
+
+Measured on the same M5 Max in release, before at `1f90f61` and after at
+`3c355d7`. Open and seek now wait for the initial ~350 ms decode buffer;
+`next_frame_for_display` polls a one-request/one-batch worker instead of reading
+or decoding media on the caller. Public method signatures are unchanged.
+
+| Measurement | Before | After |
+|---|---:|---:|
+| Two 1080p H.264 players, 60 s, 120 Hz: display call p50 | 2.250 µs | 0.833 µs |
+| Same run: display call p99 / max | 1.530 / 6.253 ms | 0.025 / 0.108 ms |
+| Same run: max caller gap | 13.391 ms | 12.566 ms |
+| Same run: displayed per player / dropped | 1,426 / 0 | 1,425 / 0 |
+| Same run: max A/V offset | 12.807 ms | 9.350 ms |
+| 16 s, 384-frame, 11,570,581-byte track-separated MP4: signed range requests / TLS connections | 1,537 | 46 |
+| Local seek incl. first frame, 1080p H.264 MKV (three seeks) | 10.33–11.09 ms | 9.67–10.87 ms |
+| Local seek incl. first frame, 1080p H.264 MP4 | 15.16–22.49 ms | 10.11–11.66 ms |
+| Local seek incl. first frame, 4K HEVC Main10 MKV | 26.68–27.14 ms | 25.26–27.37 ms |
+| Local seek incl. first frame, 4K HEVC Main10 MP4 | 27.93–33.93 ms | 25.34–27.02 ms |
+
+The paired 60 s runs use the **same** 62-second fixture, stream-copy looping a
+two-second H.264/AAC seed. Its repeated AAC priming gaps mean it is not exactly
+24 displayed frames per wall-clock second; do not compare its frame count to the
+continuous-audio 1,440-frame diagnostic above. Neither run dropped a frame. The
+one-frame endpoint difference is retained rather than normalized away. All four
+fresh continuous-audio 10 s seek fixtures displayed 240/240 with zero drops;
+after max A/V offsets were 2.033 / 1.071 / 1.836 / 3.419 ms in table order.
+
+Range counts include open, metadata and all playback reads, through a loopback TCP
+proxy to the real paired, signed HTTPS server (one request per TLS connection).
+Video and audio are stored in separate contiguous regions >8 MiB apart at the
+start, but consumed in DTS order. The baseline measurement temporarily restored
+the old sliding-window eviction policy with the new harness/worker; its <100
+request regression assertion failed at 1,537. Restoring the 32-block LRU passes
+at 46. Cache hits retain both tracks; only an explicit seek invalidates blocks.
+Each active track also requests its next block speculatively, even with a full
+LRU; speculative reads do not run unboundedly ahead and displace the other track.
+Range failures retry once; the redundant 10 s whole-response timeout is removed,
+leaving the client's connect/header and idle-byte timeouts. Local files use a
+256 KiB buffered reader, including relative seeks within the buffered region.
+
+Stalling new TCP connections in that signed-server test produces `Buffering`
+without waiting in the display call. With decoded/null audio, display p99/max
+was 39.833/66.500 µs; with audio deselected it was 108.208/114.208 µs. The extra
+poll while blocked measured 0–41 ns. Both resumed after a
+five-second driven-clock gap, displayed 384/384, dropped zero and reached
+`Ended`. Assertions require p99 and the blocked poll below 1 ms. A deliberately
+dropped first connection also verifies the single range retry.
+
+EOF regression cases cover an enabled empty MP4 audio track and 209 ms / 5 ms
+video tails: all 24 frames display, zero drops, and `Ended` is reached. Known
+exhausted MP4 audio tracks permit a wall-clock tail bounded by decoded video;
+other containers use demux EOF. `NoDevice` selects the null sink; other output
+errors remain errors. The real CoreAudio pause/resume test displayed 72/72,
+zero drops, max offset 3.685 ms, ending at 3.000 s.
+
+Verification: nine normal release player tests pass; the release 60 s, seek and
+real-device tests pass. Workspace Clippy (`-D warnings`), dependency policy and
+all **799 tests/doctests** pass (35 ignored) with required external oracles.
+The final player-only rerun also covers seeking away from an unobserved failed
+worker batch; player-only Clippy and formatting pass after that small follow-up.
+`scripts/check.sh` itself stops at the pre-existing extra final blank line in
+`apps/desktop/src/worker.rs` from the base commit. That unowned file is unchanged;
+the remaining gate commands were run explicitly in the foreground.
+
+The two-hour harness now calls `sync_all` on both generated files before opening
+players and paces each player on its own thread. **The two-hour acceptance is
+still pending**, not inferred from shorter runs: at 18:13 the 18-core Mac's load
+was 24.44 / 19.72 / 16.53, other `rustc`/fuzz jobs were active, and a VM was using 305% CPU.
+This was not a reasonably quiet machine for the acceptance run. Run later:
+
+```sh
+cd /Users/vogel/dev/flicks-fix-player
+CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 \
+  cargo test -p flicks-player --release two_hour_playback -- --ignored --nocapture
+```
+
+
+## FLK-19 review — HLS tokens, open GOPs and audio clocks (2026-10-30)
+
+Apple M5 Max, macOS 27.2; default unoptimized test profile (including the
+workspace's per-package optimizations). Same pinned-loopback HTTPS measurement
+as below: first signed video-segment request, then 20 byte-identical repeats,
+after scanning and fetching the master. Warm filesystem; no AVPlayer run before
+either timed matrix. Before is `1f90f61`; after is the `fix-hls` review fix.
+
+| Generated input | First ms, before → after | Repeat p50 ms, before → after | Repeat p95 ms, before → after |
+|---|---:|---:|---:|
+| H.264 / AAC | 9.314 → 12.061 | 8.786 → 8.634 | 10.846 → 12.116 |
+| HEVC / AAC | 7.888 → 8.764 | 8.354 → 8.150 | 9.944 → 8.768 |
+| H.264 / AC-3 | 7.879 → 8.668 | 8.527 → 8.468 | 9.173 → 8.997 |
+| HEVC / E-AC-3 | 7.611 → 7.572 | 9.741 → 7.876 | 21.242 → 8.363 |
+
+These shared-host samples do not establish a general speedup. Signed-request
+timings still include P-256 authentication. Native-player grants now use
+HKDF-derived HMAC-SHA256 instead: forged tokens do no SQLite work, verified by
+holding the DB thread blocked while 25 requests finish (20 unauthorized, then
+five rate-limited). Valid grants still check the device for immediate revocation.
+
+Correctness and native playback:
+
+- Six generated cases: the four closed-GOP combinations above, x265 open-GOP
+  HEVC/AAC, and x264 open-GOP H.264/44.1 kHz AAC. All full-playback and eight-second
+  seek video hashes equal the source; each open-GOP final fragment also decodes
+  independently to the exact source tail. Every segment is byte-stable on
+  reverse-order repeated requests. Generated audio SimpleBlock keyframe bits are
+  cleared: output audio is still entirely sync, uses the sample-rate timescale,
+  and AAC durations are exactly 1024 samples.
+- Keep CRA/recovery and leading pictures together in decode order; moving RASL
+  to the preceding segment would remove its CRA reference. Subtract the leading
+  picture count from the next fragment's decode-time anchor and mark those
+  samples as leading. The decoder suppresses pre-recovery output on random
+  access. **Do not advertise `EXT-X-INDEPENDENT-SEGMENTS`**: RFC 8216 requires all
+  samples to be independently decodable, which dependent leading pictures are
+  not. The catalog cannot distinguish IDR from CRA, so it cannot prove this tag.
+- Audio timestamp error at start / eight seconds: 48 kHz AAC 0.353 / 0.353 ms;
+  44.1 kHz AAC 0.232 / 0.228 ms; Dolby 5.353 / 26.647 ms (32 ms frames).
+  x264 open-GOP seeks produce the same FFmpeg `mmco: unref short failure` warning
+  on the source MKV; pixel comparisons still match. HEVC seeks have no errors.
+- Headless Swift AVPlayer, using the test-only loopback HTTP adapter and real
+  token URLs: **6/6 ready, played, sought to eight seconds, and decoded video
+  after the seek**. AVPlayerItemVideoOutput returned 44–45 buffers per case,
+  including 23 after seeking; zero AVPlayer error-log events. The helper mutes
+  playback. This is native decoding, not a Safari visual or listening test.
+  `mediastreamvalidator` is not installed. No real-episode rerun is claimed.
+- Total scanned payload is bounded at 256 MiB (including unselected tracks),
+  retained rendition payload at 64 MiB, plus the existing packet-count limits.
+  Audio's earlier-cue preroll has a separate scan allowance for high-bitrate
+  video. Dolby config reads start at segment preroll for Dolby `.m4s`, not at
+  cluster zero; unrelated renditions do not read Dolby frames.
+- Existing codec SPS parsers replace the duplicate container parsers; 603
+  truncations/bit flips and a no-VUI-restriction DPB regression pass. Container
+  remains codec-independent and its `wasm32-unknown-unknown` check passes.
+
+Verification: `FLICKS_REQUIRE_ORACLES=1 scripts/check.sh` passed 800 tests and
+doctests (35 ignored), Clippy and dependency policy after temporarily normalizing
+an existing extra EOF blank line in `apps/desktop/src/worker.rs`. That unrelated
+file was restored, so the branch's full formatting gate still reports that
+baseline issue. Final targeted server/container Clippy and HLS/native checks
+pass. Use the existing `hls` test filter for the two unit regressions and the two
+integration tests; optional `FLICKS_HLS_AVPLAYER=/absolute/path/to/helper.swift`
+runs a local Swift playback helper with each generated token URL.
 
 ## FLK-19 — On-demand MKV to HLS remux (2026-10-30)
 
