@@ -189,6 +189,7 @@ impl Decoder {
         let kinds = self.info.validate_sample(sample)?;
         if self.info.codec == Codec::Hevc && !kinds.iter().any(|&t| t <= 21) {
             // EOS/EOB-only samples are not pictures. Leave delayed output for flush().
+            self.first = true;
             return Ok(Vec::new());
         }
         if self.first {
@@ -220,6 +221,11 @@ impl Decoder {
         }
         self.session.submit(sample, pts)?;
         self.in_flight.push(pts);
+        if self.info.codec == Codec::Hevc && kinds.iter().any(|t| matches!(t, 36 | 37)) {
+            // A following sequence must start at an IRAP and skip undecodable CRA leading
+            // pictures, without ending this run or discarding its delayed output.
+            self.first = true;
+        }
         // Small bounded batch overlaps host work with the hardware engine.
         if self.in_flight.len() >= 8 {
             self.session.wait()?;
@@ -524,6 +530,37 @@ mod tests {
             assert!(!delayed.is_empty(), "fixture must exercise delayed output");
             out.extend(delayed);
             let mut expected: Vec<_> = samples.iter().map(|(_, pts)| *pts).collect();
+            expected.sort();
+            assert_eq!(out.iter().map(|f| f.pts).collect::<Vec<_>>(), expected);
+
+            // EOS can also separate sequences in one run. A following CRA must re-arm
+            // RASL skipping just like a fresh decoder, but earlier frames still flush.
+            let info = config::StreamInfo::parse(Codec::Hevc, &record).unwrap();
+            let cra = samples
+                .iter()
+                .position(|(data, _)| info.validate_sample(data).unwrap().contains(&21))
+                .expect("fixture has an open-GOP CRA");
+            let mut decoder = Decoder::new(Codec::Hevc, &record).unwrap();
+            let mut out = Vec::new();
+            let mut expected = Vec::new();
+            let mut rasl = 0;
+            for (i, (data, pts)) in samples.iter().enumerate() {
+                if i == cra && !appended {
+                    assert!(decoder.decode(&markers, i64::MAX).unwrap().is_empty());
+                }
+                let mut data = data.clone();
+                if i + 1 == cra && appended {
+                    data.extend_from_slice(&markers);
+                }
+                if i > cra && info.validate_sample(&data).unwrap().iter().any(|t| matches!(t, 8 | 9)) {
+                    rasl += 1;
+                } else {
+                    expected.push(*pts);
+                }
+                out.extend(decoder.decode(&data, *pts).unwrap());
+            }
+            assert!(rasl > 0, "fixture must exercise CRA leading pictures");
+            out.extend(decoder.flush().unwrap());
             expected.sort();
             assert_eq!(out.iter().map(|f| f.pts).collect::<Vec<_>>(), expected);
         }
