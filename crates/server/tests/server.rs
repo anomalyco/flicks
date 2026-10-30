@@ -5,10 +5,10 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use flicks_server::cli::Client;
+use flicks_client::{Connection, net};
 use flicks_server::db::{Device, Folder, User};
 use flicks_server::server::{self, AddFolder, AddUser, Info, OpenPairing, Pairing, State, Status};
-use flicks_server::{auth, http, keys, pair, tls};
+use flicks_server::{auth, keys, pair, tls};
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::header::{AUTHORIZATION, HOST, RANGE};
@@ -30,12 +30,12 @@ fn data_dir(name: &str) -> PathBuf {
 struct Server {
     addr: SocketAddr,
     state: Arc<State>,
-    root: Client,
+    root: Connection,
 }
 
 async fn start(name: &str) -> Server {
     let (addr, state) = server::spawn(&data_dir(name), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let root = Client::new(state.key.clone(), state.key.verifying_key(), addr).unwrap();
+    let root = Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
     Server { addr, state, root }
 }
 
@@ -48,20 +48,20 @@ fn get(path: &str) -> Request<Full<Bytes>> {
 }
 
 /// Opens a pairing window as root.
-async fn open_window(root: &Client, user: &str, admin: bool) -> pair::Link {
+async fn open_window(root: &Connection, user: &str, admin: bool) -> pair::Link {
     let request = OpenPairing { user: user.into(), admin, addrs: Vec::new() };
     let pairing: Pairing = root.call(Method::POST, "/admin/pair", Some(&request)).await.unwrap();
     pair::parse_link(&pairing.link).unwrap()
 }
 
 /// Pairs a new device key through `addr` (the server or a proxy) and returns a client for it.
-async fn pair_device(server: &Server, via: SocketAddr, tls: Arc<ClientConfig>, user: &str, admin: bool) -> Client {
+async fn pair_device(server: &Server, via: SocketAddr, tls: Arc<ClientConfig>, user: &str, admin: bool) -> Connection {
     let link = open_window(&server.root, user, admin).await;
     let key = keys::generate().unwrap();
     let server_key = keys::public_bytes(&link.server_key);
     let request = pair::Request::new(&key, &server_key, &link.code, "Test Mac").unwrap();
     let response =
-        http::send(via, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap())).await.unwrap();
+        https(via, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap())).await.unwrap();
     assert_eq!(response.status, StatusCode::OK);
     let reply: pair::Reply = serde_json::from_slice(&response.body).unwrap();
     let transcript = pair::transcript(&server_key, &keys::public_bytes(key.verifying_key()), "Test Mac");
@@ -72,11 +72,20 @@ async fn pair_device(server: &Server, via: SocketAddr, tls: Arc<ClientConfig>, u
     assert!(!pair::verify_reply(&link.server_key, &transcript, &tampered));
     let tampered = pair::Reply { user: format!("{user}x"), ..reply };
     assert!(!pair::verify_reply(&link.server_key, &transcript, &tampered));
-    Client { key, server_key, addr: via, tls }
+    Connection { key, server_key, addr: via.to_string(), tls }
 }
 
 fn pinned(state: &State) -> Arc<ClientConfig> {
-    Arc::new(tls::pinned_client_config(state.key.verifying_key()).unwrap())
+    Arc::new(net::client_config(state.key.verifying_key(), net::web_verifier(&[]).unwrap()).unwrap())
+}
+
+/// One request over a new TLS connection to `addr`.
+async fn https(
+    addr: SocketAddr,
+    tls: Arc<ClientConfig>,
+    request: Request<Full<Bytes>>,
+) -> Result<net::Response, flicks_client::Error> {
+    net::send(&addr.to_string(), tls, request).await
 }
 
 /// Accepts any certificate, as a client reaching a tunnel's public certificate does; such a
@@ -236,7 +245,7 @@ fn sign(
     body: &[u8],
     timestamp: u64,
 ) -> String {
-    auth::sign(key, server_key, method, path, range, body, timestamp).unwrap()
+    flicks_client::auth::sign(key, server_key, method, path, range, body, timestamp).unwrap()
 }
 
 #[tokio::test]
@@ -246,14 +255,14 @@ async fn pairing_works_on_localhost() {
 
     // The probe proves the server holds its key.
     let probe = keys::encode(&[9u8; 16]);
-    let response = http::send(server.addr, tls.clone(), get(&format!("/info?probe={probe}"))).await.unwrap();
+    let response = https(server.addr, tls.clone(), get(&format!("/info?probe={probe}"))).await.unwrap();
     let info: Info = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(info.key, keys::encode(&server.state.public));
     let signature = keys::decode(&info.signature, 64).unwrap();
     assert!(keys::verify(server.state.key.verifying_key(), &server::info_message(&[9u8; 16]), &signature));
 
     // No window open: the pairing route answers like any unsigned request.
-    let response = http::send(server.addr, tls.clone(), post_json("/pair/redeem", b"{}".to_vec())).await.unwrap();
+    let response = https(server.addr, tls.clone(), post_json("/pair/redeem", b"{}".to_vec())).await.unwrap();
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
 
     let admin = pair_device(&server, server.addr, tls.clone(), "ana", true).await;
@@ -263,22 +272,22 @@ async fn pairing_works_on_localhost() {
     // A viewer is authenticated but not an admin; unknown routes are 404 once signed.
     let viewer = pair_device(&server, server.addr, tls.clone(), "bo", false).await;
     let err = viewer.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(403, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(403, _)), "{err}");
     let err = viewer.call::<()>(Method::GET, "/nothing", None::<&()>).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(404, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(404, _)), "{err}");
 
     // Redeeming twice with the same key is a no-op; any other key gets "used".
     let link = open_window(&server.root, "cy", false).await;
     let server_key = keys::public_bytes(&link.server_key);
     let first = keys::generate().unwrap();
     let body = serde_json::to_vec(&pair::Request::new(&first, &server_key, &link.code, "TV").unwrap()).unwrap();
-    let a = http::send(server.addr, tls.clone(), post_json("/pair/redeem", body.clone())).await.unwrap();
-    let b = http::send(server.addr, tls.clone(), post_json("/pair/redeem", body)).await.unwrap();
+    let a = https(server.addr, tls.clone(), post_json("/pair/redeem", body.clone())).await.unwrap();
+    let b = https(server.addr, tls.clone(), post_json("/pair/redeem", body)).await.unwrap();
     assert_eq!((a.status, b.status), (StatusCode::OK, StatusCode::OK));
     assert_eq!(a.body, b.body);
     let second = keys::generate().unwrap();
     let body = serde_json::to_vec(&pair::Request::new(&second, &server_key, &link.code, "TV").unwrap()).unwrap();
-    let c = http::send(server.addr, tls.clone(), post_json("/pair/redeem", body)).await.unwrap();
+    let c = https(server.addr, tls.clone(), post_json("/pair/redeem", body)).await.unwrap();
     assert_eq!(c.status, StatusCode::CONFLICT);
 
     let devices: Vec<Device> = admin.call(Method::GET, "/admin/devices", None::<&()>).await.unwrap();
@@ -291,7 +300,7 @@ async fn pairing_works_on_localhost() {
         .call::<User>(Method::POST, "/admin/users", Some(&AddUser { name: "ana".into(), admin: false }))
         .await
         .unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(409, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(409, _)), "{err}");
 
     // Tunnel or tailnet names follow the detected addresses in the link; malformed ones are refused.
     let request = OpenPairing { user: "cy".into(), admin: false, addrs: vec!["nas.tail1234.ts.net:7686".into()] };
@@ -300,7 +309,7 @@ async fn pairing_works_on_localhost() {
     assert_eq!(link.addrs.last().map(String::as_str), Some("nas.tail1234.ts.net:7686"));
     let request = OpenPairing { user: "cy".into(), admin: false, addrs: vec!["nas&code=x:7686".into()] };
     let err = server.root.call::<Pairing>(Method::POST, "/admin/pair", Some(&request)).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(400, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(400, _)), "{err}");
 
     // Folders: added once, refused in protected places, removed by id.
     let media = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -308,18 +317,18 @@ async fn pairing_works_on_localhost() {
     let folder: Folder = admin.call(Method::POST, "/admin/folders", Some(&add(&media))).await.unwrap();
     for (path, code) in [(media.as_path(), 409), (Path::new("/etc"), 403)] {
         let err = admin.call::<Folder>(Method::POST, "/admin/folders", Some(&add(path))).await.unwrap_err();
-        assert!(matches!(err, flicks_server::Error::Status(c, _) if c == code), "{err}");
+        assert!(matches!(err, flicks_client::Error::Status(c, _) if c == code), "{err}");
     }
     let err =
         admin.call::<Folder>(Method::POST, "/admin/folders", Some(&add(&server.state.data_dir))).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(403, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(403, _)), "{err}");
     // A temp folder is fine (on macOS it lives under /var); the home folder and its parents aren't.
     let temp = tempfile::tempdir().unwrap();
     let _: Folder = admin.call(Method::POST, "/admin/folders", Some(&add(temp.path()))).await.unwrap();
     if let Some(home) = flicks_server::home_dir() {
         for path in home.ancestors() {
             let err = admin.call::<Folder>(Method::POST, "/admin/folders", Some(&add(path))).await.unwrap_err();
-            assert!(matches!(err, flicks_server::Error::Status(403, _)), "{}: {err}", path.display());
+            assert!(matches!(err, flicks_client::Error::Status(403, _)), "{}: {err}", path.display());
         }
     }
     admin.call::<()>(Method::DELETE, &format!("/admin/folders/{}", folder.id), None::<&()>).await.unwrap();
@@ -336,7 +345,7 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
     // Behind the proxy the certificate proves nothing; the probe does.
     let link = open_window(&server.root, "dee", true).await;
     let probe = keys::random::<16>().unwrap();
-    let response = http::send(via, tls.clone(), get(&format!("/info?probe={}", keys::encode(&probe)))).await.unwrap();
+    let response = https(via, tls.clone(), get(&format!("/info?probe={}", keys::encode(&probe)))).await.unwrap();
     let info: Info = serde_json::from_slice(&response.body).unwrap();
     assert!(keys::verify(&link.server_key, &server::info_message(&probe), &keys::decode(&info.signature, 64).unwrap()));
 
@@ -345,7 +354,7 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
     let device = keys::generate().unwrap();
     let request = pair::Request::new(&device, &server_key, &link.code, "Phone").unwrap();
     let response =
-        http::send(via, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap())).await.unwrap();
+        https(via, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap())).await.unwrap();
     assert_eq!(response.status, StatusCode::OK);
     let captured = recording.lock().unwrap().last().unwrap().clone();
     let body_at = captured.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
@@ -365,10 +374,9 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
             signature: keys::encode(&keys::sign(&thief, &pair::request_message(&transcript, &proof))),
         };
         for addr in [via, server.addr] {
-            let response =
-                http::send(addr, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&forged).unwrap()))
-                    .await
-                    .unwrap();
+            let response = https(addr, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&forged).unwrap()))
+                .await
+                .unwrap();
             assert_eq!(response.status, StatusCode::FORBIDDEN, "{name}");
         }
     }
@@ -382,7 +390,7 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
     assert_eq!(devices[0].key, keys::encode(&keys::public_bytes(device.verifying_key())));
 
     // Signed requests through the proxy work, and what it records can't be replayed or altered.
-    let client = Client { key: device, server_key: server_key.clone(), addr: via, tls: tls.clone() };
+    let client = Connection { key: device, server_key: server_key.clone(), addr: via.to_string(), tls: tls.clone() };
     let status: Status = client.call(Method::GET, "/admin/status", None::<&()>).await.unwrap();
     assert_eq!(status.devices, 1);
     let captured = recording.lock().unwrap().last().unwrap().clone();
@@ -415,7 +423,7 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
     // Removed: its next request through the proxy is refused.
     server.root.call::<()>(Method::DELETE, &format!("/admin/devices/{}", devices[0].id), None::<&()>).await.unwrap();
     let err = client.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(401, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(401, _)), "{err}");
 }
 
 #[tokio::test]
@@ -425,7 +433,7 @@ async fn replayed_altered_stale_and_removed_requests_fail() {
     let device = pair_device(&server, server.addr, tls.clone(), "eve", true).await;
     let key = &device.key;
     let sk = &device.server_key;
-    let send = |request| http::send(server.addr, tls.clone(), request);
+    let send = |request| https(server.addr, tls.clone(), request);
 
     let auth = sign(key, sk, "GET", "/admin/status", b"", b"", flicks_server::unix_now());
     let ok = send(signed_request(Method::GET, "/admin/status", &auth, None, b"")).await.unwrap();
@@ -480,7 +488,7 @@ async fn replayed_altered_stale_and_removed_requests_fail() {
     let devices: Vec<Device> = device.call(Method::GET, "/admin/devices", None::<&()>).await.unwrap();
     server.root.call::<()>(Method::DELETE, &format!("/admin/devices/{}", devices[0].id), None::<&()>).await.unwrap();
     let err = device.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(401, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(401, _)), "{err}");
     let _: Status = server.root.call(Method::GET, "/admin/status", None::<&()>).await.unwrap();
 }
 
@@ -607,7 +615,7 @@ async fn unauthenticated_routes_fuzzed() {
     let mut answered = 0;
     let mut limited = 0;
     for _ in 0..40 {
-        let response = http::send(server.addr, pinned(state), get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.unwrap();
+        let response = https(server.addr, pinned(state), get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.unwrap();
         match response.status {
             StatusCode::OK => answered += 1,
             StatusCode::TOO_MANY_REQUESTS => limited += 1,
@@ -691,7 +699,7 @@ fn catalog_mp4() -> Vec<u8> {
     w.finish().unwrap().into_inner()
 }
 
-async fn catalog_ready(client: &Client, count: usize) -> Vec<serde_json::Value> {
+async fn catalog_ready(client: &Connection, count: usize) -> Vec<serde_json::Value> {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let items: Vec<serde_json::Value> = client.call(Method::GET, "/items", None::<&()>).await.unwrap();
@@ -705,7 +713,7 @@ async fn catalog_ready(client: &Client, count: usize) -> Vec<serde_json::Value> 
     .unwrap()
 }
 
-async fn api_request(server: &Server, client: &Client, path: &str, range: Option<&str>) -> server::Reply {
+async fn api_request(server: &Server, client: &Connection, path: &str, range: Option<&str>) -> server::Reply {
     let auth = sign(
         &client.key,
         &client.server_key,
@@ -812,7 +820,7 @@ async fn catalog_play_ranges_and_private_progress() {
     ] {
         assert!(matches!(
             viewer.call::<Value>(Method::PUT, &p, Some(&bad)).await,
-            Err(flicks_server::Error::Status(400, _))
+            Err(flicks_client::Error::Status(400, _))
         ));
     }
     let result: Value = other.call(Method::GET, &p, None::<&()>).await.unwrap();
@@ -1098,7 +1106,7 @@ async fn startup_scans_existing_folders_and_matroska_play_headers() {
         .unwrap();
     drop(before);
     let (addr, state) = server::spawn(dir.path(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let client = Client::new(state.key.clone(), state.key.verifying_key(), addr).unwrap();
+    let client = Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
     // Schema ready before spawn returns; opening startup with a folder triggers a scan.
     let items = catalog_ready(&client, 1).await;
     let id = items[0]["item"]["id"].as_i64().unwrap();
@@ -1198,7 +1206,7 @@ async fn api_performance() {
     let data = home.path().join("Library/Application Support/Flicks");
     let root = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(root) = Client::local(&data)
+            if let Ok(root) = flicks_server::cli::local(&data)
                 && root.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.is_ok()
             {
                 break root;
@@ -1234,11 +1242,12 @@ async fn api_performance() {
     let key = keys::generate().unwrap();
     let request = pair::Request::new(&key, &root.server_key, &link.code, "Perf").unwrap();
     let response =
-        http::send(root.addr, root.tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap()))
+        net::send(&root.addr, root.tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap()))
             .await
             .unwrap();
     assert_eq!(response.status, StatusCode::OK);
-    let viewer = Client { key, server_key: root.server_key.clone(), addr: root.addr, tls: root.tls.clone() };
+    let viewer =
+        Connection { key, server_key: root.server_key.clone(), addr: root.addr.clone(), tls: root.tls.clone() };
     for entry in items {
         let id = entry["item"]["id"].as_i64().unwrap();
         let play_path = format!("/play/{id}");
@@ -1256,7 +1265,7 @@ async fn api_performance() {
             // Includes a NEW TCP connection and pinned TLS handshake for every range request.
             // Signing happens before the timer; server signature verification is included.
             let start = Instant::now();
-            let tcp = TcpStream::connect(viewer.addr).await.unwrap();
+            let tcp = TcpStream::connect(viewer.addr.as_str()).await.unwrap();
             let stream = TlsConnector::from(viewer.tls.clone())
                 .connect(ServerName::try_from("flicks").unwrap(), tcp)
                 .await

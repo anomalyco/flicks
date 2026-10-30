@@ -189,7 +189,7 @@ impl Client {
         let server_key = keys::public_bytes(&link.server_key);
         let request = pair::Request::new(&self.key, &server_key, &link.code, device_name)?;
         let body = serde_json::to_vec(&request).map_err(|_| Error::BadResponse)?;
-        let reply: pair::Reply = connection.exchange(Method::POST, "/pair/redeem", None, body, false).await?;
+        let reply: pair::Reply = json(connection.send(Method::POST, "/pair/redeem", None, body, false).await?)?;
         let transcript = pair::transcript(&server_key, &self.public_key(), device_name);
         if !pair::verify_reply(&link.server_key, &transcript, &reply) {
             return Err(Error::WrongServer);
@@ -326,12 +326,21 @@ fn check(response: &net::Response) -> Result<(), Error> {
 pub struct Connection {
     /// The winning `host:port`.
     pub addr: String,
-    tls: Arc<ClientConfig>,
-    key: SigningKey,
-    server_key: Vec<u8>,
+    pub tls: Arc<ClientConfig>,
+    /// The key requests are signed with.
+    pub key: SigningKey,
+    /// The server key, SEC1 compressed.
+    pub server_key: Vec<u8>,
 }
 
 impl Connection {
+    /// A server at a known address that is trusted only with the certificate for `server_key`,
+    /// with no probe: the local CLI reaching `127.0.0.1:7686` with the server's own key.
+    pub fn pinned(key: SigningKey, server_key: &VerifyingKey, addr: String) -> Result<Connection, Error> {
+        let tls = Arc::new(net::client_config(server_key, net::web_verifier(&[])?)?);
+        Ok(Connection { addr, tls, key, server_key: keys::public_bytes(server_key) })
+    }
+
     async fn send(
         &self,
         method: Method,
@@ -345,10 +354,10 @@ impl Connection {
             .uri(path_and_query)
             .header(HOST, net::host_header(&self.addr));
         if signed {
-            let range = range.unwrap_or("");
+            let range = range.unwrap_or("").as_bytes();
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             let authorization =
-                auth::authorization(&self.key, &self.server_key, method.as_str(), path_and_query, range, &body, now)?;
+                auth::sign(&self.key, &self.server_key, method.as_str(), path_and_query, range, &body, now)?;
             request = request.header(AUTHORIZATION, authorization);
         }
         if let Some(range) = range {
@@ -361,20 +370,19 @@ impl Connection {
         net::send(&self.addr, self.tls.clone(), request).await
     }
 
-    async fn exchange<T: DeserializeOwned>(
+    /// A signed request with an optional JSON body, its answer decoded from JSON; an error status
+    /// becomes [`Error::Status`] with the server's message.
+    pub async fn call<T: DeserializeOwned>(
         &self,
         method: Method,
         path_and_query: &str,
-        range: Option<&str>,
-        body: Vec<u8>,
-        signed: bool,
+        body: Option<&impl Serialize>,
     ) -> Result<T, Error> {
-        json(self.send(method, path_and_query, range, body, signed).await?)
-    }
-
-    /// A signed `GET`, decoded from JSON.
-    pub async fn get<T: DeserializeOwned>(&self, path_and_query: &str) -> Result<T, Error> {
-        self.exchange(Method::GET, path_and_query, None, Vec::new(), true).await
+        let body = match body {
+            Some(body) => serde_json::to_vec(body).map_err(|_| Error::BadResponse)?,
+            None => Vec::new(),
+        };
+        json(self.send(method, path_and_query, None, body, true).await?)
     }
 
     /// Every item, a page of 200 at a time.
@@ -383,7 +391,8 @@ impl Connection {
         let mut items = Vec::new();
         // At most 10,000 pages (two million items).
         for page in 0..10_000 {
-            let entries: Vec<Entry> = self.get(&format!("/items?limit={PAGE}&offset={}", page * PAGE)).await?;
+            let path = format!("/items?limit={PAGE}&offset={}", page * PAGE);
+            let entries: Vec<Entry> = self.call(Method::GET, &path, None::<&()>).await?;
             let done = entries.len() < PAGE;
             items.extend(entries);
             if done {

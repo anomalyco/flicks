@@ -25,7 +25,7 @@ fn dir(name: &str) -> PathBuf {
 struct Setup {
     addr: SocketAddr,
     state: Arc<State>,
-    root: flicks_server::cli::Client,
+    root: flicks_client::Connection,
     media: Vec<u8>,
     proxy: SocketAddr,
     proxied: Arc<AtomicUsize>,
@@ -36,7 +36,8 @@ struct Setup {
 /// A server with one generated MP4 in its folder, and a proxy in front of it.
 async fn setup(name: &str) -> Setup {
     let (addr, state) = server::spawn(&dir(&format!("{name}-server")), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let root = flicks_server::cli::Client::new(state.key.clone(), state.key.verifying_key(), addr).unwrap();
+    let root =
+        flicks_client::Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
     let folder = tempfile::tempdir().unwrap();
     let media = mp4();
     std::fs::write(folder.path().join("Example (2020).mp4"), &media).unwrap();
@@ -78,8 +79,9 @@ async fn proxy(server: SocketAddr, state: &State) -> (SocketAddr, Arc<AtomicUsiz
         .unwrap();
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     let acceptor = TlsAcceptor::from(Arc::new(config));
+    let web = flicks_client::net::web_verifier(&[]).unwrap();
     let upstream =
-        TlsConnector::from(Arc::new(flicks_server::tls::pinned_client_config(state.key.verifying_key()).unwrap()));
+        TlsConnector::from(Arc::new(flicks_client::net::client_config(state.key.verifying_key(), web).unwrap()));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

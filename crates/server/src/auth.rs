@@ -1,27 +1,14 @@
-//! Signed requests (docs/architecture.md, "Every request").
-//!
-//! `Authorization: Flicks <device key> <timestamp> <nonce> <signature>`: the device's compressed
-//! public key, Unix seconds in decimal, a 16-byte random nonce and the `r ‖ s` signature, each
-//! binary field unpadded base64url. The signature covers
-//!
-//! ```text
-//! "flicks-req-v1\0" ‖ lp(server key) ‖ lp(method) ‖ lp(path and query) ‖ lp(Range)
-//!   ‖ SHA-256(body) ‖ timestamp (u64 BE) ‖ nonce (16 bytes)
-//! ```
-//!
-//! where `lp(x)` is `x` behind its length as a big-endian u32, and Range is the header's value or
-//! empty.
+//! Checking signed requests (docs/architecture.md, "Every request"). The message format and
+//! signing live in `flicks_client::auth`; the server parses the header, checks freshness and
+//! nonces, and verifies the signature over [`message`].
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use p256::ecdsa::SigningKey;
-use sha2::{Digest, Sha256};
+pub use flicks_client::auth::{NONCE_LEN, message};
 
-use crate::{Error, keys};
-
-pub const LABEL: &str = "flicks-req-v1";
+use crate::keys;
 
 /// How far a request's timestamp may be from the server's clock, in seconds.
 pub const MAX_SKEW: u64 = 60;
@@ -29,50 +16,7 @@ pub const MAX_SKEW: u64 = 60;
 /// The largest body a signed request may carry.
 pub const MAX_BODY: usize = 64 * 1024;
 
-pub const NONCE_LEN: usize = 16;
 pub const SIGNATURE_LEN: usize = 64;
-
-/// The bytes a request's signature covers.
-pub fn message(
-    server_key: &[u8],
-    method: &str,
-    path_and_query: &str,
-    range: &[u8],
-    body: &[u8],
-    timestamp: u64,
-    nonce: &[u8; NONCE_LEN],
-) -> Vec<u8> {
-    keys::Message::new(LABEL)
-        .field(server_key)
-        .field(method.as_bytes())
-        .field(path_and_query.as_bytes())
-        .field(range)
-        .fixed(&Sha256::digest(body))
-        .fixed(&timestamp.to_be_bytes())
-        .fixed(nonce)
-        .into_bytes()
-}
-
-/// The `Authorization` header value for a request signed by `device` at `timestamp`.
-pub fn sign(
-    device: &SigningKey,
-    server_key: &[u8],
-    method: &str,
-    path_and_query: &str,
-    range: &[u8],
-    body: &[u8],
-    timestamp: u64,
-) -> Result<String, Error> {
-    let nonce = keys::random::<NONCE_LEN>()?;
-    let message = message(server_key, method, path_and_query, range, body, timestamp, &nonce);
-    let signature = keys::sign(device, &message);
-    Ok(format!(
-        "Flicks {} {timestamp} {} {}",
-        keys::encode(&keys::public_bytes(device.verifying_key())),
-        keys::encode(&nonce),
-        keys::encode(&signature),
-    ))
-}
 
 /// A parsed `Authorization` header. Nothing in it is checked yet.
 #[derive(Debug, PartialEq, Eq)]
@@ -190,7 +134,7 @@ mod tests {
     #[test]
     fn header_round_trips_and_rejects_mutations() {
         let key = keys::generate().unwrap();
-        let value = sign(&key, &[2; 33], "GET", "/x?y=1", b"", b"", 1_800_000_000).unwrap();
+        let value = flicks_client::auth::sign(&key, &[2; 33], "GET", "/x?y=1", b"", b"", 1_800_000_000).unwrap();
         let header = parse(value.as_bytes()).unwrap();
         assert_eq!(header.key, keys::public_bytes(key.verifying_key()));
         assert_eq!(header.timestamp, 1_800_000_000);

@@ -19,10 +19,8 @@ flicks-container = { path = "../container", features = ["matroska"] }
 flicks-library = { path = "../library" }
 flicks-metadata = { path = "../metadata" }
 clap = { version = "4.6.7", features = ["derive"] }
-data-encoding = "2.11.1"
-getrandom = "0.4"
 http-body-util = { version = "0.1.5", default-features = false }
-hyper = { version = "1.12.0", features = ["http1", "server", "client"] }
+hyper = { version = "1.12.0", features = ["http1", "server"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 if-addrs = "0.15"
 p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8"] }
@@ -30,10 +28,8 @@ qrcode = { version = "0.14.1", default-features = false }
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
-rustls-webpki = { version = "0.103.16", default-features = false, features = ["alloc"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-sha2 = "0.11"
 thiserror = "2"
 time = "0.3.55"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "signal", "io-util", "fs"] }

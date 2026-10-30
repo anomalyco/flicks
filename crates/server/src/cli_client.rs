@@ -33,10 +33,10 @@ pub enum Command {
 }
 
 pub async fn run(command: Command) -> Result<(), Error> {
-    let mut client = Client::open(&crate::data_dir()?).map_err(client_error)?;
+    let mut client = Client::open(&crate::data_dir()?)?;
     match command {
         Command::Connect { link } => {
-            let server = client.pair(&link, DEVICE_NAME).await.map_err(client_error)?;
+            let server = client.pair(&link, DEVICE_NAME).await?;
             println!("Paired with {} as {} ({}).", server.name, server.user, role(&server));
         }
         Command::Ls => {
@@ -54,7 +54,7 @@ pub async fn run(command: Command) -> Result<(), Error> {
                 .filter(|(a, b)| a <= b)
                 .ok_or(Error::Usage("--range is START-END, inclusive byte offsets"))?;
             let key = pick(&client.servers, server.as_deref())?.key.clone();
-            let connection = client.connect(&key).await.map_err(client_error)?;
+            let connection = client.connect(&key).await?;
             let mut out: Box<dyn Write> = match out {
                 Some(path) => Box::new(std::fs::File::create(path)?),
                 None => Box::new(std::io::stdout().lock()),
@@ -63,7 +63,7 @@ pub async fn run(command: Command) -> Result<(), Error> {
             // One request per MAX_READ bytes; stops early at the end of the file.
             while at <= end {
                 let last = end.min(at.saturating_add(MAX_READ - 1));
-                let bytes = connection.read(id, at, last).await.map_err(client_error)?;
+                let bytes = connection.read(id, at, last).await?;
                 out.write_all(&bytes)?;
                 if bytes.is_empty() || last == u64::MAX || (bytes.len() as u64) < last - at + 1 {
                     break;
@@ -117,8 +117,4 @@ fn pick<'a>(servers: &'a [Server], name: Option<&str>) -> Result<&'a Server, Err
 
 fn role(server: &Server) -> &'static str {
     if server.admin { "admin" } else { "viewer" }
-}
-
-fn client_error(error: flicks_client::Error) -> Error {
-    Error::Io(std::io::Error::other(error))
 }
