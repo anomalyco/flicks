@@ -1,0 +1,61 @@
+# Dependency policy (AGENTS.md rules 2 and 3). Run with `cargo deny check`.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but only reachable through iroh; no replacement available" },
+]
+
+[licenses]
+version = 2
+# Permissive licences only. MPL-2.0 is allowed for unmodified foundation crates (attohttpc via
+# iroh's port mapping); media code is never taken from a dependency (see [bans]).
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Our media stack is ours: no FFmpeg, mpv, GStreamer or third-party codec crates. Rune must be
+# added with default-features = false, which keeps its symphonia and opuscule out.
+deny = [
+    { crate = "ffmpeg-next", reason = "no FFmpeg" },
+    { crate = "ffmpeg-sys-next", reason = "no FFmpeg" },
+    { crate = "rsmpeg", reason = "no FFmpeg" },
+    { crate = "rusty_ffmpeg", reason = "no FFmpeg" },
+    { crate = "libmpv", reason = "no libmpv" },
+    { crate = "libmpv2", reason = "no libmpv" },
+    { crate = "libmpv-sys", reason = "no libmpv" },
+    { crate = "gstreamer", reason = "media code is ours" },
+    { crate = "symphonia", reason = "media code is ours; add rune with default-features = false" },
+    { crate = "opuscule", reason = "media code is ours; add rune with default-features = false" },
+    { crate = "dav1d", reason = "media code is ours" },
+    { crate = "openh264", reason = "media code is ours" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/anomalyco/rune"]

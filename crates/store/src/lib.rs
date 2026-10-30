@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Encrypted local storage for one flicks device.
 //!
 //! Holds the device secret (the Ed25519 device key seed) and the device's
@@ -108,7 +109,6 @@
 //! ([`generate_biometric_key`]) that the caller wraps in the Secure Enclave.
 //! [`unlock_biometric`] opens the store with that key; changing the passphrase
 //! or calling [`clear_biometric`] removes the slot.
-
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod crypto;

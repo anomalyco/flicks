@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Clean-room AAC-LC encoder and decoder (ISO/IEC 14496-3, MPEG-4 Audio, Low Complexity profile).
 //!
 //! - [`Encoder`]: planar f32 → raw access units (+ [`Encoder::audio_specific_config`] for MP4 `esds`,
@@ -30,7 +31,6 @@
 //! }
 //! # Ok::<(), flicks_aac::Error>(())
 //! ```
-
 #![cfg_attr(
     not(test),
     deny(

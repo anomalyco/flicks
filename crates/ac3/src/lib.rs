@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Clean-room AC-3 (Dolby Digital) and E-AC-3 (Dolby Digital Plus) audio decoder, written from
 //! ATSC A/52:2012 ("Digital Audio Compression Standard", §5 bit stream syntax, §6-7 decoding,
 //! Annex E for E-AC-3).
@@ -17,7 +18,6 @@
 //! exponent strategies and the other frame-level syntax, and spectral extension (§E3.6). The
 //! adaptive hybrid transform and enhanced coupling are refused with [`Error::Unsupported`];
 //! transient pre-noise processing data is read and not applied.
-
 #![cfg_attr(
     not(test),
     deny(

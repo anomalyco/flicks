@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Test-only helpers shared by every Flicks crate (used as a dev-dependency only).
 //!
 //! - [`oracle`]: find `ffmpeg` / `ffprobe` (env vars, `PATH`, well-known dirs) and skip — or, with

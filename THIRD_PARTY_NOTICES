@@ -25,3 +25,10 @@ Licence texts: licenses/craft-libs-LICENSE-MIT, licenses/LICENSE-APACHE-2.0.
 Copied into: crates/container (from craft-libs crates/media: bitstream, isobmff, matroska).
 Changes: renamed from craft-media to flicks-container, matroska enabled by default, and later
 changes recorded in this repository's history.
+
+------------------------------------------------------------------------------------------------
+Deadbolt (Anomaly's own password manager), commit 7595d31
+Copied into: crates/core, crates/net, crates/store, and the workspace lint, toolchain and
+deny configuration. Same owner as Flicks; listed here for provenance, no third-party notice
+applies. Changes: renamed from deadbolt-* to flicks-*, with every signing, hashing, encryption,
+ALPN and TLS-exporter label renamed so the two can't accept each other's data.

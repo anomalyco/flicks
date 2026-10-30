@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Clean-room pure-Rust VP9 decoder, implemented from the public VP9 Bitstream & Decoding Process
 //! Specification (v0.6, WebM project).
 //!
@@ -16,7 +17,6 @@
 //!     println!("{}x{} {}-bit", pic.width, pic.height, pic.bit_depth);
 //! }
 //! ```
-
 #![cfg_attr(
     not(test),
     deny(

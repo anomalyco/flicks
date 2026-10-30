@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Clean-room MPEG-2 Systems demuxer (ITU-T H.222.0 | ISO/IEC 13818-1).
 //!
 //! - **Transport Stream**: 188-byte packets, 192-byte BDAV / AVCHD packets (`.m2ts`, `.mts`:
@@ -17,7 +18,6 @@
 //!   index costs a few dozen bytes per access unit.
 //!
 //! The crate does no decoding; `flicks-codecs` pairs the streams with decoders.
-
 #![cfg_attr(
     not(test),
     deny(

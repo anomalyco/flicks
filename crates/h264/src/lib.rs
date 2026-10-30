@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Clean-room pure-Rust H.264 / AVC decoder, implemented from ITU-T Rec. H.264 (ISO/IEC 14496-10).
 //!
 //! Supported: progressive (frame) coding, 8-bit 4:2:0, Baseline / Main / High profiles — CAVLC and CABAC,
@@ -14,7 +15,6 @@
 //!     let _ = pic;
 //! }
 //! ```
-
 #![cfg_attr(
     not(test),
     deny(

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Clean-room pure-Rust H.265 / HEVC decoder, implemented from ITU-T Rec. H.265 (ISO/IEC 23008-2).
 //!
 //! Supported: Main and Main 10 profiles (4:2:0, 8/10-bit; up to 12-bit 4:2:0 without range-extension
@@ -16,7 +17,6 @@
 //!     let _ = pic;
 //! }
 //! ```
-
 // Index loops over fixed-size blocks read more clearly than iterator chains in codec code.
 #![cfg_attr(
     not(test),

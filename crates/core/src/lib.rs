@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Pure domain logic for flicks: device identity, signed entries,
 //! membership, typed items, item merging and sync helpers. No IO, no async.
 //!
@@ -73,7 +74,6 @@
 //! `"flicks entry signature v1\0" || hash`. Join consent is the new device's
 //! signature over `"flicks join consent v2\0" || vault_id || inviter || device`,
 //! where the inviter is the `Add`'s author.
-
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod data;

@@ -1,8 +1,8 @@
+#![forbid(unsafe_code)]
 //! Clean-room AV1 decoder, implemented from the AV1 Bitstream & Decoding Process Specification
 //! v1.0.0 with Errata 1 (AOMediaCodec/av1-spec).
 //!
 //! See the crate README for the conformance status of each decoding stage.
-
 // Items used only by stages still being written (inter prediction, post filters).
 #![allow(dead_code)]
 #![cfg_attr(

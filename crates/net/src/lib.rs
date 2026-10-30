@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Networking for flicks: device-to-device sync and pairing over iroh.
 //!
 //! Peers are identified by their 32-byte Ed25519 public key ([`PeerId`], the iroh
@@ -17,7 +18,6 @@
 //! The caller is responsible for the rest of the membership rules, notably syncing
 //! membership with reachable peers on startup before serving data, and ordering
 //! membership entries before the data that depends on them.
-
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod error;
