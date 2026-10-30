@@ -1,0 +1,33 @@
+[package]
+name = "flicks-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+flicks-container = { path = "../container", features = ["matroska"] }
+flicks-client = { path = "../client" }
+flicks-platform = { path = "../platform" }
+flicks-gpu = { path = "../gpu" }
+flicks-audio = { path = "../audio" }
+flicks-subtitle = { path = "../subtitle" }
+flicks-h264 = { path = "../h264" }
+flicks-hevc = { path = "../hevc" }
+flicks-av1 = { path = "../av1" }
+flicks-vp9 = { path = "../vp9" }
+flicks-aac = { path = "../aac" }
+flicks-ac3 = { path = "../ac3" }
+flicks-opus = { path = "../opus" }
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "time", "net"] }
+
+[dev-dependencies]
+flicks-testkit = { path = "../testkit" }
+flicks-server = { path = "../server" }
+hyper = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread"] }

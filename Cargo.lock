@@ -1614,6 +1614,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "flicks-player"
+version = "0.0.0"
+dependencies = [
+ "flicks-aac",
+ "flicks-ac3",
+ "flicks-audio",
+ "flicks-av1",
+ "flicks-client",
+ "flicks-container",
+ "flicks-gpu",
+ "flicks-h264",
+ "flicks-hevc",
+ "flicks-opus",
+ "flicks-platform",
+ "flicks-server",
+ "flicks-subtitle",
+ "flicks-testkit",
+ "flicks-vp9",
+ "hyper",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "flicks-server"
 version = "0.0.0"
 dependencies = [

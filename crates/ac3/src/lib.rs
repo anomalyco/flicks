@@ -683,6 +683,7 @@ fn mantissa(r: &mut Bits, bap: u8, gr: &mut Groups) -> f32 {
 
 /// A decoder: keeps the overlap of each channel between frames.
 pub struct Decoder {
+    dynrng_enabled: bool,
     delay: [[f32; 256]; 6],
     dither: u32,
     seed: u32,
@@ -707,7 +708,12 @@ pub struct Decoded {
 
 impl Decoder {
     pub fn new() -> Decoder {
-        Decoder { delay: [[0.0; 256]; 6], dither: 0, seed: 0x1234_5678, carry: None }
+        Decoder { dynrng_enabled: true, delay: [[0.0; 256]; 6], dither: 0, seed: 0x1234_5678, carry: None }
+    }
+
+    /// Enable bitstream dynamic range gain (enabled by default for existing callers).
+    pub fn set_drc(&mut self, enabled: bool) {
+        self.dynrng_enabled = enabled;
     }
 
     /// Seed the dither generator (dither is decoder-specific noise; tests compare two seeds).
@@ -901,7 +907,9 @@ impl Decoder {
                 }
             }
         }
-        apply_dynrng(f, pos, coefs);
+        if self.dynrng_enabled {
+            apply_dynrng(f, pos, coefs);
+        }
         Ok(())
     }
 
