@@ -197,6 +197,7 @@ fn item_json(it: &library::Item) -> Value {
         "episode": it.episode, "episode_end": it.episode_end, "edition": it.edition,
         "tmdb_id": it.tmdb_id, "tmdb_media": it.tmdb_media,
         "poster": artwork_name(it.poster.as_deref(), "w342"), "backdrop": artwork_name(it.backdrop.as_deref(), "w780"),
+        "still": artwork_name(it.still.as_deref(), "w780"),
         "added_at": it.added_at, "size": it.size, "oshash": it.oshash, "container": it.container,
         "duration_ms": it.duration_ms, "video_codec": it.video_codec, "width": it.width,
         "height": it.height, "hdr": it.hdr})
@@ -316,6 +317,7 @@ fn list(conn: &Connection, user: Option<i64>, q: &Query, mode: &str) -> Result<V
             "edition": s("edition")?, "tmdb_id": n("tmdb_id")?, "tmdb_media": s("tmdb_media")?,
             "poster": artwork_name(s("poster")?.as_deref(), "w342"),
             "backdrop": artwork_name(s("backdrop")?.as_deref(), "w780"),
+            "still": artwork_name(s("still")?.as_deref(), "w780"),
             "added_at": n("added_at")?, "size": n("size")?, "oshash": s("oshash")?,
             "container": s("container")?, "duration_ms": n("duration_ms")?, "video_codec": s("video_codec")?,
             "width": n("width")?, "height": n("height")?, "hdr": s("hdr")?});

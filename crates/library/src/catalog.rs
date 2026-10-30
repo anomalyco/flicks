@@ -67,6 +67,20 @@ pub fn migrate(conn: &Connection) -> Result<(), Error> {
         );
         ",
     )?;
+    let has_still: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('library_files') WHERE name='still')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_still {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(
+            "ALTER TABLE library_files ADD COLUMN still TEXT;
+            UPDATE library_files SET still=backdrop WHERE backdrop LIKE 'still-%' OR tmdb_media='movie';
+            UPDATE library_files SET matched=0 WHERE tmdb_media='tv';",
+        )?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -127,12 +141,14 @@ pub struct Item {
     /// TMDB image paths, for `metadata::cache_artwork`; a backdrop may be a local `still-*.jpg`.
     pub poster: Option<String>,
     pub backdrop: Option<String>,
+    /// This episode/movie's image: TMDB episode still (or movie backdrop), else a generated frame.
+    pub still: Option<String>,
     pub added_at: i64,
 }
 
 const ITEM: &str = "id, path, root, size, oshash, container, duration_ms, video_codec, width, height, hdr, \
     COALESCE(tmdb_title, title), COALESCE(tmdb_year, year), season, episode, episode_end, edition, \
-    tmdb_id, tmdb_media, poster, backdrop, added_at";
+    tmdb_id, tmdb_media, poster, backdrop, added_at, still";
 
 fn item_row(r: &Row) -> rusqlite::Result<Item> {
     let n = |i: usize| r.get::<_, Option<i64>>(i);
@@ -159,6 +175,7 @@ fn item_row(r: &Row) -> rusqlite::Result<Item> {
         poster: r.get(19)?,
         backdrop: r.get(20)?,
         added_at: r.get(21)?,
+        still: r.get(22)?,
     })
 }
 
@@ -274,7 +291,9 @@ pub(crate) fn upsert(conn: &Connection, f: &NewFile, now: i64) -> Result<(), Err
              video_codec = excluded.video_codec, width = excluded.width, height = excluded.height,
              hdr = excluded.hdr, keyframes = excluded.keyframes,
              backdrop = CASE WHEN oshash != excluded.oshash AND backdrop LIKE 'still-%'
-                 THEN NULL ELSE backdrop END
+                 THEN NULL ELSE backdrop END,
+             still = CASE WHEN oshash != excluded.oshash AND still LIKE 'still-%'
+                 THEN NULL ELSE still END
          RETURNING id",
         params![
             f.path,
@@ -381,10 +400,10 @@ pub(crate) fn pending(conn: &Connection, root: &Path) -> Result<Vec<(i64, Parsed
 }
 
 /// Records the outcome of a lookup: `None` means TMDB has nothing by that name.
-pub(crate) fn set_match(conn: &Connection, id: i64, m: Option<&Match>) -> Result<(), Error> {
+pub(crate) fn set_match(conn: &Connection, id: i64, m: Option<&Match>, still: Option<&str>) -> Result<(), Error> {
     conn.execute(
         "UPDATE library_files SET matched = 1, tmdb_id = ?2, tmdb_media = ?3, tmdb_title = ?4, tmdb_year = ?5,
-             poster = ?6, backdrop = ?7 WHERE id = ?1",
+             poster = ?6, backdrop = ?7, still = COALESCE(?8, still) WHERE id = ?1",
         params![
             id,
             m.map(|m| int(m.id)),
@@ -393,6 +412,7 @@ pub(crate) fn set_match(conn: &Connection, id: i64, m: Option<&Match>) -> Result
             m.and_then(|m| m.year),
             m.and_then(|m| m.poster.as_deref()),
             m.and_then(|m| m.backdrop.as_deref()),
+            still,
         ],
     )?;
     Ok(())

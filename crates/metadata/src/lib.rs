@@ -29,6 +29,8 @@ pub use tmdb::{Match, Media, Tmdb};
 /// Everything that can go wrong here. Callers log it and carry on with the parsed name.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("TMDB entry not found")]
+    NotFound,
     #[error("http: {0}")]
     Http(String),
     #[error("tmdb response: {0}")]

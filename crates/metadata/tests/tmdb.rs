@@ -96,6 +96,24 @@ fn no_key_means_no_client() {
 }
 
 #[test]
+fn episode_stills_missing_images_and_failures() {
+    for (body, expected) in [
+        (r#"{"still_path":"/episode.jpg"}"#, Some("/episode.jpg")),
+        (r#"{"still_path":null}"#, None),
+        (r#"{"still_path":""}"#, None),
+    ] {
+        let tmdb = Tmdb::new("k", move |url| {
+            assert_eq!(url, "https://api.themoviedb.org/3/tv/7/season/1/episode/2?api_key=k");
+            Ok(body.as_bytes().to_vec())
+        });
+        assert_eq!(tmdb.episode_still(7, 1, 2).unwrap().as_deref(), expected);
+    }
+    assert_eq!(Tmdb::new("k", |_| Err(Error::NotFound)).episode_still(7, 1, 2).unwrap(), None);
+    assert!(Tmdb::new("k", |_| Err(Error::Http("down".into()))).episode_still(7, 1, 2).is_err());
+    assert!(Tmdb::new("k", |_| Ok(b"not json".to_vec())).episode_still(7, 1, 2).is_err());
+}
+
+#[test]
 fn unusable_responses_are_errors_not_panics() {
     let p = parse("Movies/Inception (2010)/Inception (2010).mkv");
     for body in ["", "not json", "[]", "{}", r#"{"results":"x"}"#, r#"{"results":[{"id":"x","title":1}]}"#] {

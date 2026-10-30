@@ -200,11 +200,25 @@ impl Scanner {
                 }
                 found.insert(key.clone(), m);
             }
-            done.push((id, found.get(&key).cloned().flatten()));
+            let m = found.get(&key).cloned().flatten();
+            let still = match (&m, parsed.season, parsed.episode) {
+                (Some(m), Some(season), Some(episode)) => {
+                    let Ok(still) = tmdb.episode_still(m.id, season, episode) else { break };
+                    still
+                }
+                (Some(m), _, _) => m.backdrop.clone(),
+                _ => None,
+            };
+            if let Some(path) = &still
+                && cache_artwork(tmdb, &self.artwork_dir, ArtworkKind::Backdrop, path).is_err()
+            {
+                break;
+            }
+            done.push((id, m, still));
         }
         let tx = conn.transaction()?;
-        for (id, m) in &done {
-            catalog::set_match(&tx, *id, m.as_ref())?;
+        for (id, m, still) in &done {
+            catalog::set_match(&tx, *id, m.as_ref(), still.as_deref())?;
         }
         tx.commit()?;
         Ok(())

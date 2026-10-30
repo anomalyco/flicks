@@ -18,7 +18,8 @@ const DEADLINE: Duration = Duration::from_secs(5);
 
 /// Local names deliberately cannot alias TMDB's size-prefixed cache entries.
 pub(crate) fn valid_name(name: &str) -> bool {
-    name.strip_prefix("still-")
+    name.strip_prefix("still-v2-")
+        .or_else(|| name.strip_prefix("still-"))
         .and_then(|s| s.strip_suffix(".jpg"))
         .is_some_and(|id| id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()))
 }
@@ -35,58 +36,92 @@ pub(crate) fn start(dir: &Path) -> io::Result<SyncSender<()>> {
             fs::create_dir_all(&artwork)?;
             let mut pending = false;
             loop {
-                if !pending && rx.recv().is_err() { break; }
+                if !pending && rx.recv().is_err() {
+                    break;
+                }
                 pending = false;
                 let ids = {
-                    let mut stmt = conn.prepare("SELECT f.id FROM library_files f JOIN folders ON folders.path=f.root
-                        WHERE f.video_codec IS NOT NULL AND (f.backdrop IS NULL OR f.backdrop LIKE 'still-%') ORDER BY f.id")?;
+                    let mut stmt = conn.prepare(
+                        "SELECT f.id FROM library_files f JOIN folders ON folders.path=f.root
+                        WHERE f.video_codec IS NOT NULL AND (f.still IS NULL OR f.still LIKE 'still-%') ORDER BY f.id",
+                    )?;
                     stmt.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?
                 };
                 for id in ids {
                     match rx.try_recv() {
                         Err(TryRecvError::Disconnected) => return Ok(()),
                         Ok(()) => pending = true,
-                        Err(TryRecvError::Empty) => {},
+                        Err(TryRecvError::Empty) => {}
                     }
                     let Some(item) = flicks_library::item(&conn, id).map_err(io::Error::other)? else { continue };
-                    let name = format!("still-{}.jpg", item.oshash);
-                    if !valid_name(&name) { continue; }
+                    if item.still.as_deref().is_some_and(|name| !valid_name(name)) {
+                        continue;
+                    }
+                    let name = format!("still-v2-{}.jpg", item.oshash);
+                    if !valid_name(&name) {
+                        continue;
+                    }
                     let output = artwork.join(&name);
                     let skipped = output.with_extension("skip");
                     if !output.is_file() && !skipped.is_file() {
                         let keys = flicks_library::keyframes(&conn, id).map_err(io::Error::other)?;
                         let duration = item.duration_ms.unwrap_or(0);
-                        let times: Vec<_> = [20, 25, 15, 30].into_iter().filter_map(|percent| {
-                            let target = duration.saturating_mul(percent) / 100;
-                            keys.iter().rev().find(|k| u64::from(k.time_ms) <= target).map(|k| k.time_ms)
-                        }).collect();
-                        let job = Job { root: item.root, path: item.path, size: item.size, times, output: output.clone() };
+                        let times: Vec<_> = [20, 25, 15, 30]
+                            .into_iter()
+                            .filter_map(|percent| {
+                                let target = duration.saturating_mul(percent) / 100;
+                                keys.iter().rev().find(|k| u64::from(k.time_ms) <= target).map(|k| k.time_ms)
+                            })
+                            .collect();
+                        let job =
+                            Job { root: item.root, path: item.path, size: item.size, times, output: output.clone() };
                         let begin = Instant::now();
                         let result = generate(&exe, &job);
-                        eprintln!("still {}: {} ms ({})", item.id, begin.elapsed().as_millis(), if result.is_ok() { "saved" } else { "skipped" });
+                        eprintln!(
+                            "still {}: {} ms ({})",
+                            item.id,
+                            begin.elapsed().as_millis(),
+                            if result.is_ok() { "saved" } else { "skipped" }
+                        );
                         if result.is_err() {
                             // Negative cache: don't repeatedly spend the budget on an unchanged bad file.
                             fs::write(&skipped, [])?;
                         }
                     }
                     if output.is_file() {
-                        conn.execute("UPDATE library_files SET backdrop=?1 WHERE id=?2 AND oshash=?3
-                            AND (backdrop IS NULL OR backdrop LIKE 'still-%')
-                            AND EXISTS(SELECT 1 FROM folders WHERE folders.path=library_files.root)", params![name, id, item.oshash])?;
+                        conn.execute(
+                            "UPDATE library_files SET still=?1,
+                            backdrop=CASE WHEN backdrop IS NULL OR backdrop LIKE 'still-%' THEN ?1 ELSE backdrop END
+                            WHERE id=?2 AND oshash=?3 AND (still IS NULL OR still LIKE 'still-%')
+                            AND EXISTS(SELECT 1 FROM folders WHERE folders.path=library_files.root)",
+                            params![name, id, item.oshash],
+                        )?;
                     }
                 }
                 clean(&conn, &artwork)?;
             }
             Ok(())
         };
-        if let Err(error) = run() { eprintln!("stills worker: {error}"); }
+        if let Err(error) = run() {
+            eprintln!("stills worker: {error}");
+        }
     })?;
     Ok(tx)
 }
 
 fn clean(conn: &Connection, dir: &Path) -> Result<(), crate::Error> {
-    let mut stmt = conn.prepare("SELECT oshash FROM library_files f JOIN folders ON folders.path=f.root")?;
-    let live = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<HashSet<_>, _>>()?;
+    let mut stmt =
+        conn.prepare("SELECT oshash, still, backdrop FROM library_files f JOIN folders ON folders.path=f.root")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))
+    })?;
+    let (mut live, mut images) = (HashSet::new(), HashSet::new());
+    for row in rows {
+        let (hash, still, backdrop) = row?;
+        live.insert(hash);
+        images.extend(still);
+        images.extend(backdrop);
+    }
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -94,8 +129,10 @@ fn clean(conn: &Connection, dir: &Path) -> Result<(), crate::Error> {
         if !matches!(extension, "jpg" | "skip" | "part") {
             continue;
         }
-        let Some(hash) = stem.strip_prefix("still-") else { continue };
-        if valid_name(&format!("{stem}.jpg")) && !live.contains(hash) {
+        let Some(hash) = stem.strip_prefix("still-v2-").or_else(|| stem.strip_prefix("still-")) else { continue };
+        if valid_name(&format!("{stem}.jpg"))
+            && (!live.contains(hash) || (extension == "jpg" && !images.contains(&name)))
+        {
             fs::remove_file(entry.path())?;
         }
     }

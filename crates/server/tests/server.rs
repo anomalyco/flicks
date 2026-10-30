@@ -105,6 +105,48 @@ fn stills_software_codecs_and_hostile_files() {
         }
     }
     let black = dir.path().join("black.mp4");
+    // Top/bottom, sides, and both must reproduce the unpadded content (within compression
+    // error), not resize the black bars into the thumbnail.
+    let mut reference: Option<Vec<u8>> = None;
+    for pad in ["null", "pad=160:128:0:16", "pad=192:96:16:0", "pad=192:128:16:16"] {
+        let path = dir.path().join("bars.mp4");
+        assert!(
+            Command::new(&ffmpeg)
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=160x96:rate=1",
+                    "-vf",
+                    pad,
+                    "-frames:v",
+                    "1",
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "18",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-y"
+                ])
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(still_worker(&path, &jpg, &[0]), "{pad}");
+        let image = image::open(&jpg).unwrap().to_rgb8();
+        assert_eq!(image.dimensions(), (160, 90), "{pad}");
+        let bytes = image.into_raw();
+        if let Some(reference) = &reference {
+            let error: u64 = bytes.iter().zip(reference).map(|(&a, &b)| u64::from(a.abs_diff(b))).sum();
+            assert!(error < bytes.len() as u64 * 5, "{pad}: mean RGB error {}", error as f64 / bytes.len() as f64);
+        } else {
+            reference = Some(bytes);
+        }
+    }
     assert!(
         Command::new(&ffmpeg)
             .args([
@@ -210,9 +252,12 @@ async fn stills_real_media() {
             })
             .await
             .unwrap();
-        if item.backdrop.is_some() {
+        if item.still.is_some() {
             assert!(keyed);
-            println!("episode {:?}: TMDB backdrop wins (no frame decode)", item.episode);
+            assert!(item.still.as_deref().unwrap().starts_with('/'));
+            assert!(item.backdrop.as_deref().unwrap().starts_with('/'));
+            assert_ne!(item.still, item.backdrop);
+            println!("episode {:?}: TMDB episode still wins; series backdrop separate (no frame decode)", item.episode);
             continue;
         }
         let duration = item.duration_ms.unwrap();
@@ -222,7 +267,7 @@ async fn stills_real_media() {
                 keys.iter().rev().find(|k| u64::from(k.time_ms) <= duration * percent / 100).map(|k| k.time_ms)
             })
             .collect();
-        let name = format!("still-{}.jpg", item.oshash);
+        let name = format!("still-v2-{}.jpg", item.oshash);
         let output = dir.path().join("artwork").join(&name);
         let mut elapsed = Vec::new();
         for _ in 0..5 {
@@ -242,12 +287,12 @@ async fn stills_real_media() {
         state
             .db
             .call(move |conn| {
-                conn.execute("UPDATE library_files SET backdrop=?1 WHERE id=?2", rusqlite::params![name, id])?;
+                conn.execute("UPDATE library_files SET still=?1 WHERE id=?2", rusqlite::params![name, id])?;
                 Ok(())
             })
             .await
             .unwrap();
-        let path = format!("/artwork/still-{}.jpg", item.oshash);
+        let path = format!("/artwork/still-v2-{}.jpg", item.oshash);
         let auth = sign(&state.key, &state.public, "GET", &path, b"", b"", flicks_server::unix_now());
         let reply = server::handle(&state, signed_request(Method::GET, &path, &auth, None, b"")).await;
         assert_eq!(reply.status(), StatusCode::OK);
@@ -1418,7 +1463,10 @@ async fn catalog_play_ranges_and_private_progress() {
         .state
         .db
         .call(move |conn| {
-            conn.execute("UPDATE library_files SET poster='/p1.jpg', backdrop='/b1.jpg' WHERE id=?1", [id])?;
+            conn.execute(
+                "UPDATE library_files SET poster='/p1.jpg', backdrop='/b1.jpg', still='/e1.jpg' WHERE id=?1",
+                [id],
+            )?;
             Ok(())
         })
         .await
@@ -1426,6 +1474,7 @@ async fn catalog_play_ranges_and_private_progress() {
     let detail: Value = viewer.call(Method::GET, &format!("/items/{id}"), None::<&()>).await.unwrap();
     assert_eq!(detail["item"]["poster"], "w342-p1.jpg");
     assert_eq!(detail["item"]["backdrop"], "w780-b1.jpg");
+    assert_eq!(detail["item"]["still"], "w780-e1.jpg");
     let list: Value = viewer.call(Method::GET, "/items", None::<&()>).await.unwrap();
     assert_eq!(list[0]["item"], detail["item"]);
     let art_path = "/artwork/w342-p1.jpg";
@@ -1434,21 +1483,22 @@ async fn catalog_play_ranges_and_private_progress() {
     assert_eq!(reply.headers()["content-type"], "image/jpeg");
     assert_eq!(reply.into_body().collect().await.unwrap().to_bytes().as_ref(), jpeg);
     assert_eq!(server::handle(&server.state, get(art_path)).await.status(), StatusCode::UNAUTHORIZED);
-    std::fs::write(art.join("still-0123456789abcdef.jpg"), jpeg).unwrap();
+    std::fs::write(art.join("still-v2-0123456789abcdef.jpg"), jpeg).unwrap();
     server
         .state
         .db
         .call(move |conn| {
-            conn.execute("UPDATE library_files SET backdrop='still-0123456789abcdef.jpg' WHERE id=?1", [id])?;
+            conn.execute("UPDATE library_files SET still='still-v2-0123456789abcdef.jpg' WHERE id=?1", [id])?;
             Ok(())
         })
         .await
         .unwrap();
     let detail: Value = viewer.call(Method::GET, &format!("/items/{id}"), None::<&()>).await.unwrap();
-    assert_eq!(detail["item"]["backdrop"], "still-0123456789abcdef.jpg");
+    assert_eq!(detail["item"]["backdrop"], "w780-b1.jpg");
+    assert_eq!(detail["item"]["still"], "still-v2-0123456789abcdef.jpg");
     let list: Value = viewer.call(Method::GET, "/items", None::<&()>).await.unwrap();
     assert_eq!(list[0]["item"], detail["item"]);
-    let reply = api_request(&server.state, &viewer, "/artwork/still-0123456789abcdef.jpg", None).await;
+    let reply = api_request(&server.state, &viewer, "/artwork/still-v2-0123456789abcdef.jpg", None).await;
     assert_eq!(reply.status(), StatusCode::OK);
     assert_eq!(reply.headers()["content-type"], "image/jpeg");
     assert_eq!(reply.into_body().collect().await.unwrap().to_bytes().as_ref(), jpeg);

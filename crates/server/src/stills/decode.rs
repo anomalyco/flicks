@@ -209,18 +209,37 @@ fn rgb(
     sample: impl Fn(usize, usize) -> Option<u16>,
 ) -> io::Result<RgbImage> {
     let [width, height] = size;
-    if width == 0 || height == 0 || width > 4096 || height > 2160 || !(8..=12).contains(&bits) {
+    if width < 16 || height < 9 || width > 4096 || height > 2160 || !(8..=12).contains(&bits) {
         return Err(invalid("picture dimensions"));
     }
-    let crop_w = width.min(height * 16 / 9);
-    let crop_h = height.min(width * 9 / 16);
+    let factor = (1u32 << (bits - 8)) as f32;
+    // Sample 64 points per border line. Three black lines establish a bar; stop at content
+    // and never remove more than a quarter from an edge (dark scenes are not giant bars).
+    let black = |x, y| {
+        let index = (y as usize).checked_mul(strides[0])?.checked_add(x as usize)?;
+        let value = sample(0, index)? as f32 / factor;
+        Some(if full { value } else { (value - 16.0) * (255.0 / 219.0) } <= 12.0)
+    };
+    let trim = |limit: u32, line: &dyn Fn(u32) -> bool| {
+        let n = (0..limit).take_while(|&i| line(i)).count() as u32;
+        if n >= 3 { n } else { 0 }
+    };
+    let row = |y| (0..64).all(|i| black(width / 8 + i * (width * 3 / 4 - 1) / 63, y) == Some(true));
+    let top = trim(height / 4, &row);
+    let bottom = trim(height / 4, &|i| row(height - 1 - i));
+    let active_h = height - top - bottom;
+    let column = |x| (0..64).all(|i| black(x, top + active_h / 8 + i * (active_h * 3 / 4 - 1) / 63) == Some(true));
+    let left = trim(width / 4, &column);
+    let right = trim(width / 4, &|i| column(width - 1 - i));
+    let active_w = width - left - right;
+    let crop_w = active_w.min(active_h * 16 / 9);
+    let crop_h = active_h.min(active_w * 9 / 16);
     let out_w = crop_w.min(1280) / 16 * 16;
     let out_h = out_w / 16 * 9;
     if out_h == 0 {
         return Err(invalid("tiny picture"));
     }
     let mut out = RgbImage::new(out_w, out_h);
-    let factor = (1u32 << (bits - 8)) as f32;
     let (kr, kb) = match matrix {
         5 | 6 => (0.299, 0.114),
         9 | 10 => (0.2627, 0.0593),
@@ -228,8 +247,8 @@ fn rgb(
     };
     let kg = 1.0 - kr - kb;
     for (x, y, pixel) in out.enumerate_pixels_mut() {
-        let sx = ((width - crop_w) / 2 + x * crop_w / out_w) as usize;
-        let sy = ((height - crop_h) / 2 + y * crop_h / out_h) as usize;
+        let sx = (left + (active_w - crop_w) / 2 + x * crop_w / out_w) as usize;
+        let sy = (top + (active_h - crop_h) / 2 + y * crop_h / out_h) as usize;
         let yi = sy.checked_mul(strides[0]).and_then(|i| i.checked_add(sx)).ok_or_else(|| invalid("stride"))?;
         let ci =
             (sy / 2).checked_mul(strides[1]).and_then(|i| i.checked_add(sx / 2)).ok_or_else(|| invalid("stride"))?;
