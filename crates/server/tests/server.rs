@@ -670,3 +670,474 @@ fn the_server_key_file_is_private_and_stable() {
     std::fs::write(&path, b"short").unwrap();
     assert!(keys::load(&path).is_err());
 }
+
+fn catalog_mp4() -> Vec<u8> {
+    use flicks_container::isobmff::{
+        AvcConfig, Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions,
+    };
+    let avc = AvcConfig::new(vec![vec![0x67, 0x64, 0, 0x28, 1, 2]], vec![vec![0x68, 3]], 4);
+    let mut w = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+    let v = w.add_track(TrackConfig::new(SampleEntry::avc(avc, 1280, 720), 1000)).unwrap();
+    let a = w.add_track(TrackConfig::new(SampleEntry::aac(vec![0x11, 0x90], 2, 48000), 48000)).unwrap();
+    for second in 0..5 {
+        w.write_sample(
+            v,
+            WriteSample { data: &[second; 100_000], duration: 1000, composition_offset: 0, is_sync: true },
+        )
+        .unwrap();
+        w.write_sample(a, WriteSample { data: &[2; 10], duration: 48000, composition_offset: 0, is_sync: true })
+            .unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+async fn catalog_ready(client: &Client, count: usize) -> Vec<serde_json::Value> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let items: Vec<serde_json::Value> = client.call(Method::GET, "/items", None::<&()>).await.unwrap();
+            if items.len() == count {
+                return items;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn api_request(server: &Server, client: &Client, path: &str, range: Option<&str>) -> server::Reply {
+    let auth = sign(
+        &client.key,
+        &client.server_key,
+        "GET",
+        path,
+        range.unwrap_or("").as_bytes(),
+        b"",
+        flicks_server::unix_now(),
+    );
+    server::handle(&server.state, signed_request(Method::GET, path, &auth, range, b"")).await
+}
+
+#[tokio::test]
+async fn catalog_play_ranges_and_private_progress() {
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    let server = start("catalog").await;
+    let viewer = pair_device(&server, server.addr, pinned(&server.state), "viewer", false).await;
+    let other = pair_device(&server, server.addr, pinned(&server.state), "other", false).await;
+    let media = tempfile::tempdir().unwrap();
+    let bytes = catalog_mp4();
+    std::fs::write(media.path().join("Example (2020).mp4"), &bytes).unwrap();
+    let folder: Folder = server
+        .root
+        .call(Method::POST, "/admin/folders", Some(&AddFolder { path: media.path().to_string_lossy().into_owned() }))
+        .await
+        .unwrap();
+    let items = catalog_ready(&viewer, 1).await;
+    let id = items[0]["item"]["id"].as_i64().unwrap();
+    assert_eq!(items[0]["item"]["title"], "Example");
+    assert_eq!(items[0]["progress"], Value::Null);
+    assert!(items[0]["item"].get("path").is_none());
+    let libs: Value = viewer.call(Method::GET, "/libraries", None::<&()>).await.unwrap();
+    assert_eq!(libs[0]["id"], folder.id);
+    let found: Value = viewer.call(Method::GET, "/search?q=Ex%61mple&limit=1", None::<&()>).await.unwrap();
+    assert_eq!(found.as_array().unwrap().len(), 1);
+    let found: Value =
+        viewer.call(Method::GET, &format!("/items?library={}&offset=1", folder.id), None::<&()>).await.unwrap();
+    assert_eq!(found, json!([]));
+    for path in ["/search?q=%GG", "/items?limit=no", "/items?library=-1", "/progress?user=1"] {
+        assert_eq!(api_request(&server, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
+    }
+    let detail: Value = viewer.call(Method::GET, &format!("/items/{id}"), None::<&()>).await.unwrap();
+    assert_eq!(detail["streams"][0]["codec"], "aac");
+    assert_eq!(detail["item"]["video_codec"], "h264");
+    let p = format!("/progress/{id}");
+    let saved = json!({"position": 2500, "played": false, "updated_at": 1000});
+    let result: Value = viewer.call(Method::PUT, &p, Some(&saved)).await.unwrap();
+    assert_eq!(result, saved);
+    for updated_at in [999, 1000] {
+        let stale = json!({"position": 0, "played": true, "updated_at": updated_at});
+        let result: Value = viewer.call(Method::PUT, &p, Some(&stale)).await.unwrap();
+        assert_eq!(result, saved, "equal timestamps preserve stored progress");
+    }
+    let result: Value = viewer.call(Method::GET, &p, None::<&()>).await.unwrap();
+    assert_eq!(result, saved);
+    for bad in [
+        json!({"position": -1,"played":false,"updated_at":2000}),
+        json!({"position": 0,"played":false,"updated_at":-1}),
+        json!({"position": 0,"played":false,"updated_at":2000,"user":1}),
+    ] {
+        assert!(matches!(
+            viewer.call::<Value>(Method::PUT, &p, Some(&bad)).await,
+            Err(flicks_server::Error::Status(400, _))
+        ));
+    }
+    let result: Value = other.call(Method::GET, &p, None::<&()>).await.unwrap();
+    assert_eq!(result, Value::Null);
+    let result: Value = other.call(Method::GET, "/progress", None::<&()>).await.unwrap();
+    assert_eq!(result, json!([]));
+    let result: Value = viewer.call(Method::GET, "/progress", None::<&()>).await.unwrap();
+    assert_eq!(result, json!([{"item":id,"progress":saved}]));
+    let home: Value = viewer.call(Method::GET, "/home", None::<&()>).await.unwrap();
+    assert_eq!(home["continue_watching"][0]["progress"], saved);
+    assert_eq!(home["recently_added"][0]["item"]["id"], id);
+    let home: Value = other.call(Method::GET, "/home", None::<&()>).await.unwrap();
+    assert_eq!(home["continue_watching"], json!([]));
+
+    // One playback metadata request includes facts, tracks, index, progress and real header ranges.
+    let play: Value = viewer.call(Method::GET, &format!("/play/{id}"), None::<&()>).await.unwrap();
+    assert_eq!(play["item"]["duration_ms"], 5000);
+    assert_eq!(play["streams"][0]["kind"], "audio");
+    assert_eq!(play["keyframes"].as_array().unwrap().len(), 5);
+    assert_eq!(play["resume_ms"], 2500);
+    assert_eq!(play["ranges"]["media"]["start"], play["keyframes"][2]["offset"]);
+    assert_eq!(play["progress"], saved);
+    // This writer puts moov at EOF: returned metadata ranges must cover it without fetching mdat.
+    let moov = bytes.windows(4).rposition(|b| b == b"moov").unwrap() as u64 - 4;
+    let headers = play["ranges"]["header"].as_array().unwrap();
+    assert!(
+        headers
+            .iter()
+            .any(|r| r["start"].as_u64().unwrap() <= moov && r["end"].as_u64().unwrap() >= bytes.len() as u64 - 1)
+    );
+    let header_bytes: u64 = headers.iter().map(|r| r["end"].as_u64().unwrap() - r["start"].as_u64().unwrap() + 1).sum();
+    assert!(header_bytes < 10_000);
+
+    let path = format!("/files/{id}");
+    let len = bytes.len();
+    for (range, start, end) in [
+        (None, 0, len - 1),
+        (Some("bytes=0-0"), 0, 0),
+        (Some("bytes=10-19"), 10, 19),
+        (Some("bytes=10-"), 10, len - 1),
+        (Some("bytes=-10"), len - 10, len - 1),
+        (Some("bytes=-9999999"), 0, len - 1),
+        (Some("bytes=10-9999999"), 10, len - 1),
+    ] {
+        let reply = api_request(&server, &viewer, &path, range).await;
+        assert_eq!(reply.status(), if range.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK });
+        assert_eq!(reply.headers()["accept-ranges"], "bytes");
+        assert_eq!(reply.headers()["content-length"], (end - start + 1).to_string());
+        if range.is_some() {
+            assert_eq!(reply.headers()["content-range"], format!("bytes {start}-{end}/{len}"));
+        }
+        let mut body = reply.into_body();
+        let mut received = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.unwrap().into_data().unwrap();
+            assert!(frame.len() <= 64 * 1024);
+            received.extend_from_slice(&frame);
+        }
+        assert_eq!(received, bytes[start..=end]);
+    }
+    for range in [
+        "bytes=9999999-",
+        "bytes=20-10",
+        "bytes=-0",
+        "bytes=0-1,3-4",
+        "bytes=",
+        "items=0-1",
+        "bytes=18446744073709551616-",
+        "bytes=+1-2",
+    ] {
+        let reply = api_request(&server, &viewer, &path, Some(range)).await;
+        assert_eq!(reply.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{range}");
+        assert_eq!(reply.headers()["content-range"], format!("bytes */{len}"));
+    }
+    assert_eq!(server::handle(&server.state, get(&path)).await.status(), StatusCode::UNAUTHORIZED);
+    let authorization =
+        sign(&viewer.key, &viewer.server_key, "GET", &path, b"bytes=0-1", b"", flicks_server::unix_now());
+    assert_eq!(
+        server::handle(&server.state, signed_request(Method::GET, &path, &authorization, Some("bytes=1-2"), b""))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Marking played removes only this user's Continue Watching entry.
+    let _: Value =
+        viewer.call(Method::PUT, &p, Some(&json!({"position":5000,"played":true,"updated_at":1001}))).await.unwrap();
+    let home: Value = viewer.call(Method::GET, "/home", None::<&()>).await.unwrap();
+    assert_eq!(home["continue_watching"], json!([]));
+
+    // A watcher rescans after a new file appears, without another folder edit.
+    std::fs::write(media.path().join("Second.mp4"), &bytes).unwrap();
+    catalog_ready(&viewer, 2).await;
+    std::fs::remove_file(media.path().join("Second.mp4")).unwrap();
+    catalog_ready(&viewer, 1).await;
+    server.root.call::<()>(Method::DELETE, &format!("/admin/folders/{}", folder.id), None::<&()>).await.unwrap();
+    assert_eq!(api_request(&server, &viewer, &path, None).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(api_request(&server, &viewer, &format!("/play/{id}"), None).await.status(), StatusCode::NOT_FOUND);
+    catalog_ready(&viewer, 0).await;
+    let version = server
+        .state
+        .db
+        .call(|conn| Ok(conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?))
+        .await
+        .unwrap();
+    assert_eq!(version, 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn catalog_paths_are_checked_at_each_open() {
+    use std::os::unix::fs::symlink;
+    let server = start("catalog-paths").await;
+    let media = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let bytes = catalog_mp4();
+    let root = std::fs::canonicalize(media.path()).unwrap();
+    let path = root.join("Movie.mp4");
+    std::fs::write(&path, &bytes).unwrap();
+    // Populate a real scan, but don't subscribe this test's folder to a watcher: the stale
+    // catalog entry must remain present while we replace its path after scanning.
+    let r = root.clone();
+    let item = server
+        .state
+        .db
+        .call(move |conn| {
+            flicks_server::db::add_folder(conn, r.to_str().unwrap())?;
+            flicks_library::Scanner::new(None, r.join("artwork")).scan(conn, &r).unwrap();
+            Ok(flicks_library::recent(conn, 1).unwrap().remove(0))
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        api_request(&server, &server.root, &format!("/files/{}", item.id), Some("bytes=0-0")).await.status(),
+        StatusCode::PARTIAL_CONTENT
+    );
+    // A truncated-to-empty file is a valid empty 200 without Range; no byte range can satisfy it.
+    std::fs::write(&path, []).unwrap();
+    let empty = api_request(&server, &server.root, &format!("/files/{}", item.id), None).await;
+    assert_eq!(empty.status(), StatusCode::OK);
+    assert_eq!(empty.headers()["content-length"], "0");
+    let empty = api_request(&server, &server.root, &format!("/files/{}", item.id), Some("bytes=0-")).await;
+    assert_eq!(empty.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(empty.headers()["content-range"], "bytes */0");
+    std::fs::write(outside.path().join("secret"), b"private").unwrap();
+    std::fs::remove_file(&path).unwrap();
+    symlink(outside.path().join("secret"), &path).unwrap();
+    for prefix in ["files", "play"] {
+        assert_eq!(
+            api_request(&server, &server.root, &format!("/{prefix}/{}", item.id), None).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    // Even an in-root symlink is refused.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(root.join("inside"), &bytes).unwrap();
+    symlink(root.join("inside"), &path).unwrap();
+    assert_eq!(
+        api_request(&server, &server.root, &format!("/files/{}", item.id), None).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    // A directory component repointed after scanning is refused too.
+    symlink(outside.path(), root.join("linked")).unwrap();
+    let linked = root.join("linked/secret");
+    server
+        .state
+        .db
+        .call(move |conn| {
+            conn.execute("UPDATE library_files SET path=?1 WHERE id=?2", rusqlite::params![linked.to_str(), item.id])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        api_request(&server, &server.root, &format!("/files/{}", item.id), None).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    // Lexical traversal in a corrupt/stale catalog cannot escape either.
+    let escaped = root.join("..").join(outside.path().file_name().unwrap()).join("secret");
+    server
+        .state
+        .db
+        .call(move |conn| {
+            conn.execute("UPDATE library_files SET path=?1 WHERE id=?2", rusqlite::params![escaped.to_str(), item.id])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        api_request(&server, &server.root, &format!("/files/{}", item.id), None).await.status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn startup_scans_existing_folders_and_matroska_play_headers() {
+    use flicks_container::matroska::{MkvWriter, MuxOptions, TrackKind, TrackSpec};
+    use serde_json::Value;
+    let dir = tempfile::tempdir().unwrap();
+    let media = tempfile::tempdir().unwrap();
+    let mut track = TrackSpec::new(TrackKind::Video, "V_MPEG4/ISO/AVC");
+    track.video_size = Some((1280, 720));
+    let mut writer = MkvWriter::new(std::io::Cursor::new(Vec::new()), vec![track], MuxOptions::default()).unwrap();
+    for i in 0..5 {
+        writer.write_frame(0, i * 1_000_000_000, true, &[1; 100], Some(1_000_000_000)).unwrap();
+    }
+    let bytes = writer.finish().unwrap().into_inner();
+    std::fs::write(media.path().join("Movie.mkv"), &bytes).unwrap();
+    let before = State::open(dir.path(), 0).unwrap();
+    let root = std::fs::canonicalize(media.path()).unwrap();
+    before
+        .db
+        .call(move |conn| {
+            flicks_server::db::add_folder(conn, root.to_str().unwrap())?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    drop(before);
+    let (addr, state) = server::spawn(dir.path(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let client = Client::new(state.key.clone(), state.key.verifying_key(), addr).unwrap();
+    // Schema ready before spawn returns; opening startup with a folder triggers a scan.
+    let items = catalog_ready(&client, 1).await;
+    let id = items[0]["item"]["id"].as_i64().unwrap();
+    let play: Value = client.call(Method::GET, &format!("/play/{id}"), None::<&()>).await.unwrap();
+    assert_eq!(play["item"]["container"], "mkv");
+    assert_eq!(play["keyframes"].as_array().unwrap().len(), 5);
+    let header = play["ranges"]["header"].as_array().unwrap();
+    assert_eq!(header[0]["start"], 0);
+    assert!(header.iter().all(|r| r["end"].as_u64().unwrap() < bytes.len() as u64));
+}
+
+/// Opt-in measurement against the actual release `flicks serve`, with an isolated HOME.
+/// Set FLICKS_API_MEDIA to an existing read-only media folder to measure real files instead.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "binds port 7686 and measures localhost HTTPS; run alone in release mode"]
+async fn api_performance() {
+    use http_body_util::BodyExt;
+    use hyper_util::rt::TokioIo;
+    use serde_json::Value;
+    use std::time::{Duration, Instant};
+
+    struct Process(std::process::Child);
+    impl Drop for Process {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    assert!(std::net::TcpStream::connect("127.0.0.1:7686").is_err(), "port 7686 already in use");
+    let home = tempfile::tempdir().unwrap();
+    let synthetic = tempfile::tempdir().unwrap();
+    let media = match std::env::var_os("FLICKS_API_MEDIA") {
+        Some(path) => PathBuf::from(path),
+        None => {
+            std::fs::write(synthetic.path().join("Synthetic.mp4"), catalog_mp4()).unwrap();
+            synthetic.path().to_path_buf()
+        }
+    };
+    let executable = env!("CARGO_BIN_EXE_flicks");
+    let _process = Process(
+        std::process::Command::new(executable)
+            .arg("serve")
+            .env("HOME", home.path())
+            .env_remove("FLICKS_TMDB_KEY")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let data = home.path().join("Library/Application Support/Flicks");
+    let root = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(root) = Client::local(&data)
+                && root.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.is_ok()
+            {
+                break root;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let scan_start = Instant::now();
+    let added = std::process::Command::new(executable)
+        .args(["folder", "add"])
+        .arg(&media)
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(added.status.success(), "{}", String::from_utf8_lossy(&added.stderr));
+    let items = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let items: Vec<Value> = root.call(Method::GET, "/items", None::<&()>).await.unwrap();
+            // The supplied real fixture folder has two files; synthetic has one.
+            let expected = if std::env::var_os("FLICKS_API_MEDIA").is_some() { 2 } else { 1 };
+            if items.len() == expected {
+                break items;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    eprintln!("API_PERF scan_to_visible_ms={:.3} files={}", scan_start.elapsed().as_secs_f64() * 1000.0, items.len());
+    let link = open_window(&root, "perf-viewer", false).await;
+    let key = keys::generate().unwrap();
+    let request = pair::Request::new(&key, &root.server_key, &link.code, "Perf").unwrap();
+    let response =
+        http::send(root.addr, root.tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap()))
+            .await
+            .unwrap();
+    assert_eq!(response.status, StatusCode::OK);
+    let viewer = Client { key, server_key: root.server_key.clone(), addr: root.addr, tls: root.tls.clone() };
+    for entry in items {
+        let id = entry["item"]["id"].as_i64().unwrap();
+        let play_path = format!("/play/{id}");
+        let play: Value = viewer.call(Method::GET, &play_path, None::<&()>).await.unwrap();
+        assert_eq!(play["item"]["container"], "mp4");
+        assert!(!play["keyframes"].as_array().unwrap().is_empty());
+        let mut first_byte = Vec::new();
+        let mut play_time = Vec::new();
+        for n in 0..101 {
+            let path = format!("/files/{id}");
+            let range = "bytes=0-65535";
+            let authorization =
+                sign(&viewer.key, &viewer.server_key, "GET", &path, range.as_bytes(), b"", flicks_server::unix_now());
+            let request = signed_request(Method::GET, &path, &authorization, Some(range), b"");
+            // Includes a NEW TCP connection and pinned TLS handshake for every range request.
+            // Signing happens before the timer; server signature verification is included.
+            let start = Instant::now();
+            let tcp = TcpStream::connect(viewer.addr).await.unwrap();
+            let stream = TlsConnector::from(viewer.tls.clone())
+                .connect(ServerName::try_from("flicks").unwrap(), tcp)
+                .await
+                .unwrap();
+            let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.unwrap();
+            let task = tokio::spawn(connection);
+            let reply = sender.send_request(request).await.unwrap();
+            assert_eq!(reply.status(), StatusCode::PARTIAL_CONTENT);
+            let mut body = reply.into_body();
+            let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+            assert!(!first.is_empty());
+            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            body.collect().await.unwrap();
+            drop(sender);
+            task.await.unwrap().unwrap();
+            let start = Instant::now();
+            let got: Value = viewer.call(Method::GET, &play_path, None::<&()>).await.unwrap();
+            assert_eq!(got["item"]["id"], id);
+            if n > 0 {
+                first_byte.push(elapsed);
+                play_time.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        first_byte.sort_by(f64::total_cmp);
+        play_time.sort_by(f64::total_cmp);
+        eprintln!(
+            "API_PERF size={} keys={} n=100 range_ms p50={:.3} p95={:.3} max={:.3}; play_ms p50={:.3} p95={:.3} max={:.3}",
+            play["item"]["size"],
+            play["keyframes"].as_array().unwrap().len(),
+            first_byte[49],
+            first_byte[94],
+            first_byte[99],
+            play_time[49],
+            play_time[94],
+            play_time[99]
+        );
+        assert!(first_byte[94] < 5.0, "range first-byte p95 exceeds 5 ms: {}", first_byte[94]);
+    }
+}

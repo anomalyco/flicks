@@ -50,6 +50,7 @@ pub struct State {
     pub public: Vec<u8>,
     pub data_dir: PathBuf,
     pub db: Db,
+    pub api: crate::api::Api,
     /// The port the server listens on, for pairing links.
     pub port: u16,
     pub nonces: auth::Nonces,
@@ -68,6 +69,7 @@ impl State {
             key,
             data_dir: data_dir.to_path_buf(),
             db,
+            api: crate::api::Api::default(),
             port,
             nonces: auth::Nonces::default(),
             pairing: tokio::sync::Mutex::new(None),
@@ -95,7 +97,7 @@ pub async fn serve(data_dir: &Path) -> Result<(), Error> {
         Err(_) => TcpListener::bind(("0.0.0.0", crate::PORT)).await?,
     };
     let state = Arc::new(State::open(data_dir, crate::PORT)?);
-    crate::api::start(&state)?;
+    crate::api::start(&state).await?;
     println!("Flicks is serving on port {} (server key {}).", crate::PORT, keys::encode(&state.public));
     tokio::select! {
         result = run(listener, state) => result,
@@ -108,7 +110,7 @@ pub async fn spawn(data_dir: &Path, addr: SocketAddr) -> Result<(SocketAddr, Arc
     let listener = TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     let state = Arc::new(State::open(data_dir, local.port())?);
-    crate::api::start(&state)?;
+    crate::api::start(&state).await?;
     tokio::spawn(run(listener, state.clone()));
     Ok((local, state))
 }

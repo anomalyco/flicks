@@ -1,5 +1,47 @@
 # Performance measurements
 
+## FLK-11 — signed range first byte and playback metadata (2026-10-30)
+
+Apple M5 Max, macOS 27.2, rustc 1.99.0, release profile, code `dc65301`.
+Before: the API hooks returned 404; there was no range-serving baseline.
+
+| File | Size (bytes) | Keyframes | Range first byte p50 / p95 / max (ms) | Complete `/play` p50 / p95 / max (ms) |
+|---|---:|---:|---:|---:|
+| Generated 5-second H.264/AAC MP4 | 501,176 | 5 | 0.528 / **0.633** / 1.039 | 0.534 / 0.639 / 0.891 |
+| Real 1080p H.264/AAC episode A | 1,203,733,864 | 1,382 | 0.585 / **0.710** / 0.776 | 0.945 / 1.107 / 1.259 |
+| Real 1080p H.264/AAC episode B | 1,455,959,793 | 1,657 | 0.571 / **0.657** / 0.710 | 0.994 / 1.092 / 1.853 |
+
+Each run launches the actual `flicks serve` binary with a temporary HOME/database, adds its
+folder with `flicks folder add`, and pairs a viewer. Each row is 100 requests after one warmup,
+on `127.0.0.1`, with **new TCP connections and pinned TLS handshakes for every request**.
+Range is `bytes=0-65535`; the timer starts after client signing, before TCP connect, and ends
+when Hyper yields the first nonempty media body frame (not just response headers). It includes
+server signature verification, DB lookup, containment/symlink checks, file open/read and TLS.
+`/play` includes client signing through the complete JSON body and parsing, with facts, tracks,
+the full keyframe index, progress and startup ranges. It is one metadata request, not one
+request for all media bytes. The range body is drained after timing; file frames are bounded
+to 64 KiB. File/OS caches are warm; these are localhost results, not a physical-LAN or cold-disk
+claim. All 300 range measurements were under 5 ms.
+
+Folder-add through catalog visibility was 31.113 ms for the generated file and 28.384 ms for
+both real episodes (includes CLI process, scan and 20 ms readiness-poll granularity). Real media
+was read-only from `/Users/vogel/dev/flicks-test-media/TV`; nothing was copied into the repository
+or changed. Temporary servers exit and temporary HOME directories are removed after each run.
+
+Reproduce (port 7686 must be free):
+
+```sh
+cargo test -p flicks-server --release --test server api_performance -- --ignored --nocapture --test-threads=1
+FLICKS_API_MEDIA=/Users/vogel/dev/flicks-test-media/TV cargo test -p flicks-server --release --test server api_performance -- --ignored --nocapture --test-threads=1
+```
+
+`scripts/check.sh` passes: 720 tests passed, 0 failed, 25 ignored across 55 test/doc groups.
+New coverage includes startup/add/remove/watch scanning, signed viewer catalog access, one-request
+MP4/MKV playback metadata, tail-moov header ranges, newest-wins progress and user isolation,
+200/206/416 cases (empty files, closed/open-ended/suffix ranges, overflow, out-of-bounds and
+multiple ranges), signature/Range binding, range-parser mutations, removed folders, traversal
+and file/directory symlinks repointed after scanning. The timing test is opt-in and ran separately.
+
 ## FLK-29 — container open (2026-10-30)
 
 Apple M5 Max, macOS 27.2, rustc 1.99.0, release profile. Bytes are decimal.
