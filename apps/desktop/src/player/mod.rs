@@ -12,7 +12,7 @@ use flicks_client::Progress;
 use flicks_client::download::Downloads;
 use flicks_client::merge::{self, Key, Library, Title};
 use flicks_player::Source;
-use flicks_ui::{Catalog, Flicks};
+use flicks_ui::Flicks;
 use rune::AppHandle;
 
 /// Picks the copy to play (a download first), where to resume, and starts the playback thread.
@@ -54,6 +54,6 @@ pub async fn save(
             _ => eprintln!("flicks: couldn't save progress: {error}"),
         }
     }
-    let catalog = Catalog::build(library.titles().to_vec());
+    let catalog = crate::worker::catalog(library, downloads);
     app.update(move |s, tx| s.progress_saved(catalog, tx));
 }

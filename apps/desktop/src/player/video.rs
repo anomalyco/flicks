@@ -8,7 +8,6 @@
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use flicks_player::VideoFrame;
@@ -24,6 +23,8 @@ const LAG: Duration = Duration::from_millis(8);
 const QUEUED: usize = 8;
 
 struct Queue {
+    id: Option<u64>,
+    playing: bool,
     frames: VecDeque<(VideoFrame, Instant)>,
     /// The player closed: let the frame on screen go.
     clear: bool,
@@ -32,17 +33,32 @@ struct Queue {
 /// The hand-off between the playback thread and the compositor.
 pub struct Slot {
     queue: Mutex<Queue>,
-    playing: AtomicBool,
 }
 
-pub static SLOT: Slot =
-    Slot { queue: Mutex::new(Queue { frames: VecDeque::new(), clear: false }), playing: AtomicBool::new(false) };
+pub static SLOT: Slot = Slot::new();
 
 impl Slot {
+    const fn new() -> Self {
+        Self { queue: Mutex::new(Queue { id: None, playing: false, frames: VecDeque::new(), clear: false }) }
+    }
+
+    /// Called on the UI thread on open/close, even when the old decoder is blocked in I/O.
+    pub fn switch(&self, id: Option<u64>) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.id = id;
+            queue.playing = false;
+            queue.frames.clear();
+            queue.clear = true;
+        }
+    }
+
     /// Queues `frame`, due at `due` (`None`: at once, as a frame shown while paused).
-    pub fn show(&self, frame: VideoFrame, due: Option<Instant>) {
+    pub fn show(&self, id: u64, frame: VideoFrame, due: Option<Instant>) {
         let due = due.unwrap_or_else(|| Instant::now().checked_sub(LAG).unwrap_or_else(Instant::now));
         if let Ok(mut queue) = self.queue.lock() {
+            if queue.id != Some(id) {
+                return;
+            }
             if queue.frames.len() >= QUEUED {
                 queue.frames.pop_front();
             }
@@ -50,29 +66,50 @@ impl Slot {
         }
     }
 
-    pub fn clear(&self) {
-        self.set_playing(false);
-        if let Ok(mut queue) = self.queue.lock() {
+    pub fn clear(&self, id: u64) {
+        if let Ok(mut queue) = self.queue.lock()
+            && queue.id == Some(id)
+        {
+            queue.id = None;
+            queue.playing = false;
             queue.frames.clear();
             queue.clear = true;
         }
     }
 
-    pub fn set_playing(&self, playing: bool) {
-        self.playing.store(playing, Ordering::Release);
+    /// Discard pre-seek frames, retaining the frame already on screen while I/O blocks.
+    pub fn flush(&self, id: u64) {
+        if let Ok(mut queue) = self.queue.lock()
+            && queue.id == Some(id)
+        {
+            queue.frames.clear();
+            queue.playing = false;
+        }
     }
 
-    /// The newest frame due by `tick`, dropping older ones; `Err` when the player closed.
-    fn take(&self, tick: Instant) -> Result<Option<VideoFrame>, ()> {
-        let Ok(mut queue) = self.queue.lock() else { return Ok(None) };
-        if std::mem::take(&mut queue.clear) {
-            return Err(());
+    /// Whether animation changed, so the UI can wake even before Buffering's label appears.
+    pub fn set_playing(&self, id: u64, playing: bool) -> bool {
+        if let Ok(mut queue) = self.queue.lock()
+            && queue.id == Some(id)
+        {
+            return std::mem::replace(&mut queue.playing, playing) != playing;
         }
+        false
+    }
+
+    fn playing(&self) -> bool {
+        self.queue.lock().is_ok_and(|q| q.playing)
+    }
+
+    /// Whether to clear the old play, and its replacement's newest frame due by `tick`.
+    fn take(&self, tick: Instant) -> (bool, Option<VideoFrame>) {
+        let Ok(mut queue) = self.queue.lock() else { return (false, None) };
+        let clear = std::mem::take(&mut queue.clear);
         let mut newest = None;
         while queue.frames.front().is_some_and(|(_, due)| *due + LAG <= tick) {
             newest = queue.frames.pop_front().map(|(frame, _)| frame);
         }
-        Ok(newest)
+        (clear, newest)
     }
 }
 
@@ -113,14 +150,11 @@ pub struct Video {
 
 impl Video {
     fn take(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, tick: Instant) {
-        let frame = match SLOT.take(tick) {
-            Ok(None) => return,
-            Err(()) => {
-                self.frame = None;
-                return;
-            }
-            Ok(Some(frame)) => frame,
-        };
+        let (clear, frame) = SLOT.take(tick);
+        if clear {
+            self.frame = None;
+        }
+        let Some(frame) = frame else { return };
         let renderer = self.renderer.get_or_insert_with(|| flicks_gpu::Renderer::new(device));
         let size = frame.size();
         let gpu = match &frame {
@@ -150,7 +184,7 @@ impl Compositor<Flicks> for Video {
     }
 
     fn animating(&self) -> bool {
-        SLOT.playing.load(Ordering::Acquire)
+        SLOT.playing()
     }
 
     fn render(&mut self, f: &mut Frame<'_, Flicks>) {
@@ -192,4 +226,33 @@ fn fit(video: [u32; 2], rect: [f32; 4]) -> [f32; 4] {
     let scale = (w / vw).min(h / vh);
     let (fw, fh) = ((vw * scale).round().max(1.0), (vh * scale).round().max(1.0));
     [(x + (w - fw) / 2.0).round(), (y + (h - fh) / 2.0).round(), fw, fh]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_a_stale_play_cannot_clear_or_stop_its_replacement() {
+        let slot = Slot::new();
+        slot.switch(Some(1));
+        slot.set_playing(1, true);
+        slot.switch(None);
+        assert!(!slot.playing(), "Back stops animation without waiting for the playback thread");
+        assert!(slot.take(Instant::now()).0, "Back releases the displayed frame");
+        slot.switch(Some(2));
+        assert!(slot.take(Instant::now()).0, "opening replaces the old frame immediately");
+        slot.set_playing(2, true);
+        slot.clear(1);
+        slot.set_playing(1, false);
+        slot.flush(1);
+        assert!(slot.playing());
+        assert!(!slot.take(Instant::now()).0, "the old thread cannot clear the new frame");
+        slot.flush(2);
+        assert!(!slot.playing(), "a blocking seek stops the display link");
+        assert!(!slot.take(Instant::now()).0, "seeking retains the current frame");
+        assert!(slot.set_playing(2, true), "resuming wakes the UI");
+        assert!(slot.set_playing(2, false), "buffering stops animation");
+        assert!(!slot.set_playing(2, false), "an unchanged buffering state doesn't wake it");
+    }
 }

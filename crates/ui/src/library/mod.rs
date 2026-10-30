@@ -459,7 +459,7 @@ fn play_button(label: &str, media: usize) -> El {
         .label(label.to_string())
         .child(play_icon(Color::WHITE, 14.0))
         .child(text(label.to_string()).font(style::BUTTON).color(Color::WHITE))
-        .on_press(move |s: &mut Flicks| s.play(media))
+        .on_press(move |s: &mut Flicks| s.open_player(media))
 }
 
 fn play_icon(color: Color, size: f32) -> El {
@@ -531,7 +531,7 @@ fn episode_row(s: &Flicks, title: &Title, show: &str, t: usize, offline: bool) -
         .cursor(Cursor::Pointer)
         .focusable(true)
         .focus_ring(2.0, 0.0, style::focus())
-        .on_press(move |s: &mut Flicks| s.play(t))
+        .on_press(move |s: &mut Flicks| s.open_player(t))
 }
 
 fn duration(ms: u64) -> String {

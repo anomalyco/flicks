@@ -25,6 +25,7 @@ const CONTROLS_FOR: Duration = Duration::from_millis(2500);
 const ARROW_SEEK: f64 = 10.0;
 
 /// What the screen asks of the playing app.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Toggle,
     /// Seek to seconds.
@@ -116,6 +117,9 @@ impl Flicks {
             name = format!("{name}  ·  S{season} E{episode}");
         }
         self.plays += 1;
+        if let Some(video) = &self.player_video {
+            video(Some(self.plays));
+        }
         let connected = self.network.is_some();
         self.player = Some(Screen {
             id: self.plays,
@@ -143,6 +147,9 @@ impl Flicks {
 
     pub fn close_player(&mut self) {
         if let Some(player) = self.player.take() {
+            if let Some(video) = &self.player_video {
+                video(None);
+            }
             player.send(Command::Stop);
         }
     }
@@ -214,9 +221,13 @@ impl Flicks {
     }
 
     /// The library after a progress save: Continue Watching and the title pages show it.
-    pub fn progress_saved(&mut self, catalog: Catalog, tx: &mut Tx) {
-        let error = self.error.take();
-        self.loaded(catalog, error, self.refreshed, tx);
+    pub fn progress_saved(&mut self, catalog: Catalog, _: &mut Tx) {
+        self.catalog = catalog;
+        self.search_changed();
+        let shown: Vec<usize> = self.catalog.rows.iter().flat_map(|r| r.titles.iter().copied()).collect();
+        for t in shown {
+            self.want_poster(t);
+        }
     }
 }
 
@@ -248,8 +259,11 @@ pub fn view(p: &Screen, cx: &mut Cx<Flicks>) -> El {
                 p.show_controls();
             }
         }))
-        .on_pointer_move(|s: &mut Flicks, _| {
+        .on_pointer_move_local(|s: &mut Flicks, _, tx| {
             if let Some(p) = &mut s.player {
+                if p.controls {
+                    tx.live_only();
+                }
                 p.show_controls();
             }
         })
@@ -359,6 +373,7 @@ fn top(p: &Screen, cx: &mut Cx<Flicks>) -> El {
         .child(text(p.name.clone()).font(style::HEADING).color(style::text()).truncate());
     row()
         .key("player-top")
+        .transition(Transition::opacity())
         .pin(Some(0.0), Some(0.0), Some(0.0), None)
         .h(style::BAR_H)
         .pl(left.max(style::GUTTER))
@@ -418,6 +433,7 @@ fn bottom(p: &Screen) -> El {
     bar = bar.child(menu_button("subtitle-menu", "Subtitles", Menu::Subtitles));
     let mut panel = col()
         .key("player-bottom")
+        .transition(Transition::opacity())
         .pin(Some(style::GUTTER), None, Some(style::GUTTER), Some(24.0))
         .px(14.0)
         .py(10.0)
@@ -469,12 +485,9 @@ fn menu_panel(p: &Screen, menu: Menu) -> El {
         .fill(style::raised().alpha(0.96))
         .shadow(4.0, 16.0, surface_shadow());
     for (i, (label, on, command)) in options.into_iter().enumerate() {
-        let command = std::cell::Cell::new(Some(command));
         let pick = move |s: &mut Flicks| {
             let Some(p) = &mut s.player else { return };
-            if let Some(command) = command.take() {
-                p.send(command);
-            }
+            p.send(command.clone());
             p.menu = None;
             p.show_controls();
         };

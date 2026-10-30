@@ -81,6 +81,8 @@ pub struct Flicks {
     pub pair_error: Option<String>,
     /// The player, over every screen while it's open.
     pub player: Option<player::Screen>,
+    /// Switches the app's video slot immediately, without waiting for network or decode.
+    pub player_video: Option<Box<dyn Fn(Option<u64>)>>,
     /// Plays started, numbering each.
     plays: u64,
     /// The tile the pointer is over, which lifts (its key).
@@ -118,6 +120,7 @@ impl Flicks {
             pairing: false,
             pair_error: None,
             player: None,
+            player_video: None,
             plays: 0,
             lifted: None,
             season: None,
@@ -175,10 +178,6 @@ impl Flicks {
             }
             None => self.pair_error = Some("Not connected to the network yet.".into()),
         }
-    }
-
-    pub fn play(&mut self, title: usize) {
-        self.open_player(title);
     }
 
     /// Whether a title is shown as offline: a refresh found none of its servers.
