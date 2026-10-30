@@ -11,7 +11,7 @@ Built one platform at a time. Live card status is on the agent board; this table
 | Milestone | Status |
 |---|---|
 | 1. macOS server | **Code complete** (8/8 cards). Waiting on the hands-on check: two Macs over LAN and a real tunnel, launchd at real login |
-| 2. macOS app | **In progress**: video renderer, audio and subtitles done; hardware decode and the player in progress; the Rune fix is [up for review](https://github.com/anomalyco/rune/pull/49) |
+| 2. macOS app | **In progress**: the app's library screens, hardware decode, video renderer, audio and subtitles are done; the player and the player screen are next |
 | 3. Linux server | **Code complete**: runs as a systemd service on Ubuntu (survives reboot), and clients merge several servers into one library. The app view of it comes with milestone 2 |
 | 4. Linux app | Not started |
 | 5. Windows | **Started**: getting the server building and tested on Windows |
@@ -39,6 +39,14 @@ Measured on an M5 Max (details in [`docs/perf.md`](docs/perf.md)):
 | Rescan of an unchanged library | 23 ms, no files opened |
 | First byte of a range read (real 1080p episodes, fresh TLS connection) | 0.6–0.7 ms p95 |
 | Start playback (`/play`) | 1.1 ms p95 |
+
+### Milestone 2: the macOS app (so far)
+
+The Rune app's Home and title pages, against a local server holding two test episodes (posters appear when the server has a TMDB key; without one, tiles show their title):
+
+![Flicks Home](docs/images/m2-home.png)
+
+![Flicks title page](docs/images/m2-detail.png)
 
 ### Milestone 3: several servers, one library
 
