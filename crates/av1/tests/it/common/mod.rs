@@ -8,40 +8,46 @@ use std::process::Command;
 
 /// ffmpeg with libsvtav1 (fixtures) and libdav1d (reference), or `None` after reporting a skip.
 pub fn ffmpeg() -> Option<PathBuf> {
-    ffmpeg_with(&[("-encoders", "libsvtav1"), ("-decoders", "libdav1d")])
+    ffmpeg_with(&["libsvtav1"], &["libdav1d"])
 }
 
 /// ffmpeg with libdav1d, for checks that decode existing files only.
 pub fn ffmpeg_dav1d() -> Option<PathBuf> {
-    ffmpeg_with(&[("-decoders", "libdav1d")])
+    ffmpeg_with(&[], &["libdav1d"])
 }
 
 /// ffmpeg with libaom (4:2:2 and 4:4:4 fixtures, which SVT-AV1 cannot make) and libdav1d. libaom is not in every
 /// stock ffmpeg, so its absence skips even under `FLICKS_REQUIRE_ORACLES=1`; libdav1d is required.
 pub fn ffmpeg_libaom() -> Option<PathBuf> {
     let ff = ffmpeg_dav1d()?;
-    if !has(&ff, "-encoders", "libaom-av1") {
+    if !flicks_testkit::ffmpeg_has_encoder(&ff, "libaom-av1") {
         flicks_testkit::skip_optional("av1 oracle", "ffmpeg has no libaom-av1 (see `ffmpeg -encoders`)");
         return None;
     }
     Some(ff)
 }
 
-fn has(ff: &Path, list: &str, lib: &str) -> bool {
+fn has_decoder(ff: &Path, decoder: &str) -> bool {
     Command::new(ff)
-        .args(["-hide_banner", list])
+        .args(["-hide_banner", "-decoders"])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(lib))
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(decoder))
         .unwrap_or(false)
 }
 
 /// Builds such as the Windows "essentials" ones lack these libraries; skip rather than fail (a failure with
 /// `FLICKS_REQUIRE_ORACLES=1`).
-fn ffmpeg_with(needs: &[(&str, &str)]) -> Option<PathBuf> {
+fn ffmpeg_with(encoders: &[&str], decoders: &[&str]) -> Option<PathBuf> {
     let ff = flicks_testkit::ffmpeg_or_skip("av1 oracle")?;
-    for &(list, lib) in needs {
-        if !has(&ff, list, lib) {
-            flicks_testkit::skip("av1 oracle", &format!("ffmpeg has no {lib} (see `ffmpeg {list}`)"));
+    for lib in encoders {
+        if !flicks_testkit::ffmpeg_has_encoder(&ff, lib) {
+            flicks_testkit::skip("av1 oracle", &format!("ffmpeg has no {lib} (see `ffmpeg -encoders`)"));
+            return None;
+        }
+    }
+    for lib in decoders {
+        if !has_decoder(&ff, lib) {
+            flicks_testkit::skip("av1 oracle", &format!("ffmpeg has no {lib} (see `ffmpeg -decoders`)"));
             return None;
         }
     }
