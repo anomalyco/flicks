@@ -63,6 +63,8 @@ Done when: the same server runs on a Linux box as a systemd service, and the Mac
 | FLK-48 | **App look: Netflix x Apple TV.** Big hero with backdrop and logo at the top (Apple TV top shelf), Netflix-style rows, focus and hover scale, blurred backdrops behind detail pages, smooth Rune motion; one look for every client | `apps/desktop/src/style*` and views | FLK-6 | Ryan approves screenshots |
 | FLK-49 | **Web app.** The Rune app compiled to wasm (Rune's web host), served by the Flicks server at `/` so the API is same-origin, signing with WebCrypto P-256; browse, detail, search; reached through any HTTPS front with a real certificate (tailnet, tunnel) | `apps/web/`, a static route in `crates/server` | FLK-14 | Ryan opens it on his phone over the tailnet and browses the library |
 
+| FLK-50 | **App intro.** A short Netflix-style intro on cold launch: the stacked-frames logo animates in (Rune springs, 120 Hz) with its own sound effect, about 2 s, skippable with any key or click, silent and reduced to a fade when reduced motion is on; the same on the web | `crates/ui/src/intro*`, `assets/brand/intro*`, the audio hook in apps/desktop and apps/web | FLK-48 (logo in the app) | Ryan approves a recording with sound |
+
 Order: FLK-19 (HLS/CMAF writer) now, since adaptive streaming, AVPlayer and web playback all need it; FLK-26 (transcode) after it; then FLK-47.
 
 ## Milestone 5: Windows
