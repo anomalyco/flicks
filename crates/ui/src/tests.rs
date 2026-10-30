@@ -1,4 +1,4 @@
-use rune::{Env, Key, KeyEvent, Mods, Runtime};
+use rune::{App, Env, Key, KeyEvent, Mods, Runtime};
 
 use super::*;
 use library::fixture;

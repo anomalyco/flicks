@@ -7,24 +7,15 @@ use std::sync::Arc;
 
 use flicks_client::Client;
 use flicks_client::merge::Library;
+use flicks_ui::{Catalog, Flicks, Request};
 use rune::AppHandle;
 use tokio::sync::{Semaphore, mpsc};
-
-use crate::Flicks;
-use crate::library::catalog::Catalog;
 
 /// What this device calls itself to a server it pairs with.
 const DEVICE_NAME: &str = "Flicks for Mac";
 
 /// Artwork downloads at once.
 const ARTWORK_AT_ONCE: usize = 6;
-
-pub enum Request {
-    Refresh,
-    Pair(String),
-    /// A poster or backdrop: the server key and the artwork name.
-    Artwork(String, String),
-}
 
 /// The window's end of the channel.
 pub struct Worker(mpsc::UnboundedSender<Request>);

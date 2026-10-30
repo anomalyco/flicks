@@ -1,22 +1,21 @@
-//! Flicks for macOS: the library (Home, a title's page, search) and Add Server, drawn with Rune.
-//! `cargo run -p flicks-desktop` opens the window; `-- --snap home.png --scene home` renders a
-//! scene headless (`--list-scenes` lists them).
+//! The Flicks app's screens, shared by the desktop app (`apps/desktop`) and the web app
+//! (`apps/web`): the library (Home, a title's page, search) and Add Server, drawn with Rune. Each
+//! app supplies the network: it answers [`Request`]s by updating the state through its app handle.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod add_server;
-mod library;
+pub mod library;
 mod style;
 #[cfg(test)]
 mod tests;
-mod worker;
 
 use std::collections::{HashMap, HashSet};
 
-use rune::{App, AppSpec, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, TextEdit, Tx, col, row, spacer, text};
+use rune::{AppSpec, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, TextEdit, Tx, col, row, spacer, text};
 
-use library::catalog::{self, Catalog, GroupKey};
+pub use library::catalog::{self, Catalog, GroupKey};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Screen {
@@ -41,6 +40,16 @@ pub enum Status {
 pub struct PlayChoice {
     pub server: String,
     pub item: i64,
+}
+
+/// What the screens ask of the network.
+pub enum Request {
+    /// Fetch every server's catalog again.
+    Refresh,
+    /// Pair with the server a `flicks://pair` link names.
+    Pair(String),
+    /// A poster or backdrop: the server key and the artwork name.
+    Artwork(String, String),
 }
 
 /// The most posters and backdrops kept in memory (about 1 MB each, decoded).
@@ -68,11 +77,12 @@ pub struct Flicks {
     pub artwork: HashMap<String, Image>,
     requested: HashSet<String>,
     images: Option<ImageCache>,
-    worker: Option<worker::Worker>,
+    /// Sends a request to the app's network, once it has started.
+    pub network: Option<Box<dyn Fn(Request)>>,
 }
 
 impl Flicks {
-    fn new() -> Flicks {
+    pub fn new() -> Flicks {
         Flicks {
             screen: Screen::Home,
             back: Screen::Home,
@@ -89,7 +99,7 @@ impl Flicks {
             artwork: HashMap::new(),
             requested: HashSet::new(),
             images: None,
-            worker: None,
+            network: None,
         }
     }
 
@@ -124,10 +134,10 @@ impl Flicks {
             return;
         }
         self.pair_error = None;
-        match &self.worker {
-            Some(worker) => {
+        match &self.network {
+            Some(send) => {
                 self.pairing = true;
-                worker.send(worker::Request::Pair(link));
+                send(Request::Pair(link));
             }
             None => self.pair_error = Some("Not connected to the network yet.".into()),
         }
@@ -147,18 +157,18 @@ impl Flicks {
 
     // Answers from the network thread.
 
-    fn failed(&mut self, message: String) {
+    pub fn failed(&mut self, message: String) {
         self.status = Status::Failed(message);
     }
 
-    fn no_servers(&mut self, tx: &mut Tx) {
+    pub fn no_servers(&mut self, tx: &mut Tx) {
         tx.instant();
         self.status = Status::NoServers;
         self.screen = Screen::AddServer;
     }
 
     /// A catalog from the cache (`refreshed` false, at launch) or a refresh.
-    fn loaded(&mut self, catalog: Catalog, error: Option<String>, refreshed: bool, tx: &mut Tx) {
+    pub fn loaded(&mut self, catalog: Catalog, error: Option<String>, refreshed: bool, tx: &mut Tx) {
         if self.status == Status::Loading || !self.refreshed {
             // The cache and the first refresh land still, as part of launch.
             tx.instant();
@@ -182,7 +192,7 @@ impl Flicks {
         }
     }
 
-    fn paired(&mut self, result: Result<String, String>) {
+    pub fn paired(&mut self, result: Result<String, String>) {
         self.pairing = false;
         match result {
             Ok(_) => {
@@ -194,7 +204,7 @@ impl Flicks {
         }
     }
 
-    fn artwork(&mut self, server: &str, name: &str, bytes: Option<Vec<u8>>) {
+    pub fn artwork(&mut self, server: &str, name: &str, bytes: Option<Vec<u8>>) {
         let key = artwork_key(server, name);
         match (bytes, &self.images) {
             (Some(bytes), Some(images)) => {
@@ -226,11 +236,11 @@ impl Flicks {
 
     /// Asks for artwork once; past [`MAX_ARTWORK`] tiles keep their title card.
     fn want_artwork(&mut self, server: String, name: String) {
-        let Some(worker) = &self.worker else { return };
+        let Some(send) = &self.network else { return };
         if self.requested.len() >= MAX_ARTWORK || !self.requested.insert(artwork_key(&server, &name)) {
             return;
         }
-        worker.send(worker::Request::Artwork(server, name));
+        send(Request::Artwork(server, name));
     }
 }
 
@@ -304,7 +314,14 @@ pub fn message(title: &str, detail: &str) -> El {
         .child(text(detail).font(style::BODY).color(style::muted()))
 }
 
-fn spec() -> AppSpec<Flicks> {
+impl Default for Flicks {
+    fn default() -> Flicks {
+        Flicks::new()
+    }
+}
+
+/// The app: its window, scenes for headless renders, image cache and keys.
+pub fn spec() -> AppSpec<Flicks> {
     AppSpec {
         min_size: Some((720.0, 480.0)),
         scenes: library::fixture::SCENES,
@@ -312,16 +329,4 @@ fn spec() -> AppSpec<Flicks> {
         on_key: Some(on_key),
         ..AppSpec::new("Flicks", (1180.0, 760.0), Flicks::new, view)
     }
-}
-
-fn main() {
-    rune::prewarm_gpu();
-    let app = App::new(spec());
-    let handle = app.handle();
-    // The network starts after the first frame, so launch draws at once.
-    app.on_ready(move |_| {
-        let started = handle.clone();
-        handle.update(move |s, _| s.worker = Some(worker::start(started)));
-    })
-    .run();
 }
