@@ -5,8 +5,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use flicks_client::Client;
-use flicks_client::merge::Library;
+use flicks_client::download::Downloads;
+use flicks_client::merge::{Key, Library, Title};
+use flicks_client::{Client, Progress};
 use rune::AppHandle;
 use tokio::sync::{Semaphore, mpsc};
 
@@ -26,6 +27,10 @@ pub enum Request {
     Artwork(String, String),
     /// A change on a server's admin routes: its key and the change.
     Admin(String, crate::server::Op),
+    /// Play a title, taking the player's commands from the channel.
+    Play(Box<Title>, std::sync::mpsc::Receiver<crate::player::Command>),
+    /// Progress on a title: its key, the server and file played, and the progress.
+    Progress(Key, String, i64, Progress),
 }
 
 /// The window's end of the channel.
@@ -69,6 +74,8 @@ async fn serve(app: AppHandle<Flicks>, mut rx: mpsc::UnboundedReceiver<Request>)
         let cached = Catalog::build(library.titles().to_vec());
         app.update(move |s, tx| s.loaded(cached, None, false, tx));
     }
+    // Played instead of streaming when a title has one; holds progress made offline.
+    let copies = Downloads::open(&dir).ok();
     let downloads = Arc::new(Semaphore::new(ARTWORK_AT_ONCE));
     while let Some(request) = rx.recv().await {
         match request {
@@ -82,6 +89,10 @@ async fn serve(app: AppHandle<Flicks>, mut rx: mpsc::UnboundedReceiver<Request>)
                 }
             }
             Request::Admin(server, op) => crate::server::run(&app, &mut library, server, op).await,
+            Request::Play(title, commands) => crate::player::open(&app, &library, copies.as_ref(), &title, commands),
+            Request::Progress(key, server, file, progress) => {
+                crate::player::save(&app, &mut library, copies.as_ref(), (key, server, file), progress).await
+            }
             Request::Artwork(server, name) => {
                 let Some(connection) = library.connection(&server).cloned() else {
                     app.update(move |s, _| s.artwork(&server, &name, None));

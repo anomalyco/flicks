@@ -7,6 +7,7 @@
 
 mod add_server;
 mod library;
+mod player;
 mod server;
 mod style;
 #[cfg(test)]
@@ -39,13 +40,6 @@ pub enum Status {
     Failed(String),
 }
 
-/// The choice the Play button records until the player screen (FLK-6) takes it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PlayChoice {
-    pub server: String,
-    pub item: i64,
-}
-
 /// The most posters and backdrops kept in memory (about 1 MB each, decoded).
 const MAX_ARTWORK: usize = 400;
 
@@ -66,7 +60,8 @@ pub struct Flicks {
     pub link: TextEdit,
     pub pairing: bool,
     pub pair_error: Option<String>,
-    pub play: Option<PlayChoice>,
+    /// The player, over every screen while it's open.
+    pub player: Option<player::Screen>,
     pub servers: server::Servers,
     /// Decoded artwork by `<server key>/<name>`.
     pub artwork: HashMap<String, Image>,
@@ -89,7 +84,7 @@ impl Flicks {
             link: TextEdit::new(""),
             pairing: false,
             pair_error: None,
-            play: None,
+            player: None,
             servers: server::Servers::default(),
             artwork: HashMap::new(),
             requested: HashSet::new(),
@@ -139,10 +134,7 @@ impl Flicks {
     }
 
     pub fn play(&mut self, title: usize) {
-        let source = self.catalog.titles.get(title).and_then(flicks_client::merge::best_source);
-        if let Some(source) = source {
-            self.play = Some(PlayChoice { server: source.server.clone(), item: source.item.id });
-        }
+        self.open_player(title);
     }
 
     /// Whether a title is shown as offline: a refresh found none of its servers.
@@ -244,6 +236,9 @@ pub fn artwork_key(server: &str, name: &str) -> String {
 }
 
 fn view(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
+    if let Some(player) = &s.player {
+        return player::view(player, cx);
+    }
     let body = match &s.screen {
         Screen::Home => library::home(s),
         Screen::Detail(key) => library::detail(s, key),
@@ -295,6 +290,9 @@ fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
 }
 
 fn on_key(s: &mut Flicks, event: &KeyEvent, _: &mut Tx) -> bool {
+    if s.player.is_some() {
+        return player::on_key(s, event);
+    }
     match event.key {
         Key::Command('f') => s.go(Screen::Search),
         Key::Escape if matches!(s.screen, Screen::Detail(_)) => s.go_back(),
@@ -326,7 +324,7 @@ fn spec() -> AppSpec<Flicks> {
 
 fn main() {
     rune::prewarm_gpu();
-    let app = App::new(spec());
+    let app = App::new(spec()).compositor(player::video::Video::default());
     let handle = app.handle();
     // The network starts after the first frame, so launch draws at once.
     app.on_ready(move |_| {
