@@ -54,7 +54,7 @@ fn search_matches_every_word_of_the_title_ignoring_case() {
 }
 
 #[test]
-fn a_tile_opens_its_show_where_play_records_the_episode_and_escape_goes_back() {
+fn a_tile_opens_its_show_where_play_opens_the_episode_and_escape_goes_back() {
     let mut rt = runtime("home");
     assert!(shows(&rt, "Recently Added"));
     let newest = rt.state.catalog.rows[1].titles[0];
@@ -66,10 +66,15 @@ fn a_tile_opens_its_show_where_play_records_the_episode_and_escape_goes_back() {
     press(&mut rt, "play");
     let resumed = rt.state.catalog.groups[0].titles[0];
     let item = rt.state.catalog.titles[resumed].item.id;
-    assert_eq!(rt.state.play, Some(PlayChoice { server: "fixture".into(), item }));
+    let player = rt.state.player.as_ref().expect("the player opens");
+    assert_eq!((player.server.as_str(), player.file), ("fixture", item));
 
-    rt.key(KeyEvent { key: Key::Escape, mods: Mods::default() });
-    rt.frame(1.0 / 60.0);
+    // Escape closes the player, then leaves the title's page.
+    for _ in 0..2 {
+        rt.key(KeyEvent { key: Key::Escape, mods: Mods::default() });
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.state.player.is_none());
     assert_eq!(rt.state.screen, Screen::Home);
 }
 

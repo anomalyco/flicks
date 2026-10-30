@@ -130,6 +130,7 @@ file up through its library root (not ancestors above that root). Scans skip all
 - **Drawing video:** `gpu` is a plain wgpu renderer (no Rune dependency; wgpu pinned to Rune's version, `~30.0.1`): YUV (NV12, P010) to display colour, scaling, HDR tone-mapped to SDR, respecting Rune's `srgb_blend`. The app hosts it through Rune's `Compositor` hook with `El::effect` and `Renderer::draw_with`, so video is drawn in Rune's own pass on Rune's device, with the UI over it.
 - **Audio** (`audio`): one canonical channel order across decoders, stereo downmix (ITU-R BS.775), resampling to the device rate, dynamic range compression off, device output.
 - **Subtitles:** SRT and WebVTT first.
+- **Player screen** (FLK-6): the screen, its controls and track menus are `flicks-ui`, shared with the web build, which answers Play with "not yet". The desktop runs `flicks-player` on a playback thread (it sleeps on its channel while paused) and draws in its Rune compositor at the screen's `El::effect` slot. Each frame is shown on the first display tick after it falls due on the audio clock, with ticks read from Rune's frame clock, so 24 fps keeps an even 3:2 pattern at 60 Hz and 5:5 at 120 Hz. A downloaded copy plays first. Progress is saved on pause, stop, seeks of 30 s or more and every 3 minutes, through `Library::set_progress`, or kept with the download when no server answers. Servers don't offer sidecar subtitle files yet, so an SRT or WebVTT file is dropped on the video.
 
 ## Crates
 

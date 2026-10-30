@@ -11,7 +11,7 @@ Built one platform at a time. Live card status is on the agent board; this table
 | Milestone | Status |
 |---|---|
 | 1. macOS server | **Code complete** (8/8 cards). Waiting on the hands-on check: two Macs over LAN and a real tunnel, launchd at real login |
-| 2. macOS app | **In progress**: library and server screens, hardware decode, video renderer, audio, subtitles, the player engine and downloads (engine) are done; the player screen and the new look are next |
+| 2. macOS app | **Nearly done**: library, server and player screens play real episodes with hardware decode, sound, subtitles, seeking and resume. Left: the final look (design board), fullscreen (needs Rune), the 2-hour playback test |
 | 3. Linux server | **Code complete**: runs as a systemd service on Ubuntu (survives reboot), and clients merge several servers into one library. The app view of it comes with milestone 2 |
 | 4. Linux app | Not started |
 | 5. Windows | **Started**: the server and CLI client build, pass every test and run on Windows; the app is next |
@@ -47,6 +47,10 @@ The Rune app's Home and title pages, against a local server holding two test epi
 ![Flicks Home](docs/images/m2-home.png)
 
 ![Flicks title page](docs/images/m2-detail.png)
+
+The player, paused on a generated 4K HDR test clip with an .srt dropped on it and the Subtitles menu open:
+
+![Flicks player](docs/images/m2-player.png)
 
 Server screens, shown on servers where this device is an admin (folders, users, devices, and Add Device with a pairing QR):
 

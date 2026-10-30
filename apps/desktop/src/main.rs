@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod admin;
+mod player;
 mod sound;
 mod worker;
 
@@ -18,7 +19,7 @@ const ICON: &[u8] = include_bytes!("../../../assets/brand/app-icon.png");
 
 fn main() {
     rune::prewarm_gpu();
-    let mut app = App::new(flicks_ui::spec());
+    let mut app = App::new(flicks_ui::spec()).compositor(player::video::Video::default());
     // A launch of the app itself, or a traced one in a window (`--native --trace`), opens on the
     // intro; headless renders (`--snap`, `--script`) don't.
     let args: Vec<String> = std::env::args().skip(1).collect();
