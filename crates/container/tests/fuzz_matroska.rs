@@ -53,6 +53,7 @@ fn exercise(data: &[u8]) -> bool {
         parsed = true;
         _ = f.duration_ns();
         for (ti, t) in f.tracks.iter().enumerate() {
+            _ = f.cue_keyframes(ti);
             _ = t.video.as_ref().map(|v| (v.pixel_aspect(), v.display_rotation()));
             let n = t.samples.len();
             for i in [0, n / 2, n.saturating_sub(1)] {

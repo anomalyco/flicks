@@ -467,49 +467,125 @@ struct LargeMkv {
 #[test]
 fn relative_cue_seeks_past_blocks_without_scanning_them() {
     for unknown_size in [false, true] {
-        let mut body = Vec::new();
-        for i in 0..48 {
-            el(&mut body, SIMPLE_BLOCK, &block(1, i * 20, 0, &vec![0; 70_000]));
+        for (cue_time, shifted) in [(999, false), (1000, false), (1001, false), (1000, true)] {
+            let mut body = Vec::new();
+            for i in 0..48 {
+                el(&mut body, SIMPLE_BLOCK, &block(1, i * 20, 0, &vec![0; 70_000]));
+            }
+            // one_cluster prefixes a three-byte Timestamp element.
+            let relative = body.len() as u64 + 3;
+            el(&mut body, SIMPLE_BLOCK, &block(1, 1000, 0x80, b"key"));
+            let shifted_relative = body.len() as u64 + 3;
+            el(&mut body, SIMPLE_BLOCK, &block(1, 2000, 0x80, b"wrong key"));
+            let mut bytes = one_cluster(0, &body);
+            let at = bytes.windows(4).position(|w| w == CLUSTER.to_be_bytes()).unwrap();
+            let seg = bytes.windows(4).position(|w| w == SEGMENT.to_be_bytes()).unwrap() + 12;
+            let cue = |position: u64, relative: u64| {
+                let mut p = Vec::new();
+                el_uint(&mut p, CUE_TRACK, 1);
+                el(&mut p, CUE_CLUSTER_POSITION, &position.to_be_bytes());
+                el(&mut p, CUE_RELATIVE_POSITION, &relative.to_be_bytes());
+                let mut c = Vec::new();
+                el_uint(&mut c, CUE_TIME, cue_time);
+                el(&mut c, CUE_TRACK_POSITIONS, &p);
+                let mut points = Vec::new();
+                el(&mut points, CUE_POINT, &c);
+                let mut out = Vec::new();
+                el(&mut out, CUES, &points);
+                out
+            };
+            let cue_len = cue(0, 0).len();
+            if unknown_size {
+                let (_, size_len) = ebml::read_size(&bytes[at + 4..]).unwrap();
+                let mut unknown = Vec::new();
+                write_unknown_size(&mut unknown, size_len);
+                bytes[at + 4..at + 4 + size_len].copy_from_slice(&unknown);
+            }
+            let relative = if shifted { shifted_relative } else { relative };
+            bytes.splice(at..at, cue((at + cue_len - seg) as u64, relative));
+            let src = Counting(&bytes, std::cell::Cell::new(0));
+            let mut d = Demuxer::new(&src).unwrap();
+            let before = src.1.get();
+            let key = d.keyframe_index(0).unwrap();
+            assert_eq!(key.len(), 1);
+            assert_eq!(key[0].relative_position, Some(relative));
+            assert_eq!(src.1.get(), before);
+            let point = d.seek(0, 1_000_000_000).unwrap();
+            let packet = d.next_packet().unwrap().unwrap();
+            assert_eq!((point.pts, packet.pts, packet.data.as_slice()), (1000, 1000, b"key".as_slice()));
+            if !shifted {
+                assert!(src.1.get() - before < 131_072, "seek read {} bytes", src.1.get() - before);
+            }
+            assert!(!d.file().indexed);
         }
-        // one_cluster prefixes a three-byte Timestamp element.
-        let relative = body.len() as u64 + 3;
-        el(&mut body, SIMPLE_BLOCK, &block(1, 1000, 0x80, b"key"));
-        let mut bytes = one_cluster(0, &body);
-        let at = bytes.windows(4).position(|w| w == CLUSTER.to_be_bytes()).unwrap();
-        let seg = bytes.windows(4).position(|w| w == SEGMENT.to_be_bytes()).unwrap() + 12;
-        let cue = |position: u64, relative: u64| {
-            let mut p = Vec::new();
-            el_uint(&mut p, CUE_TRACK, 1);
-            el(&mut p, CUE_CLUSTER_POSITION, &position.to_be_bytes());
+    }
+}
+
+#[test]
+fn cue_only_keyframes_do_not_scan_when_cues_are_missing() {
+    let bytes = synthetic();
+    let src = Counting(&bytes, std::cell::Cell::new(0));
+    let mut d = Demuxer::new(&src).unwrap();
+    let before = src.1.get();
+    assert!(d.file().cue_keyframes(0).is_empty());
+    assert!(d.file().cue_keyframes(usize::MAX).is_empty());
+    assert_eq!(src.1.get(), before);
+    assert!(!d.file().indexed);
+    assert!(!d.keyframe_index(0).unwrap().is_empty());
+    assert!(d.file().indexed);
+}
+
+#[test]
+fn relative_cue_timestamp_probe_is_bounded() {
+    // A missing timestamp behind many large Void elements must not cause a second
+    // full traversal before the ordinary cluster-scan fallback.
+    let mut body = Vec::new();
+    for _ in 0..128 {
+        el(&mut body, VOID, &vec![0; 70_000]);
+    }
+    let relative = body.len() as u64 + 3;
+    el(&mut body, SIMPLE_BLOCK, &block(1, 1000, 0x80, b"key"));
+    let mut base = one_cluster(0, &body);
+    let at = base.windows(4).position(|w| w == CLUSTER.to_be_bytes()).unwrap();
+    let seg = base.windows(4).position(|w| w == SEGMENT.to_be_bytes()).unwrap() + 12;
+    let (_, size_len) = ebml::read_size(&base[at + 4..]).unwrap();
+    // Replace one_cluster's leading three-byte Timestamp with a three-byte Void.
+    base[at + 4 + size_len] = VOID as u8;
+    let cue = |position: u64, relative: Option<u64>| {
+        let mut p = Vec::new();
+        el_uint(&mut p, CUE_TRACK, 1);
+        el(&mut p, CUE_CLUSTER_POSITION, &position.to_be_bytes());
+        if let Some(relative) = relative {
             el(&mut p, CUE_RELATIVE_POSITION, &relative.to_be_bytes());
-            let mut c = Vec::new();
-            el_uint(&mut c, CUE_TIME, 1000);
-            el(&mut c, CUE_TRACK_POSITIONS, &p);
-            let mut points = Vec::new();
-            el(&mut points, CUE_POINT, &c);
-            let mut out = Vec::new();
-            el(&mut out, CUES, &points);
-            out
-        };
-        let cue_len = cue(0, 0).len();
-        if unknown_size {
-            let (_, size_len) = ebml::read_size(&bytes[at + 4..]).unwrap();
-            let mut unknown = Vec::new();
-            write_unknown_size(&mut unknown, size_len);
-            bytes[at + 4..at + 4 + size_len].copy_from_slice(&unknown);
         }
+        let mut c = Vec::new();
+        el_uint(&mut c, CUE_TIME, 1000);
+        el(&mut c, CUE_TRACK_POSITIONS, &p);
+        let mut points = Vec::new();
+        el(&mut points, CUE_POINT, &c);
+        let mut out = Vec::new();
+        el(&mut out, CUES, &points);
+        out
+    };
+    let mut scan_reads = 0;
+    // None measures just the fallback. A far-away target tests the child budget;
+    // a target at the first Void tests that the probe never passes that target.
+    for relative in [None, Some(relative), Some(3)] {
+        let mut bytes = base.clone();
+        let cue_len = cue(0, relative).len();
         bytes.splice(at..at, cue((at + cue_len - seg) as u64, relative));
         let src = Counting(&bytes, std::cell::Cell::new(0));
         let mut d = Demuxer::new(&src).unwrap();
         let before = src.1.get();
-        let key = d.keyframe_index(0).unwrap();
-        assert_eq!(key.len(), 1);
-        assert_eq!(key[0].relative_position, Some(relative));
-        assert_eq!(src.1.get(), before);
         let point = d.seek(0, 1_000_000_000).unwrap();
-        let packet = d.next_packet().unwrap().unwrap();
-        assert_eq!((point.pts, packet.pts, packet.data.as_slice()), (1000, 1000, b"key".as_slice()));
-        assert!(src.1.get() - before < 131_072, "seek read {} bytes", src.1.get() - before);
+        assert_eq!(point.pts, 1000);
+        let reads = src.1.get() - before;
+        match relative {
+            None => scan_reads = reads,
+            Some(3) => assert!(reads <= scan_reads + 65_536, "probe passed target: {reads} vs {scan_reads}"),
+            Some(_) => assert!(reads <= scan_reads + 8 * 65_536, "unbounded probe: {reads} vs {scan_reads}"),
+        }
+        assert_eq!(d.next_packet().unwrap().unwrap().data, b"key");
         assert!(!d.file().indexed);
     }
 }
