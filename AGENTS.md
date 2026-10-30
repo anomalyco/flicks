@@ -44,6 +44,10 @@ The coordinator session launches each card's agent as a subagent of itself (neve
 8. **Ask Ryan only through the board** (`board ask ... --card FLK-n`), only for taste calls, approvals or visual checks. Make ordinary design decisions yourself and record them in the design doc.
 9. **After three failed attempts** at the same problem, stop, write the most likely wrong assumption on the card, and hand back.
 
+## README and screenshots
+
+The coordinator keeps the README's "Where it's at" section current as cards merge. Cards that change what a person sees (app screens, CLI output) save a screenshot from the real app or terminal to `docs/images/<card or milestone>-<what>.png` and mention it in their final note; no mockups. Never put pairing links, codes, keys or tailnet addresses in a screenshot.
+
 ## Models
 
 Each card runs on one of three models, all at high reasoning, set on the board roster (`board agent ls`; agent names are `<model> · FLK-n`):
