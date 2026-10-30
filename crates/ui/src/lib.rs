@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod add_server;
+pub mod intro;
 pub mod library;
 pub mod player;
 pub mod server;
@@ -16,10 +17,11 @@ mod tests;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use rune::{
-    AppSpec, Color, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, SpringPair, SurfaceFit, TextEdit, Transition, Tx,
-    col, el, row, spacer, text,
+    Anim, AppSpec, Color, Cursor, Cx, El, Image, ImageCache, Key, KeyEvent, SpringPair, SurfaceFit, TextEdit,
+    Transition, Tx, col, el, row, spacer, text,
 };
 
+pub use intro::{Intro, Sound};
 pub use library::catalog::{self, Catalog, GroupKey};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,6 +103,8 @@ pub struct Flicks {
     logo: Option<Image>,
     /// Sends a request to the app's network, once it has started.
     pub network: Option<Box<dyn Fn(Request)>>,
+    /// The launch intro, over Home until it ends; the app shell sets it on a cold launch.
+    pub intro: Option<Intro>,
 }
 
 impl Flicks {
@@ -129,6 +133,7 @@ impl Flicks {
             images: None,
             logo: None,
             network: None,
+            intro: None,
         }
     }
 
@@ -325,7 +330,12 @@ fn view(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
                 .truncate(),
         );
     }
-    page
+    match &s.intro {
+        Some(intro) => {
+            page.child(intro::view(intro, cx)).on_window_focus(|s: &mut Flicks, focused, _| intro::focus(s, focused))
+        }
+        None => page,
+    }
 }
 
 /// A screen replacing another: the new one fades up from slightly small, the old one fades out
@@ -374,7 +384,7 @@ fn top_bar(s: &Flicks, cx: &mut Cx<Flicks>, solid: bool) -> El {
         .window_drag()
         .child(frost)
         .child(fill)
-        .child(logo(s).mr(22.0))
+        .child(logo(s).opacity(if intro::hides_logo(s, cx) { 0.0 } else { 1.0 }).opacity_motion(Anim::INSTANT).mr(22.0))
         .child(nav("Home", "nav-home", Screen::Home))
         .child(nav("Search", "nav-search", Screen::Search))
         .child(spacer())
@@ -395,6 +405,10 @@ fn logo(s: &Flicks) -> El {
 }
 
 fn on_key(s: &mut Flicks, event: &KeyEvent, _: &mut Tx) -> bool {
+    if s.intro.is_some() {
+        intro::skip(s);
+        return true;
+    }
     if s.player.is_some() {
         return player::on_key(s, event);
     }
@@ -431,8 +445,12 @@ pub fn spec() -> AppSpec<Flicks> {
         setup: Some(|s, waker| {
             let images = ImageCache::new(waker);
             s.logo = Some(images.svg(LOCKUP, style::LOGO_W, 3.0));
+            if let Some(intro) = &mut s.intro {
+                intro.load(&images);
+            }
             s.images = Some(images);
         }),
+        poll: Some(intro::poll),
         on_key: Some(on_key),
         ..AppSpec::new("Flicks", (1180.0, 760.0), Flicks::new, view)
     }
