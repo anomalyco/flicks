@@ -8,7 +8,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -24,7 +24,12 @@ use tokio_rustls::TlsConnector;
 
 use crate::Error;
 
-const TIMEOUT: Duration = Duration::from_secs(10);
+/// How long connecting, the TLS handshake and the response headers may take together.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a response body may go without delivering a byte. A slow uplink can take as long as
+/// it needs for a large range, as long as it keeps sending.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The largest response read; callers ask for byte ranges well under it.
 pub const MAX_RESPONSE: usize = 16 * 1024 * 1024;
@@ -136,19 +141,25 @@ pub async fn send(addr: &str, tls: Arc<ClientConfig>, request: Request<Full<Byte
         Ok(ip) => ServerName::IpAddress(ip.into()),
         Err(_) => ServerName::try_from(host.to_string()).map_err(|_| Error::BadAddress)?,
     };
-    let exchange = async {
+    let timed_out = |_| Error::Io(std::io::ErrorKind::TimedOut.into());
+    let headers = async {
         let tcp = TcpStream::connect((host, port)).await?;
         let stream = TlsConnector::from(tls).connect(name, tcp).await?;
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
         tokio::spawn(connection);
-        let response = sender.send_request(request).await?;
-        let status = response.status();
-        let body = Limited::new(response.into_body(), MAX_RESPONSE)
-            .collect()
-            .await
-            .map_err(|_| Error::BadResponse)?
-            .to_bytes();
-        Ok(Response { status, body })
+        Ok::<_, Error>(sender.send_request(request).await?)
     };
-    tokio::time::timeout(TIMEOUT, exchange).await.map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))?
+    let response = tokio::time::timeout(CONNECT_TIMEOUT, headers).await.map_err(timed_out)??;
+    let status = response.status();
+    let mut body = response.into_body();
+    let mut bytes = Vec::new();
+    while let Some(frame) = tokio::time::timeout(IDLE_TIMEOUT, body.frame()).await.map_err(timed_out)? {
+        if let Ok(data) = frame?.into_data() {
+            if bytes.len().saturating_add(data.len()) > MAX_RESPONSE {
+                return Err(Error::BadResponse);
+            }
+            bytes.extend_from_slice(&data);
+        }
+    }
+    Ok(Response { status, body: bytes.into() })
 }

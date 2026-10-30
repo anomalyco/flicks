@@ -10,12 +10,12 @@ pub mod cli;
 pub mod cli_client;
 pub mod db;
 pub mod folders;
-pub mod http;
-pub mod keys;
 pub mod pair;
 pub mod server;
 pub mod service;
 pub mod tls;
+
+pub use flicks_client::keys;
 
 use std::path::PathBuf;
 
@@ -32,10 +32,8 @@ pub const DB_FILE: &str = "flicks.db";
 pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error("the OS random source failed")]
-    Random,
-    #[error("{0} is not a Flicks key file")]
-    KeyFile(PathBuf),
+    #[error(transparent)]
+    Client(#[from] flicks_client::Error),
     #[error("couldn't encode the server key")]
     KeyEncoding,
     #[error("TLS: {0}")]
@@ -58,8 +56,6 @@ pub enum Error {
     BadResponse,
     #[error("{0}")]
     Usage(&'static str),
-    #[error("{1} ({0})")]
-    Status(u16, String),
 }
 
 /// Where the server keeps its key and database: `~/Library/Application Support/Flicks` on macOS,

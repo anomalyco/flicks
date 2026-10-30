@@ -5,10 +5,10 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use flicks_server::cli::Client;
+use flicks_client::{Connection, net};
 use flicks_server::db::{Device, Folder, User};
 use flicks_server::server::{self, AddFolder, AddUser, Info, OpenPairing, Pairing, State, Status};
-use flicks_server::{auth, http, keys, pair, tls};
+use flicks_server::{auth, keys, pair, tls};
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::header::{AUTHORIZATION, HOST, RANGE};
@@ -30,12 +30,12 @@ fn data_dir(name: &str) -> PathBuf {
 struct Server {
     addr: SocketAddr,
     state: Arc<State>,
-    root: Client,
+    root: Connection,
 }
 
 async fn start(name: &str) -> Server {
     let (addr, state) = server::spawn(&data_dir(name), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let root = Client::new(state.key.clone(), state.key.verifying_key(), addr).unwrap();
+    let root = Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
     Server { addr, state, root }
 }
 
@@ -48,20 +48,20 @@ fn get(path: &str) -> Request<Full<Bytes>> {
 }
 
 /// Opens a pairing window as root.
-async fn open_window(root: &Client, user: &str, admin: bool) -> pair::Link {
+async fn open_window(root: &Connection, user: &str, admin: bool) -> pair::Link {
     let request = OpenPairing { user: user.into(), admin, addrs: Vec::new() };
     let pairing: Pairing = root.call(Method::POST, "/admin/pair", Some(&request)).await.unwrap();
     pair::parse_link(&pairing.link).unwrap()
 }
 
 /// Pairs a new device key through `addr` (the server or a proxy) and returns a client for it.
-async fn pair_device(server: &Server, via: SocketAddr, tls: Arc<ClientConfig>, user: &str, admin: bool) -> Client {
+async fn pair_device(server: &Server, via: SocketAddr, tls: Arc<ClientConfig>, user: &str, admin: bool) -> Connection {
     let link = open_window(&server.root, user, admin).await;
     let key = keys::generate().unwrap();
     let server_key = keys::public_bytes(&link.server_key);
     let request = pair::Request::new(&key, &server_key, &link.code, "Test Mac").unwrap();
     let response =
-        http::send(via, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap())).await.unwrap();
+        https(via, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap())).await.unwrap();
     assert_eq!(response.status, StatusCode::OK);
     let reply: pair::Reply = serde_json::from_slice(&response.body).unwrap();
     let transcript = pair::transcript(&server_key, &keys::public_bytes(key.verifying_key()), "Test Mac");
@@ -72,11 +72,20 @@ async fn pair_device(server: &Server, via: SocketAddr, tls: Arc<ClientConfig>, u
     assert!(!pair::verify_reply(&link.server_key, &transcript, &tampered));
     let tampered = pair::Reply { user: format!("{user}x"), ..reply };
     assert!(!pair::verify_reply(&link.server_key, &transcript, &tampered));
-    Client { key, server_key, addr: via, tls }
+    Connection { key, server_key, addr: via.to_string(), tls }
 }
 
 fn pinned(state: &State) -> Arc<ClientConfig> {
-    Arc::new(tls::pinned_client_config(state.key.verifying_key()).unwrap())
+    Arc::new(net::client_config(state.key.verifying_key(), net::web_verifier(&[]).unwrap()).unwrap())
+}
+
+/// One request over a new TLS connection to `addr`.
+async fn https(
+    addr: SocketAddr,
+    tls: Arc<ClientConfig>,
+    request: Request<Full<Bytes>>,
+) -> Result<net::Response, flicks_client::Error> {
+    net::send(&addr.to_string(), tls, request).await
 }
 
 /// Accepts any certificate, as a client reaching a tunnel's public certificate does; such a
@@ -236,7 +245,7 @@ fn sign(
     body: &[u8],
     timestamp: u64,
 ) -> String {
-    auth::sign(key, server_key, method, path, range, body, timestamp).unwrap()
+    flicks_client::auth::sign(key, server_key, method, path, range, body, timestamp).unwrap()
 }
 
 #[tokio::test]
@@ -244,16 +253,20 @@ async fn pairing_works_on_localhost() {
     let server = start("pairing").await;
     let tls = pinned(&server.state);
 
-    // The probe proves the server holds its key.
+    // The probe proves the server holds its key, and signs its name.
     let probe = keys::encode(&[9u8; 16]);
-    let response = http::send(server.addr, tls.clone(), get(&format!("/info?probe={probe}"))).await.unwrap();
+    let response = https(server.addr, tls.clone(), get(&format!("/info?probe={probe}"))).await.unwrap();
     let info: Info = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(info.key, keys::encode(&server.state.public));
+    assert_eq!(info.name, server.state.name);
+    assert!(pair::valid_name(&info.name), "{:?}", info.name);
     let signature = keys::decode(&info.signature, 64).unwrap();
-    assert!(keys::verify(server.state.key.verifying_key(), &server::info_message(&[9u8; 16]), &signature));
+    let key = server.state.key.verifying_key();
+    assert!(keys::verify(key, &server::info_message(&[9u8; 16], &info.name), &signature));
+    assert!(!keys::verify(key, &server::info_message(&[9u8; 16], "Someone else"), &signature));
 
     // No window open: the pairing route answers like any unsigned request.
-    let response = http::send(server.addr, tls.clone(), post_json("/pair/redeem", b"{}".to_vec())).await.unwrap();
+    let response = https(server.addr, tls.clone(), post_json("/pair/redeem", b"{}".to_vec())).await.unwrap();
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
 
     let admin = pair_device(&server, server.addr, tls.clone(), "ana", true).await;
@@ -263,22 +276,22 @@ async fn pairing_works_on_localhost() {
     // A viewer is authenticated but not an admin; unknown routes are 404 once signed.
     let viewer = pair_device(&server, server.addr, tls.clone(), "bo", false).await;
     let err = viewer.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(403, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(403, _)), "{err}");
     let err = viewer.call::<()>(Method::GET, "/nothing", None::<&()>).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(404, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(404, _)), "{err}");
 
     // Redeeming twice with the same key is a no-op; any other key gets "used".
     let link = open_window(&server.root, "cy", false).await;
     let server_key = keys::public_bytes(&link.server_key);
     let first = keys::generate().unwrap();
     let body = serde_json::to_vec(&pair::Request::new(&first, &server_key, &link.code, "TV").unwrap()).unwrap();
-    let a = http::send(server.addr, tls.clone(), post_json("/pair/redeem", body.clone())).await.unwrap();
-    let b = http::send(server.addr, tls.clone(), post_json("/pair/redeem", body)).await.unwrap();
+    let a = https(server.addr, tls.clone(), post_json("/pair/redeem", body.clone())).await.unwrap();
+    let b = https(server.addr, tls.clone(), post_json("/pair/redeem", body)).await.unwrap();
     assert_eq!((a.status, b.status), (StatusCode::OK, StatusCode::OK));
     assert_eq!(a.body, b.body);
     let second = keys::generate().unwrap();
     let body = serde_json::to_vec(&pair::Request::new(&second, &server_key, &link.code, "TV").unwrap()).unwrap();
-    let c = http::send(server.addr, tls.clone(), post_json("/pair/redeem", body)).await.unwrap();
+    let c = https(server.addr, tls.clone(), post_json("/pair/redeem", body)).await.unwrap();
     assert_eq!(c.status, StatusCode::CONFLICT);
 
     let devices: Vec<Device> = admin.call(Method::GET, "/admin/devices", None::<&()>).await.unwrap();
@@ -291,16 +304,18 @@ async fn pairing_works_on_localhost() {
         .call::<User>(Method::POST, "/admin/users", Some(&AddUser { name: "ana".into(), admin: false }))
         .await
         .unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(409, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(409, _)), "{err}");
 
-    // Tunnel or tailnet names follow the detected addresses in the link; malformed ones are refused.
+    // Tunnel or tailnet names go before the detected addresses in the link; malformed ones are
+    // refused.
     let request = OpenPairing { user: "cy".into(), admin: false, addrs: vec!["nas.tail1234.ts.net:7686".into()] };
     let pairing: Pairing = server.root.call(Method::POST, "/admin/pair", Some(&request)).await.unwrap();
     let link = pair::parse_link(&pairing.link).unwrap();
-    assert_eq!(link.addrs.last().map(String::as_str), Some("nas.tail1234.ts.net:7686"));
+    assert_eq!(link.addrs.first().map(String::as_str), Some("nas.tail1234.ts.net:7686"));
+    assert!(link.addrs.len() > 1, "and the detected addresses after it: {:?}", link.addrs);
     let request = OpenPairing { user: "cy".into(), admin: false, addrs: vec!["nas&code=x:7686".into()] };
     let err = server.root.call::<Pairing>(Method::POST, "/admin/pair", Some(&request)).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(400, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(400, _)), "{err}");
 
     // Folders: added once, refused in protected places, removed by id.
     let media = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -308,18 +323,18 @@ async fn pairing_works_on_localhost() {
     let folder: Folder = admin.call(Method::POST, "/admin/folders", Some(&add(&media))).await.unwrap();
     for (path, code) in [(media.as_path(), 409), (Path::new("/etc"), 403)] {
         let err = admin.call::<Folder>(Method::POST, "/admin/folders", Some(&add(path))).await.unwrap_err();
-        assert!(matches!(err, flicks_server::Error::Status(c, _) if c == code), "{err}");
+        assert!(matches!(err, flicks_client::Error::Status(c, _) if c == code), "{err}");
     }
     let err =
         admin.call::<Folder>(Method::POST, "/admin/folders", Some(&add(&server.state.data_dir))).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(403, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(403, _)), "{err}");
     // A temp folder is fine (on macOS it lives under /var); the home folder and its parents aren't.
     let temp = tempfile::tempdir().unwrap();
     let _: Folder = admin.call(Method::POST, "/admin/folders", Some(&add(temp.path()))).await.unwrap();
     if let Some(home) = flicks_server::home_dir() {
         for path in home.ancestors() {
             let err = admin.call::<Folder>(Method::POST, "/admin/folders", Some(&add(path))).await.unwrap_err();
-            assert!(matches!(err, flicks_server::Error::Status(403, _)), "{}: {err}", path.display());
+            assert!(matches!(err, flicks_client::Error::Status(403, _)), "{}: {err}", path.display());
         }
     }
     admin.call::<()>(Method::DELETE, &format!("/admin/folders/{}", folder.id), None::<&()>).await.unwrap();
@@ -336,16 +351,17 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
     // Behind the proxy the certificate proves nothing; the probe does.
     let link = open_window(&server.root, "dee", true).await;
     let probe = keys::random::<16>().unwrap();
-    let response = http::send(via, tls.clone(), get(&format!("/info?probe={}", keys::encode(&probe)))).await.unwrap();
+    let response = https(via, tls.clone(), get(&format!("/info?probe={}", keys::encode(&probe)))).await.unwrap();
     let info: Info = serde_json::from_slice(&response.body).unwrap();
-    assert!(keys::verify(&link.server_key, &server::info_message(&probe), &keys::decode(&info.signature, 64).unwrap()));
+    let signature = keys::decode(&info.signature, 64).unwrap();
+    assert!(keys::verify(&link.server_key, &server::info_message(&probe, &info.name), &signature));
 
     // Pair through the proxy, which records the request.
     let server_key = keys::public_bytes(&link.server_key);
     let device = keys::generate().unwrap();
     let request = pair::Request::new(&device, &server_key, &link.code, "Phone").unwrap();
     let response =
-        http::send(via, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap())).await.unwrap();
+        https(via, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap())).await.unwrap();
     assert_eq!(response.status, StatusCode::OK);
     let captured = recording.lock().unwrap().last().unwrap().clone();
     let body_at = captured.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
@@ -365,10 +381,9 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
             signature: keys::encode(&keys::sign(&thief, &pair::request_message(&transcript, &proof))),
         };
         for addr in [via, server.addr] {
-            let response =
-                http::send(addr, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&forged).unwrap()))
-                    .await
-                    .unwrap();
+            let response = https(addr, tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&forged).unwrap()))
+                .await
+                .unwrap();
             assert_eq!(response.status, StatusCode::FORBIDDEN, "{name}");
         }
     }
@@ -382,7 +397,7 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
     assert_eq!(devices[0].key, keys::encode(&keys::public_bytes(device.verifying_key())));
 
     // Signed requests through the proxy work, and what it records can't be replayed or altered.
-    let client = Client { key: device, server_key: server_key.clone(), addr: via, tls: tls.clone() };
+    let client = Connection { key: device, server_key: server_key.clone(), addr: via.to_string(), tls: tls.clone() };
     let status: Status = client.call(Method::GET, "/admin/status", None::<&()>).await.unwrap();
     assert_eq!(status.devices, 1);
     let captured = recording.lock().unwrap().last().unwrap().clone();
@@ -415,7 +430,7 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
     // Removed: its next request through the proxy is refused.
     server.root.call::<()>(Method::DELETE, &format!("/admin/devices/{}", devices[0].id), None::<&()>).await.unwrap();
     let err = client.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(401, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(401, _)), "{err}");
 }
 
 #[tokio::test]
@@ -425,7 +440,7 @@ async fn replayed_altered_stale_and_removed_requests_fail() {
     let device = pair_device(&server, server.addr, tls.clone(), "eve", true).await;
     let key = &device.key;
     let sk = &device.server_key;
-    let send = |request| http::send(server.addr, tls.clone(), request);
+    let send = |request| https(server.addr, tls.clone(), request);
 
     let auth = sign(key, sk, "GET", "/admin/status", b"", b"", flicks_server::unix_now());
     let ok = send(signed_request(Method::GET, "/admin/status", &auth, None, b"")).await.unwrap();
@@ -480,7 +495,7 @@ async fn replayed_altered_stale_and_removed_requests_fail() {
     let devices: Vec<Device> = device.call(Method::GET, "/admin/devices", None::<&()>).await.unwrap();
     server.root.call::<()>(Method::DELETE, &format!("/admin/devices/{}", devices[0].id), None::<&()>).await.unwrap();
     let err = device.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.unwrap_err();
-    assert!(matches!(err, flicks_server::Error::Status(401, _)), "{err}");
+    assert!(matches!(err, flicks_client::Error::Status(401, _)), "{err}");
     let _: Status = server.root.call(Method::GET, "/admin/status", None::<&()>).await.unwrap();
 }
 
@@ -604,18 +619,27 @@ async fn unauthenticated_routes_fuzzed() {
             assert!(answer.is_empty() || answer.starts_with(b"HTTP/1.1 4"), "{len}");
         }
     }
-    let mut answered = 0;
-    let mut limited = 0;
+    // And it still answers.
+    let response = https(server.addr, pinned(state), get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.unwrap();
+    assert_eq!(response.status, StatusCode::OK);
+}
+
+/// On the paused clock, so how fast this machine answers can't change the count.
+#[tokio::test(start_paused = true)]
+async fn unauthenticated_requests_share_one_rate_limit() {
+    let state = State::open(&data_dir("rate-limit"), 0).unwrap();
+    let mut statuses = Vec::new();
     for _ in 0..40 {
-        let response = http::send(server.addr, pinned(state), get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.unwrap();
-        match response.status {
-            StatusCode::OK => answered += 1,
-            StatusCode::TOO_MANY_REQUESTS => limited += 1,
-            other => panic!("{other}"),
-        }
+        statuses.push(server::handle(&state, get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.status());
     }
-    // The global limit lets a burst of 20 (plus refill) through and refuses the rest.
-    assert!((20..40).contains(&answered) && limited > 0, "{answered} answered, {limited} limited");
+    // A burst of 20 is answered and the rest refused.
+    assert_eq!(statuses[..20], [StatusCode::OK; 20]);
+    assert_eq!(statuses[20..], [StatusCode::TOO_MANY_REQUESTS; 20]);
+    // It refills at 10 a second.
+    tokio::time::advance(std::time::Duration::from_millis(100)).await;
+    assert_eq!(server::handle(&state, get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.status(), StatusCode::OK);
+    let refused = server::handle(&state, get("/info?probe=AAAAAAAAAAAAAAAAAAAAAA")).await.status();
+    assert_eq!(refused, StatusCode::TOO_MANY_REQUESTS);
 }
 
 /// A body that never arrives.
@@ -691,7 +715,7 @@ fn catalog_mp4() -> Vec<u8> {
     w.finish().unwrap().into_inner()
 }
 
-async fn catalog_ready(client: &Client, count: usize) -> Vec<serde_json::Value> {
+async fn catalog_ready(client: &Connection, count: usize) -> Vec<serde_json::Value> {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let items: Vec<serde_json::Value> = client.call(Method::GET, "/items", None::<&()>).await.unwrap();
@@ -705,7 +729,7 @@ async fn catalog_ready(client: &Client, count: usize) -> Vec<serde_json::Value> 
     .unwrap()
 }
 
-async fn api_request(server: &Server, client: &Client, path: &str, range: Option<&str>) -> server::Reply {
+async fn api_request(state: &State, client: &Connection, path: &str, range: Option<&str>) -> server::Reply {
     let auth = sign(
         &client.key,
         &client.server_key,
@@ -715,7 +739,7 @@ async fn api_request(server: &Server, client: &Client, path: &str, range: Option
         b"",
         flicks_server::unix_now(),
     );
-    server::handle(&server.state, signed_request(Method::GET, path, &auth, range, b"")).await
+    server::handle(state, signed_request(Method::GET, path, &auth, range, b"")).await
 }
 
 #[tokio::test]
@@ -746,7 +770,7 @@ async fn catalog_play_ranges_and_private_progress() {
         viewer.call(Method::GET, &format!("/items?library={}&offset=1", folder.id), None::<&()>).await.unwrap();
     assert_eq!(found, json!([]));
     for path in ["/search?q=%GG", "/items?limit=no", "/items?library=-1", "/progress?user=1"] {
-        assert_eq!(api_request(&server, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(api_request(&server.state, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
     }
     let detail: Value = viewer.call(Method::GET, &format!("/items/{id}"), None::<&()>).await.unwrap();
     assert_eq!(detail["streams"][0]["codec"], "aac");
@@ -771,7 +795,7 @@ async fn catalog_play_ranges_and_private_progress() {
     let list: Value = viewer.call(Method::GET, "/items", None::<&()>).await.unwrap();
     assert_eq!(list[0]["item"], detail["item"]);
     let art_path = "/artwork/w342-p1.jpg";
-    let reply = api_request(&server, &viewer, art_path, None).await;
+    let reply = api_request(&server.state, &viewer, art_path, None).await;
     assert_eq!(reply.status(), StatusCode::OK);
     assert_eq!(reply.headers()["content-type"], "image/jpeg");
     assert_eq!(reply.into_body().collect().await.unwrap().to_bytes().as_ref(), jpeg);
@@ -784,13 +808,13 @@ async fn catalog_play_ranges_and_private_progress() {
         "/artwork/w342-.jpg",
         "/artwork/w100-p1.jpg",
     ] {
-        assert_eq!(api_request(&server, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(api_request(&server.state, &viewer, path, None).await.status(), StatusCode::BAD_REQUEST);
     }
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(server.state.data_dir.join("server.key"), art.join("w342-secret.jpg")).unwrap();
         assert_eq!(
-            api_request(&server, &viewer, "/artwork/w342-secret.jpg", None).await.status(),
+            api_request(&server.state, &viewer, "/artwork/w342-secret.jpg", None).await.status(),
             StatusCode::FORBIDDEN
         );
     }
@@ -812,7 +836,7 @@ async fn catalog_play_ranges_and_private_progress() {
     ] {
         assert!(matches!(
             viewer.call::<Value>(Method::PUT, &p, Some(&bad)).await,
-            Err(flicks_server::Error::Status(400, _))
+            Err(flicks_client::Error::Status(400, _))
         ));
     }
     let result: Value = other.call(Method::GET, &p, None::<&()>).await.unwrap();
@@ -857,7 +881,7 @@ async fn catalog_play_ranges_and_private_progress() {
         (Some("bytes=-9999999"), 0, len - 1),
         (Some("bytes=10-9999999"), 10, len - 1),
     ] {
-        let reply = api_request(&server, &viewer, &path, range).await;
+        let reply = api_request(&server.state, &viewer, &path, range).await;
         assert_eq!(reply.status(), if range.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK });
         assert_eq!(reply.headers()["accept-ranges"], "bytes");
         assert_eq!(reply.headers()["content-length"], (end - start + 1).to_string());
@@ -883,7 +907,7 @@ async fn catalog_play_ranges_and_private_progress() {
         "bytes=18446744073709551616-",
         "bytes=+1-2",
     ] {
-        let reply = api_request(&server, &viewer, &path, Some(range)).await;
+        let reply = api_request(&server.state, &viewer, &path, Some(range)).await;
         assert_eq!(reply.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{range}");
         assert_eq!(reply.headers()["content-range"], format!("bytes */{len}"));
     }
@@ -909,8 +933,8 @@ async fn catalog_play_ranges_and_private_progress() {
     std::fs::remove_file(media.path().join("Second.mp4")).unwrap();
     catalog_ready(&viewer, 1).await;
     server.root.call::<()>(Method::DELETE, &format!("/admin/folders/{}", folder.id), None::<&()>).await.unwrap();
-    assert_eq!(api_request(&server, &viewer, &path, None).await.status(), StatusCode::NOT_FOUND);
-    assert_eq!(api_request(&server, &viewer, &format!("/play/{id}"), None).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(api_request(&server.state, &viewer, &path, None).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(api_request(&server.state, &viewer, &format!("/play/{id}"), None).await.status(), StatusCode::NOT_FOUND);
     catalog_ready(&viewer, 0).await;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -949,18 +973,21 @@ async fn catalog_play_ranges_and_private_progress() {
 #[tokio::test]
 async fn catalog_paths_are_checked_at_each_open() {
     use std::os::unix::fs::symlink;
-    let server = start("catalog-paths").await;
+    // No scan worker: under load it could read the folder list after the folder below is added,
+    // then watch it and rescan the files this test swaps out, rewriting the stale entries it checks.
+    let state = State::open(&data_dir("catalog-paths"), 0).unwrap();
+    flicks_server::api::migrate(&state).await.unwrap();
+    // Only signs; requests go straight to `server::handle`.
+    let signer = Connection::pinned(state.key.clone(), state.key.verifying_key(), "unused:0".into()).unwrap();
     let media = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let bytes = catalog_mp4();
     let root = std::fs::canonicalize(media.path()).unwrap();
     let path = root.join("Movie.mp4");
     std::fs::write(&path, &bytes).unwrap();
-    // Populate a real scan, but don't subscribe this test's folder to a watcher: the stale
-    // catalog entry must remain present while we replace its path after scanning.
+    // Populate a real scan; the stale catalog entry must remain while its path is replaced.
     let r = root.clone();
-    let item = server
-        .state
+    let item = state
         .db
         .call(move |conn| {
             flicks_server::db::add_folder(conn, r.to_str().unwrap())?;
@@ -970,15 +997,15 @@ async fn catalog_paths_are_checked_at_each_open() {
         .await
         .unwrap();
     assert_eq!(
-        api_request(&server, &server.root, &format!("/files/{}", item.id), Some("bytes=0-0")).await.status(),
+        api_request(&state, &signer, &format!("/files/{}", item.id), Some("bytes=0-0")).await.status(),
         StatusCode::PARTIAL_CONTENT
     );
     // A truncated-to-empty file is a valid empty 200 without Range; no byte range can satisfy it.
     std::fs::write(&path, []).unwrap();
-    let empty = api_request(&server, &server.root, &format!("/files/{}", item.id), None).await;
+    let empty = api_request(&state, &signer, &format!("/files/{}", item.id), None).await;
     assert_eq!(empty.status(), StatusCode::OK);
     assert_eq!(empty.headers()["content-length"], "0");
-    let empty = api_request(&server, &server.root, &format!("/files/{}", item.id), Some("bytes=0-")).await;
+    let empty = api_request(&state, &signer, &format!("/files/{}", item.id), Some("bytes=0-")).await;
     assert_eq!(empty.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(empty.headers()["content-range"], "bytes */0");
     std::fs::write(outside.path().join("secret"), b"private").unwrap();
@@ -986,7 +1013,7 @@ async fn catalog_paths_are_checked_at_each_open() {
     symlink(outside.path().join("secret"), &path).unwrap();
     for prefix in ["files", "play"] {
         assert_eq!(
-            api_request(&server, &server.root, &format!("/{prefix}/{}", item.id), None).await.status(),
+            api_request(&state, &signer, &format!("/{prefix}/{}", item.id), None).await.status(),
             StatusCode::FORBIDDEN
         );
     }
@@ -995,14 +1022,13 @@ async fn catalog_paths_are_checked_at_each_open() {
     std::fs::write(root.join("inside"), &bytes).unwrap();
     symlink(root.join("inside"), &path).unwrap();
     assert_eq!(
-        api_request(&server, &server.root, &format!("/files/{}", item.id), None).await.status(),
+        api_request(&state, &signer, &format!("/files/{}", item.id), None).await.status(),
         StatusCode::FORBIDDEN
     );
     // A directory component repointed after scanning is refused too.
     symlink(outside.path(), root.join("linked")).unwrap();
     let linked = root.join("linked/secret");
-    server
-        .state
+    state
         .db
         .call(move |conn| {
             conn.execute("UPDATE library_files SET path=?1 WHERE id=?2", rusqlite::params![linked.to_str(), item.id])?;
@@ -1011,13 +1037,12 @@ async fn catalog_paths_are_checked_at_each_open() {
         .await
         .unwrap();
     assert_eq!(
-        api_request(&server, &server.root, &format!("/files/{}", item.id), None).await.status(),
+        api_request(&state, &signer, &format!("/files/{}", item.id), None).await.status(),
         StatusCode::FORBIDDEN
     );
     // Lexical traversal in a corrupt/stale catalog cannot escape either.
     let escaped = root.join("..").join(outside.path().file_name().unwrap()).join("secret");
-    server
-        .state
+    state
         .db
         .call(move |conn| {
             conn.execute("UPDATE library_files SET path=?1 WHERE id=?2", rusqlite::params![escaped.to_str(), item.id])?;
@@ -1026,7 +1051,7 @@ async fn catalog_paths_are_checked_at_each_open() {
         .await
         .unwrap();
     assert_eq!(
-        api_request(&server, &server.root, &format!("/files/{}", item.id), None).await.status(),
+        api_request(&state, &signer, &format!("/files/{}", item.id), None).await.status(),
         StatusCode::FORBIDDEN
     );
 }
@@ -1098,7 +1123,7 @@ async fn startup_scans_existing_folders_and_matroska_play_headers() {
         .unwrap();
     drop(before);
     let (addr, state) = server::spawn(dir.path(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let client = Client::new(state.key.clone(), state.key.verifying_key(), addr).unwrap();
+    let client = Connection::pinned(state.key.clone(), state.key.verifying_key(), addr.to_string()).unwrap();
     // Schema ready before spawn returns; opening startup with a folder triggers a scan.
     let items = catalog_ready(&client, 1).await;
     let id = items[0]["item"]["id"].as_i64().unwrap();
@@ -1157,6 +1182,38 @@ async fn cataloged_mp4_padding_and_oversized_boxes_play() {
     }
 }
 
+#[tokio::test]
+async fn cli_get_stops_at_the_end_of_the_file() {
+    use flicks_client::MAX_READ;
+    use flicks_server::cli_client::get;
+    let server = start("cli-get").await;
+    let media = tempfile::tempdir().unwrap();
+    // Exactly one read long, padded with a `free` box: a range past the end used to ask for the
+    // next chunk and fail with 416 after writing every byte.
+    let mut bytes = catalog_mp4();
+    let pad = MAX_READ as usize - bytes.len();
+    bytes.extend((pad as u32).to_be_bytes());
+    bytes.extend(b"free");
+    bytes.resize(MAX_READ as usize, 0);
+    std::fs::write(media.path().join("Exact.mp4"), &bytes).unwrap();
+    let path = media.path().to_string_lossy().into_owned();
+    server.root.call::<Folder>(Method::POST, "/admin/folders", Some(&AddFolder { path })).await.unwrap();
+    let id = catalog_ready(&server.root, 1).await[0]["item"]["id"].as_i64().unwrap();
+    let size = MAX_READ;
+    for (start, end) in [(0, size - 1), (0, size), (0, 3 * size), (10, size + 5), (size - 1, u64::MAX)] {
+        let mut out = Vec::new();
+        get(&server.root, id, start, end, &mut out).await.unwrap();
+        assert_eq!(out, bytes[start as usize..], "{start}-{end}");
+    }
+    let mut out = Vec::new();
+    get(&server.root, id, 100, 199, &mut out).await.unwrap();
+    assert_eq!(out, bytes[100..200]);
+    for start in [size, size + 1, u64::MAX] {
+        let err = get(&server.root, id, start, u64::MAX, &mut Vec::new()).await.unwrap_err();
+        assert!(matches!(err, flicks_server::Error::Usage(_)), "{start}: {err}");
+    }
+}
+
 /// Opt-in measurement against the actual release `flicks serve`, with an isolated HOME.
 /// Set FLICKS_API_MEDIA to an existing read-only media folder to measure real files instead.
 #[cfg(target_os = "macos")]
@@ -1198,7 +1255,7 @@ async fn api_performance() {
     let data = home.path().join("Library/Application Support/Flicks");
     let root = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(root) = Client::local(&data)
+            if let Ok(root) = flicks_server::cli::local(&data)
                 && root.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.is_ok()
             {
                 break root;
@@ -1234,11 +1291,12 @@ async fn api_performance() {
     let key = keys::generate().unwrap();
     let request = pair::Request::new(&key, &root.server_key, &link.code, "Perf").unwrap();
     let response =
-        http::send(root.addr, root.tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap()))
+        net::send(&root.addr, root.tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap()))
             .await
             .unwrap();
     assert_eq!(response.status, StatusCode::OK);
-    let viewer = Client { key, server_key: root.server_key.clone(), addr: root.addr, tls: root.tls.clone() };
+    let viewer =
+        Connection { key, server_key: root.server_key.clone(), addr: root.addr.clone(), tls: root.tls.clone() };
     for entry in items {
         let id = entry["item"]["id"].as_i64().unwrap();
         let play_path = format!("/play/{id}");
@@ -1256,7 +1314,7 @@ async fn api_performance() {
             // Includes a NEW TCP connection and pinned TLS handshake for every range request.
             // Signing happens before the timer; server signature verification is included.
             let start = Instant::now();
-            let tcp = TcpStream::connect(viewer.addr).await.unwrap();
+            let tcp = TcpStream::connect(viewer.addr.as_str()).await.unwrap();
             let stream = TlsConnector::from(viewer.tls.clone())
                 .connect(ServerName::try_from("flicks").unwrap(), tcp)
                 .await

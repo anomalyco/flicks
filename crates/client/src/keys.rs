@@ -1,5 +1,5 @@
-//! Keys, text encodings and the signed-message format, the client's side of
-//! docs/architecture.md, "Reaching a server" (the server's twin is `flicks_server::keys`).
+//! Keys, text encodings and the signed-message format (docs/architecture.md, "Reaching a
+//! server"), for both sides: the server re-exports this as `flicks_server::keys`.
 //!
 //! Public keys are SEC1 compressed P-256 points (33 bytes), signatures are `r ‖ s` (64 bytes), and
 //! both travel as unpadded base64url. Every signed message starts with its own `flicks-…-v1\0`
@@ -77,20 +77,21 @@ pub fn generate() -> Result<SigningKey, Error> {
     Err(Error::Random)
 }
 
-/// Loads a key file (the raw 32-byte scalar), creating it with mode 0600 (owner only) if it
-/// doesn't exist.
-pub fn load_or_create(path: &Path) -> Result<SigningKey, Error> {
+/// Loads a key file (the raw 32-byte scalar).
+pub fn load(path: &Path) -> Result<SigningKey, Error> {
     let bad = || Error::KeyFile(path.to_path_buf());
     let mut bytes = Vec::with_capacity(32);
-    match std::fs::File::open(path) {
-        Ok(file) => {
-            file.take(33).read_to_end(&mut bytes)?;
-            if bytes.len() != 32 {
-                return Err(bad());
-            }
-            SigningKey::from_slice(&bytes).map_err(|_| bad())
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
+    std::fs::File::open(path)?.take(33).read_to_end(&mut bytes)?;
+    if bytes.len() != 32 {
+        return Err(bad());
+    }
+    SigningKey::from_slice(&bytes).map_err(|_| bad())
+}
+
+/// Loads a key file, creating it with mode 0600 (owner only) if it doesn't exist.
+pub fn load_or_create(path: &Path) -> Result<SigningKey, Error> {
+    match load(path) {
+        Err(Error::Io(e)) if e.kind() == ErrorKind::NotFound => {
             let key = generate()?;
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
@@ -101,7 +102,7 @@ pub fn load_or_create(path: &Path) -> Result<SigningKey, Error> {
             file.sync_all()?;
             Ok(key)
         }
-        Err(e) => Err(e.into()),
+        other => other,
     }
 }
 
