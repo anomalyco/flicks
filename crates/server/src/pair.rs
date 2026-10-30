@@ -6,16 +6,13 @@ use std::time::{Duration, Instant};
 
 pub use flicks_client::pair::{
     CODE_LEN, Link, PROOF_LEN, Reply, Request, ok_message, parse_link, proof_matches, request_message, transcript,
-    valid_addr, verify_reply,
+    valid_addr, valid_name, verify_reply,
 };
 
 use crate::{Error, db, keys};
 
 /// How long a pairing window stays open.
 pub const WINDOW: Duration = Duration::from_secs(5 * 60);
-
-/// Longest user or device name, in bytes.
-pub const MAX_NAME: usize = 64;
 
 /// The most addresses an admin may add to a link.
 pub const MAX_EXTRA_ADDRS: usize = 16;
@@ -37,11 +34,6 @@ impl Window {
     pub fn is_open(&self) -> bool {
         Instant::now() < self.expires
     }
-}
-
-/// A user or device name: 1 to 64 bytes, no control characters, no surrounding spaces.
-pub fn valid_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= MAX_NAME && name.trim() == name && !name.chars().any(char::is_control)
 }
 
 /// Why a redemption was refused.

@@ -22,7 +22,11 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run the server on port 7686.
-    Serve,
+    Serve {
+        /// What devices call this server (default: this machine's name).
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Add, remove or list media folders.
     #[command(subcommand)]
     Folder(FolderCommand),
@@ -86,7 +90,7 @@ pub enum DeviceCommand {
 pub async fn run(command: Command) -> Result<(), Error> {
     let data_dir = crate::data_dir()?;
     match command {
-        Command::Serve => server::serve(&data_dir).await,
+        Command::Serve { name } => server::serve(&data_dir, name).await,
         Command::Client(command) => cli_client::run(command).await,
         Command::Service(command) => service::run(command).await,
         command => admin(&local(&data_dir)?, command).await.map_err(|e| match e {
@@ -175,7 +179,7 @@ async fn admin(client: &Connection, command: Command) -> Result<(), Error> {
                 println!("A pairing window is open for {}m {}s more.", left / 60, left % 60);
             }
         }
-        Command::Serve | Command::Client(_) | Command::Service(_) => {}
+        Command::Serve { .. } | Command::Client(_) | Command::Service(_) => {}
     }
     Ok(())
 }

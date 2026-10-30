@@ -253,13 +253,17 @@ async fn pairing_works_on_localhost() {
     let server = start("pairing").await;
     let tls = pinned(&server.state);
 
-    // The probe proves the server holds its key.
+    // The probe proves the server holds its key, and signs its name.
     let probe = keys::encode(&[9u8; 16]);
     let response = https(server.addr, tls.clone(), get(&format!("/info?probe={probe}"))).await.unwrap();
     let info: Info = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(info.key, keys::encode(&server.state.public));
+    assert_eq!(info.name, server.state.name);
+    assert!(pair::valid_name(&info.name), "{:?}", info.name);
     let signature = keys::decode(&info.signature, 64).unwrap();
-    assert!(keys::verify(server.state.key.verifying_key(), &server::info_message(&[9u8; 16]), &signature));
+    let key = server.state.key.verifying_key();
+    assert!(keys::verify(key, &server::info_message(&[9u8; 16], &info.name), &signature));
+    assert!(!keys::verify(key, &server::info_message(&[9u8; 16], "Someone else"), &signature));
 
     // No window open: the pairing route answers like any unsigned request.
     let response = https(server.addr, tls.clone(), post_json("/pair/redeem", b"{}".to_vec())).await.unwrap();
@@ -349,7 +353,8 @@ async fn pairing_and_requests_through_a_tls_terminating_proxy() {
     let probe = keys::random::<16>().unwrap();
     let response = https(via, tls.clone(), get(&format!("/info?probe={}", keys::encode(&probe)))).await.unwrap();
     let info: Info = serde_json::from_slice(&response.body).unwrap();
-    assert!(keys::verify(&link.server_key, &server::info_message(&probe), &keys::decode(&info.signature, 64).unwrap()));
+    let signature = keys::decode(&info.signature, 64).unwrap();
+    assert!(keys::verify(&link.server_key, &server::info_message(&probe, &info.name), &signature));
 
     // Pair through the proxy, which records the request.
     let server_key = keys::public_bytes(&link.server_key);

@@ -77,7 +77,8 @@ pub enum Error {
 pub struct Server {
     /// The server key, SEC1 compressed, base64url.
     pub key: String,
-    /// What to call it: the host it paired through.
+    /// What to call it: the name its `/info` gives ("Ryan's Mac"), or the host it was reached at
+    /// if that name isn't usable.
     pub name: String,
     /// `host:port` each, raced on every connect.
     pub addrs: Vec<String>,
@@ -136,6 +137,7 @@ pub struct Progress {
 #[derive(Deserialize)]
 struct Info {
     key: String,
+    name: String,
     signature: String,
 }
 
@@ -185,7 +187,7 @@ impl Client {
     /// the server (replacing an earlier entry for the same key).
     pub async fn pair(&mut self, link: &str, device_name: &str) -> Result<Server, Error> {
         let link = pair::parse_link(link.trim()).ok_or(Error::BadLink)?;
-        let connection = self.race(&link.server_key, &link.addrs).await?;
+        let (connection, name) = self.race(&link.server_key, &link.addrs).await?;
         let server_key = keys::public_bytes(&link.server_key);
         let request = pair::Request::new(&self.key, &server_key, &link.code, device_name)?;
         let body = serde_json::to_vec(&request).map_err(|_| Error::BadResponse)?;
@@ -197,13 +199,7 @@ impl Client {
         let mut addrs = link.addrs;
         addrs.retain(|a| *a != connection.addr);
         addrs.insert(0, connection.addr.clone());
-        let server = Server {
-            key: keys::encode(&server_key),
-            name: net::host(&connection.addr).to_string(),
-            addrs,
-            user: reply.user,
-            admin: reply.admin,
-        };
+        let server = Server { key: keys::encode(&server_key), name, addrs, user: reply.user, admin: reply.admin };
         self.servers.retain(|s| s.key != server.key);
         self.servers.push(server.clone());
         self.save()?;
@@ -225,18 +221,24 @@ impl Client {
     /// Races the saved addresses of the server with this key and keeps the first whose `/info`
     /// probe verifies. The address that won last time goes first and gets a head start, so a
     /// reachable server costs one probe (unauthenticated requests share one rate limit there).
+    /// A server renamed since is saved under its new name.
     pub async fn connect(&mut self, key: &str) -> Result<Connection, Error> {
         let server = self.servers.iter().find(|s| s.key == key).ok_or(Error::NotPaired)?;
-        let connection = self.race(&server.verifying_key()?, &server.addrs).await?;
+        let (connection, name) = self.race(&server.verifying_key()?, &server.addrs).await?;
         let server = self.servers.iter_mut().find(|s| s.key == key).ok_or(Error::NotPaired)?;
-        if let Some(at) = server.addrs.iter().position(|a| *a == connection.addr).filter(|at| *at > 0) {
+        let moved = server.addrs.iter().position(|a| *a == connection.addr).filter(|at| *at > 0);
+        if let Some(at) = moved {
             server.addrs[..=at].rotate_right(1);
+        }
+        if moved.is_some() || server.name != name {
+            server.name = name;
             self.save()?;
         }
         Ok(connection)
     }
 
-    async fn race(&self, server_key: &VerifyingKey, addrs: &[String]) -> Result<Connection, Error> {
+    /// The first address whose probe verifies, and the server's name.
+    async fn race(&self, server_key: &VerifyingKey, addrs: &[String]) -> Result<(Connection, String), Error> {
         let tls = Arc::new(net::client_config(server_key, self.web.clone())?);
         let mut addrs = addrs.iter().take(MAX_ADDRS);
         let tried = addrs.len();
@@ -253,13 +255,9 @@ impl Client {
                 tokio::time::timeout(HEAD_START, probes.join_next()).await.unwrap_or(None)
             };
             match joined {
-                Some(Ok(Ok(addr))) => {
-                    return Ok(Connection {
-                        addr,
-                        tls,
-                        key: self.key.clone(),
-                        server_key: keys::public_bytes(server_key),
-                    });
+                Some(Ok(Ok((addr, name)))) => {
+                    let server_key = keys::public_bytes(server_key);
+                    return Ok((Connection { addr, tls, key: self.key.clone(), server_key }, name));
                 }
                 Some(Ok(Err(error))) if telling(&error) >= telling(&last) => last = error,
                 None if racing => break,
@@ -287,8 +285,9 @@ fn telling(error: &Error) -> u8 {
     }
 }
 
-/// `GET /info?probe=<nonce>` at `addr`: returns `addr` if the answer is signed by `server_key`.
-async fn probe(addr: String, tls: Arc<ClientConfig>, server_key: VerifyingKey) -> Result<String, Error> {
+/// `GET /info?probe=<nonce>` at `addr`: returns `addr` and the server's name if the answer is
+/// signed by `server_key`. A name that isn't fit to show becomes the address's host.
+async fn probe(addr: String, tls: Arc<ClientConfig>, server_key: VerifyingKey) -> Result<(String, String), Error> {
     let nonce = keys::random::<16>()?;
     let request = hyper::Request::get(format!("/info?probe={}", keys::encode(&nonce)))
         .header(HOST, net::host_header(&addr))
@@ -296,12 +295,13 @@ async fn probe(addr: String, tls: Arc<ClientConfig>, server_key: VerifyingKey) -
         .map_err(|_| Error::BadAddress)?;
     let response = net::send(&addr, tls, request).await?;
     let info: Info = json(response)?;
-    let message = keys::Message::new("flicks-info-v1").field(&nonce).into_bytes();
+    let message = keys::Message::new("flicks-info-v1").field(&nonce).field(info.name.as_bytes()).into_bytes();
     let signed = keys::decode(&info.signature, 64).is_some_and(|sig| keys::verify(&server_key, &message, &sig));
     if info.key != keys::encode(&keys::public_bytes(&server_key)) || !signed {
         return Err(Error::WrongServer);
     }
-    Ok(addr)
+    let name = if pair::valid_name(&info.name) { info.name } else { net::host(&addr).to_string() };
+    Ok((addr, name))
 }
 
 /// Decodes a JSON answer; an error status becomes [`Error::Status`] with the server's message.

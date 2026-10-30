@@ -49,6 +49,8 @@ pub struct State {
     /// The server key, SEC1 compressed.
     pub public: Vec<u8>,
     pub data_dir: PathBuf,
+    /// What clients call this server (`/info`): the machine's name unless `flicks serve --name`.
+    pub name: String,
     pub db: Db,
     pub api: crate::api::Api,
     /// The port the server listens on, for pairing links.
@@ -68,6 +70,7 @@ impl State {
             public: keys::public_bytes(key.verifying_key()),
             key,
             data_dir: data_dir.to_path_buf(),
+            name: machine_name(),
             db,
             api: crate::api::Api::default(),
             port,
@@ -76,6 +79,22 @@ impl State {
             limiter: Limiter::new(),
         })
     }
+}
+
+/// This machine's name: the computer name on macOS ("Ryan's Mac"), the host name elsewhere.
+fn machine_name() -> String {
+    let command = if cfg!(target_os = "macos") {
+        std::process::Command::new("scutil").args(["--get", "ComputerName"]).output()
+    } else {
+        std::process::Command::new("hostname").output()
+    };
+    command
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|name| name.trim().to_string())
+        .filter(|name| pair::valid_name(name))
+        .unwrap_or_else(|| "Flicks".to_string())
 }
 
 fn create_private_dir(dir: &Path) -> Result<(), Error> {
@@ -90,15 +109,27 @@ fn create_private_dir(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// `flicks serve`: listens on port 7686 on every address until Ctrl-C.
-pub async fn serve(data_dir: &Path) -> Result<(), Error> {
+/// `flicks serve`: listens on port 7686 on every address until Ctrl-C, called `name` if given.
+pub async fn serve(data_dir: &Path, name: Option<String>) -> Result<(), Error> {
+    if name.as_deref().is_some_and(|name| !pair::valid_name(name)) {
+        return Err(Error::Usage("--name is 1 to 64 bytes, without control characters or surrounding spaces"));
+    }
     let listener = match TcpListener::bind((Ipv6Addr::UNSPECIFIED, crate::PORT)).await {
         Ok(listener) => listener,
         Err(_) => TcpListener::bind(("0.0.0.0", crate::PORT)).await?,
     };
-    let state = Arc::new(State::open(data_dir, crate::PORT)?);
+    let mut state = State::open(data_dir, crate::PORT)?;
+    if let Some(name) = name {
+        state.name = name;
+    }
+    let state = Arc::new(state);
     crate::api::start(&state).await?;
-    println!("Flicks is serving on port {} (server key {}).", crate::PORT, keys::encode(&state.public));
+    println!(
+        "Flicks \"{}\" is serving on port {} (server key {}).",
+        state.name,
+        crate::PORT,
+        keys::encode(&state.public)
+    );
     tokio::select! {
         result = run(listener, state) => result,
         _ = tokio::signal::ctrl_c() => Ok(()),
@@ -182,7 +213,8 @@ where
     }
 }
 
-/// `GET /info?probe=<nonce>`: the server key and `Sign(server key, "flicks-info-v1\0" ‖ lp(nonce))`.
+/// `GET /info?probe=<nonce>`: the server key, its name and
+/// `Sign(server key, "flicks-info-v1\0" ‖ lp(nonce) ‖ lp(name))`.
 pub fn info(state: &State, query: Option<&str>) -> Reply {
     let probe = query
         .unwrap_or("")
@@ -193,22 +225,24 @@ pub fn info(state: &State, query: Option<&str>) -> Reply {
     let Some(probe) = probe else {
         return status(StatusCode::BAD_REQUEST);
     };
-    let signature = keys::sign(&state.key, &info_message(&probe));
+    let signature = keys::sign(&state.key, &info_message(&probe, &state.name));
     json(&Info {
         key: keys::encode(&state.public),
+        name: state.name.clone(),
         signature: keys::encode(&signature),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
 
 /// What `/info` signs.
-pub fn info_message(probe: &[u8]) -> Vec<u8> {
-    keys::Message::new("flicks-info-v1").field(probe).into_bytes()
+pub fn info_message(probe: &[u8], name: &str) -> Vec<u8> {
+    keys::Message::new("flicks-info-v1").field(probe).field(name.as_bytes()).into_bytes()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Info {
     pub key: String,
+    pub name: String,
     pub signature: String,
     pub version: String,
 }

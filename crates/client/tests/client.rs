@@ -159,7 +159,8 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
         assert_eq!(mode(&home.join(flicks_client::KEY_FILE)), 0o600);
         assert_eq!(mode(&home.join(flicks_client::SERVERS_FILE)), 0o600);
     }
-    assert_eq!((server.name.as_str(), server.user.as_str(), server.admin), ("127.0.0.1", "ana", false));
+    // Named as the server calls itself, not by its address.
+    assert_eq!((&server.name, server.user.as_str(), server.admin), (&setup.state.name, "ana", false));
     assert_eq!(list_and_read(&mut local, &server, &setup.media).await, setup.addr.to_string());
     // The address that answered is saved first, and gets the head start next time.
     assert_eq!(server.addrs[0], setup.addr.to_string());
@@ -172,7 +173,7 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     let mut proxied = Client::open(&home).unwrap();
     proxied.trust(setup.authority.clone()).unwrap();
     let server = proxied.pair(&link(&setup, "bo", via.clone()).await, "Phone").await.unwrap();
-    assert_eq!((server.name.as_str(), server.user.as_str()), ("localhost", "bo"));
+    assert_eq!((&server.name, server.user.as_str()), (&setup.state.name, "bo"));
     let before = setup.proxied.load(Ordering::SeqCst);
     assert_eq!(list_and_read(&mut proxied, &server, &setup.media).await, via);
     assert!(setup.proxied.load(Ordering::SeqCst) > before);
@@ -181,6 +182,10 @@ async fn pairs_lists_and_reads_on_localhost_and_through_a_proxy() {
     let mut reopened = Client::open(&home).unwrap();
     reopened.trust(setup.authority.clone()).unwrap();
     assert_eq!((reopened.public_key(), &reopened.servers), (proxied.public_key(), &vec![server.clone()]));
+    // A server renamed since pairing is saved under its new name on the next connect.
+    reopened.servers[0].name = "Old name".into();
+    reopened.connect(&server.key).await.unwrap();
+    assert_eq!(Client::open(&home).unwrap().servers[0].name, setup.state.name);
     let device_key = keys::encode(&proxied.public_key());
     let devices: Vec<Device> = setup.root.call(Method::GET, "/admin/devices", None::<&()>).await.unwrap();
     assert!(devices.iter().any(|d| d.key == device_key && d.name == "Phone" && d.user == "bo"));

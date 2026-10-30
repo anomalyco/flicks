@@ -27,6 +27,9 @@ pub const PROOF_LEN: usize = 32;
 /// Longest address in a link, in bytes.
 pub const MAX_ADDR: usize = 256;
 
+/// Longest user, device or server name, in bytes.
+pub const MAX_NAME: usize = 64;
+
 /// What a device sends to `POST /pair/redeem`, every binary field base64url.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -43,6 +46,11 @@ pub struct Reply {
     pub admin: bool,
     /// `Sign(server key, "flicks-pair-ok-v1\0" ‖ lp(transcript) ‖ lp(user) ‖ admin)`, base64url.
     pub signature: String,
+}
+
+/// A user, device or server name: 1 to 64 bytes, no control characters, no surrounding spaces.
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= MAX_NAME && name.trim() == name && !name.chars().any(char::is_control)
 }
 
 /// A link address: `host:port` (IPv6 must be bracketed), not a URL or query, and nothing that
