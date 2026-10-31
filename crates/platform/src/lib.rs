@@ -163,20 +163,25 @@ impl Decoder {
     /// decoder when hardware is unavailable. Container colour tags override the SPS when
     /// specified, so pixel transfer sees the source's actual transfer function/primaries.
     #[cfg(target_os = "macos")]
-    pub fn for_transcode(codec: Codec, configuration: &[u8], color: Option<ColorInfo>) -> Result<Self> {
+    pub fn for_transcode(
+        codec: Codec,
+        configuration: &[u8],
+        color: Option<&flicks_container::isobmff::ColorInfo>,
+    ) -> Result<Self> {
+        use flicks_container::isobmff::ColorInfo::{Nclc, Nclx};
         let mut info = Self::transcode_info(codec, configuration)?;
-        if let Some(c) = color {
+        if let Some(Nclx { primaries, transfer, matrix, .. } | Nclc { primaries, transfer, matrix }) = color {
             let src = &mut info.frame.color;
-            if c.primaries != 2 {
-                src.primaries = c.primaries;
+            for (v, dest) in [(primaries, &mut src.primaries), (transfer, &mut src.transfer), (matrix, &mut src.matrix)]
+            {
+                if *v != 2 {
+                    *dest = u8::try_from(*v).map_err(|_| Error::InvalidData("container colour code"))?;
+                }
             }
-            if c.transfer != 2 {
-                src.transfer = c.transfer;
+            // nclc, like Matroska with no explicit Range, does not override SPS range.
+            if let Some(Nclx { full_range, .. }) = color {
+                src.full_range = *full_range;
             }
-            if c.matrix != 2 {
-                src.matrix = c.matrix;
-            }
-            src.full_range = c.full_range;
         }
         Self::open(info, true)
     }
@@ -710,8 +715,10 @@ mod tests {
         let _ff = flicks_testkit::require_ffmpeg!();
         assert!(H264Encoder::new(1920, 0, 3_000_000, 41667).is_err());
         assert!(H264Encoder::new(1279, 720, 3_000_000, 41667).is_err());
-        let (config, packets) = fixture(Codec::H264, 8, false, "318x242", 16);
-        let mut dec = Decoder::for_transcode(Codec::H264, &config, None).unwrap();
+        let (config, packets) = fixture(Codec::H264, 8, true, "318x242", 16);
+        let color = isobmff::ColorInfo::Nclc { primaries: 2, transfer: 2, matrix: 1 };
+        let mut dec = Decoder::for_transcode(Codec::H264, &config, Some(&color)).unwrap();
+        assert!(dec.info.frame.color.full_range);
         let mut frames = Vec::new();
         for (data, pts) in packets {
             frames.extend(dec.decode(&data, pts).unwrap());
