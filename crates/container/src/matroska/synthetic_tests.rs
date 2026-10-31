@@ -687,3 +687,28 @@ fn large_mkv_open_measurement() {
     assert!(!d.file().indexed);
     assert!(d.tracks()[0].samples.is_empty());
 }
+
+#[test]
+fn bounded_packet_reads_and_cue_only_seek() {
+    use std::cell::Cell;
+    struct Limited(Vec<u8>, Cell<u64>);
+    impl ByteSource for Limited {
+        fn len(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read_at(&self, at: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            self.0.as_slice().read_at(at, buf)
+        }
+        fn max_read_len(&self) -> u64 {
+            self.1.get()
+        }
+    }
+    let f = Limited(synthetic(), Cell::new(1));
+    assert!(matches!(Demuxer::new(&f), Err(Error::TooLarge(_))));
+    f.1.set(1 << 20);
+    let mut d = Demuxer::new(&f).unwrap();
+    assert!(d.seek_cue(0, 40_000_000, 32).unwrap().is_none());
+    assert!(!d.file().indexed);
+    f.1.set(1);
+    assert!(matches!(d.next_packet(), Err(Error::TooLarge(_))));
+}

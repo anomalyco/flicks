@@ -11,6 +11,18 @@ mod config;
 #[allow(unsafe_code)]
 mod ffi;
 
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod aac_encode_ffi;
+#[cfg(target_os = "macos")]
+pub use aac_encode_ffi::AacEncoder;
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod h264_encode_ffi;
+#[cfg(target_os = "macos")]
+pub use h264_encode_ffi::{EncodedVideo, H264Encoder, VideoSample};
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 #[path = "permissions_ffi.rs"]
@@ -26,7 +38,7 @@ pub enum Error {
     InvalidData(&'static str),
     #[error("{operation} failed ({status})")]
     Platform { operation: &'static str, status: i32 },
-    #[error("decoder is finished or failed; create a new decoder")]
+    #[error("codec run is finished or failed")]
     Finished,
 }
 
@@ -122,25 +134,72 @@ impl Decoder {
     pub fn new(codec: Codec, configuration: &[u8]) -> Result<Self> {
         #[cfg(target_os = "macos")]
         {
-            let info = config::StreamInfo::parse(codec, configuration)?;
-            let session = ffi::Session::new(&info)?;
-            Ok(Self {
-                session,
-                info,
-                pending: Vec::new(),
-                in_flight: Vec::new(),
-                last_pts: None,
-                first: true,
-                skip_rasl: false,
-                h264_recovery_pts: None,
-                finished: false,
-            })
+            Self::open(config::StreamInfo::parse(codec, configuration)?, false)
         }
         #[cfg(not(target_os = "macos"))]
         {
             let _ = (codec, configuration);
             Err(Error::Unsupported("VideoToolbox requires macOS"))
         }
+    }
+
+    /// Inspect a hardware-compatible avcC/hvcC without starting a codec session.
+    /// Used to avoid advertising an unsupported transcode format or source size.
+    #[cfg(target_os = "macos")]
+    pub fn transcode_format(codec: Codec, configuration: &[u8]) -> Result<FrameInfo> {
+        Ok(Self::transcode_info(codec, configuration)?.frame)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn transcode_info(codec: Codec, configuration: &[u8]) -> Result<config::StreamInfo> {
+        let info = config::StreamInfo::parse(codec, configuration)?;
+        if u64::from(info.frame.width) * u64::from(info.frame.height) > 4096 * 2304 {
+            return Err(Error::Unsupported("source exceeds transcode pixel budget"));
+        }
+        Ok(info)
+    }
+
+    /// A bounded server transcode run. Prefer hardware but allow VideoToolbox's software
+    /// decoder when hardware is unavailable. Container colour tags override the SPS when
+    /// specified, so pixel transfer sees the source's actual transfer function/primaries.
+    #[cfg(target_os = "macos")]
+    pub fn for_transcode(
+        codec: Codec,
+        configuration: &[u8],
+        color: Option<&flicks_container::isobmff::ColorInfo>,
+    ) -> Result<Self> {
+        use flicks_container::isobmff::ColorInfo::{Nclc, Nclx};
+        let mut info = Self::transcode_info(codec, configuration)?;
+        if let Some(Nclx { primaries, transfer, matrix, .. } | Nclc { primaries, transfer, matrix }) = color {
+            let src = &mut info.frame.color;
+            for (v, dest) in [(primaries, &mut src.primaries), (transfer, &mut src.transfer), (matrix, &mut src.matrix)]
+            {
+                if *v != 2 {
+                    *dest = u8::try_from(*v).map_err(|_| Error::InvalidData("container colour code"))?;
+                }
+            }
+            // nclc, like Matroska with no explicit Range, does not override SPS range.
+            if let Some(Nclx { full_range, .. }) = color {
+                src.full_range = *full_range;
+            }
+        }
+        Self::open(info, true)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open(info: config::StreamInfo, transcode: bool) -> Result<Self> {
+        let session = ffi::Session::new(&info, transcode)?;
+        Ok(Self {
+            session,
+            info,
+            pending: Vec::new(),
+            in_flight: Vec::new(),
+            last_pts: None,
+            first: true,
+            skip_rasl: false,
+            h264_recovery_pts: None,
+            finished: false,
+        })
     }
 
     /// Submit one complete access unit. PTS uses the caller's consistent tick units; negative
@@ -648,6 +707,106 @@ mod tests {
     fn other_platforms_are_unsupported() {
         assert!(matches!(Decoder::new(Codec::H264, &[]), Err(Error::Unsupported(_))));
         assert!(matches!(Decoder::new(Codec::Hevc, &[]), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn h264_encoder_preserves_pts_and_forces_idrs() {
+        let _ff = flicks_testkit::require_ffmpeg!();
+        assert!(H264Encoder::new(1920, 0, 3_000_000, 41667).is_err());
+        assert!(H264Encoder::new(1279, 720, 3_000_000, 41667).is_err());
+        let (config, packets) = fixture(Codec::H264, 8, true, "318x242", 16);
+        let color = isobmff::ColorInfo::Nclc { primaries: 2, transfer: 2, matrix: 1 };
+        let mut dec = Decoder::for_transcode(Codec::H264, &config, Some(&color)).unwrap();
+        assert!(dec.info.frame.color.full_range);
+        let mut frames = Vec::new();
+        for (data, pts) in packets {
+            frames.extend(dec.decode(&data, pts).unwrap());
+        }
+        frames.extend(dec.flush().unwrap());
+        let mut enc = H264Encoder::new(160, 122, 600_000, 41667).unwrap();
+        for (i, frame) in frames.iter().enumerate() {
+            enc.encode(frame.pixel_buffer(), i as i64 * 41667, i == 9).unwrap();
+        }
+        let out = enc.finish().unwrap();
+        assert_eq!(out.avcc.get(1..4), Some([0x64, 0, 0x2a].as_slice()), "advertised RFC 6381 codec");
+        assert_eq!(out.samples.len(), 16);
+        assert!(out.samples[0].idr && out.samples[9].idr);
+        for (i, s) in out.samples.iter().enumerate() {
+            assert_eq!(s.pts_us, i as i64 * 41667);
+        }
+        let info = config::StreamInfo::parse(Codec::H264, &out.avcc).unwrap();
+        assert_eq!((info.frame.crop.2, info.frame.crop.3), (160, 122));
+        assert_eq!((info.frame.color.primaries, info.frame.color.transfer, info.frame.color.matrix), (1, 1, 1));
+        let mut enc = H264Encoder::new(160, 122, 600_000, 41667).unwrap();
+        enc.encode(frames[0].pixel_buffer(), 10, false).unwrap();
+        assert!(enc.encode(frames[0].pixel_buffer(), 10, false).is_err());
+        assert!(enc.finish().is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn aac_stereo_encoder_is_bounded_and_flushes() {
+        assert!(AacEncoder::new(0).is_err());
+        assert!(AacEncoder::new(96000).is_err());
+        assert!(AacEncoder::new(48000).unwrap().encode(&[0.0]).is_err());
+        assert!(AacEncoder::new(48000).unwrap().encode(&[f32::NAN, 0.0]).is_err());
+        for rate in [8000, 44100, 48000] {
+            let encoder = AacEncoder::new(rate).unwrap();
+            let priming = encoder.priming_frames();
+            let packets = encoder.encode(&vec![0.0; 8192]).unwrap();
+            assert!(packets.iter().all(|p| !p.is_empty()));
+            assert!(packets.len() * 1024 >= 4096 + priming as usize);
+            assert!(packets.len() <= 16);
+            eprintln!("AAC {rate} Hz: {priming} priming frames, {} packets for 4096 PCM frames", packets.len());
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn aac_priming_trim_preserves_impulse_position() {
+        use flicks_container::isobmff::{SampleEntry, TrackConfig, WriteSample, cmaf};
+        let ffmpeg = flicks_testkit::require_ffmpeg!();
+        for (rate, asc) in [(44100, vec![0x12, 0x10]), (48000, vec![0x11, 0x90])] {
+            let encoder = AacEncoder::new(rate).unwrap();
+            let priming = encoder.priming_frames() as usize;
+            let padding = (1024 - priming % 1024) % 1024;
+            let mut pcm = vec![0.0; (padding + 4096 + 4096 + 1024) * 2];
+            let impulse = padding + 4096 + 1700;
+            pcm[impulse * 2] = 0.9;
+            pcm[impulse * 2 + 1] = 0.9;
+            let packets = encoder.encode(&pcm).unwrap();
+            let skip = (priming + padding + 4096) / 1024;
+            let samples: Vec<_> = packets[skip..skip + 4]
+                .iter()
+                .map(|data| WriteSample { data, duration: 1024, composition_offset: 0, is_sync: true })
+                .collect();
+            let mut mp4 = cmaf::write_init_segment(&[TrackConfig::new(SampleEntry::aac(asc, 2, rate), rate)]).unwrap();
+            mp4.extend(cmaf::write_media_segment(1, 0, &samples).unwrap());
+            let path = flicks_testkit::temp_path(&flicks_testkit::fixtures_dir("platform").join("aac-priming.mp4"));
+            std::fs::write(&path, mp4).unwrap();
+            let result = std::process::Command::new(&ffmpeg)
+                .args(["-v", "error", "-threads", "1", "-i"])
+                .arg(&path)
+                .args(["-f", "f32le", "-acodec", "pcm_f32le", "-threads", "1", "pipe:1"])
+                .output()
+                .unwrap();
+            std::fs::remove_file(&path).unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            let decoded: Vec<f32> = result.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+            assert_eq!(decoded.len(), 4096 * 2);
+            let (peak, value) = decoded
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .enumerate()
+                .map(|(i, frame)| (i, frame[0].abs()))
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap();
+            assert!(peak.abs_diff(1700) <= 1, "{rate} Hz: impulse at {peak}");
+            assert!(value > 0.1);
+            eprintln!("AAC {rate} Hz: trimmed impulse at {peak}, expected 1700");
+        }
     }
 
     #[test]

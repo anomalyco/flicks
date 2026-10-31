@@ -11,6 +11,7 @@ use crate::{Error, db, server::State};
 /// Per-server ownership; its worker owns the watcher, scanner and optional TMDB client.
 #[derive(Default)]
 pub struct Api {
+    pub(super) hls: Arc<super::hls::Cache>,
     wake: Mutex<Option<mpsc::Sender<Event>>>,
 }
 

@@ -1,7 +1,8 @@
-//! On-demand, separate-rendition VOD HLS. No media cache, child processes or temp
-//! files. Normal requests are device-signed; native players can request a
-//! five-minute, file/device-scoped grant with signed POST /hls/{file}/token.
+//! On-demand, separate-rendition VOD HLS. Only recently encoded fragments are
+//! cached; no child processes or temporary files. Normal requests are device-signed.
+//! Native players can request a five-minute, file/device-scoped grant with signed POST /hls/{file}/token.
 mod media;
+pub(super) use media::Cache;
 
 use crate::{
     Error, keys,
@@ -21,6 +22,7 @@ use std::io;
 
 // Bound simultaneous demux/segment allocations independently of HTTP connections.
 static WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+static ENCODERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 fn location(path: &str) -> Option<(i64, &str)> {
     let (file, resource) = path.strip_prefix("/hls/")?.split_once('/')?;
@@ -168,17 +170,36 @@ async fn render(state: &State, caller: &Caller, parts: &Parts) -> Result<Reply, 
         Some(q) if q.starts_with("token=") => format!("?{q}"),
         _ => return Ok(status(StatusCode::BAD_REQUEST)),
     };
-    let resource = resource.to_owned();
+    let Some(resource) = media::Resource::parse(resource) else {
+        return Ok(status(StatusCode::NOT_FOUND));
+    };
     let permit = match WORKERS.try_acquire() {
         Ok(permit) => permit,
         Err(_) => return Ok(status(StatusCode::SERVICE_UNAVAILABLE)),
     };
-    let result = tokio::task::spawn_blocking(move || {
+    let deadline = std::time::Instant::now() + media::DEADLINE;
+    // At most four requests are admitted, two encoding. Waiting for an encoder
+    // is bounded too; return 503 rather than spawning an unbounded blocking queue.
+    let encoder = if resource.encodes() {
+        match tokio::time::timeout_at(deadline.into(), ENCODERS.acquire()).await {
+            Ok(Ok(p)) => Some(p),
+            _ => return Ok(status(StatusCode::SERVICE_UNAVAILABLE)),
+        }
+    } else {
+        None
+    };
+    let cache = state.api.hls.clone();
+    let work = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        media::render(item, keys, &resource, &suffix)
-    })
-    .await
-    .map_err(|e| io::Error::other(e.to_string()))?;
+        let _encoder = encoder;
+        media::render(item, keys, resource, &suffix, &cache, deadline)
+    });
+    // A stuck OS codec cannot hold an HTTP connection indefinitely. Its permits
+    // stay on the worker until it actually stops, not on the cancelled request.
+    let Ok(joined) = tokio::time::timeout_at(deadline.into(), work).await else {
+        return Ok(status(StatusCode::SERVICE_UNAVAILABLE));
+    };
+    let result = joined.map_err(|e| io::Error::other(e.to_string()))?;
     match result {
         Ok((mime, bytes)) => {
             let mut response = Response::new(full(bytes));
@@ -224,7 +245,7 @@ fn boundaries(keys: &[flicks_library::Keyframe], duration: u64) -> io::Result<Ve
     Ok(cuts)
 }
 
-fn playlist(cuts: &[u64], track: usize, suffix: &str) -> String {
+fn playlist(cuts: &[u64], track: impl std::fmt::Display, suffix: &str) -> String {
     let max = cuts.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(1).div_ceil(1000);
     let mut out = format!(
         "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:{max}\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-MAP:URI=\"{track}/init.mp4{suffix}\"\n"

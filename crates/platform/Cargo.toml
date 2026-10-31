@@ -17,6 +17,8 @@ flicks-h264 = { path = "../h264" }
 flicks-hevc = { path = "../hevc" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AudioConverter", "objc2-core-audio-types"] }
+objc2-core-audio-types = "0.3.2"
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-video = { version = "0.3.2", features = ["objc2-io-surface"] }

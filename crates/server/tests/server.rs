@@ -481,7 +481,7 @@ async fn hls_case(video_codec: &str, audio_codec: &str, open_gop: bool) {
     assert!(!master.contains("#EXT-X-INDEPENDENT-SEGMENTS"));
     assert!(master.contains("CHANNELS=\""));
     assert!(master.contains("LANGUAGE=\""));
-    let video = master.lines().last().unwrap().strip_suffix(".m3u8").unwrap();
+    let video = master.lines().find(|l| !l.starts_with('#')).unwrap().strip_suffix(".m3u8").unwrap();
     let segment_path = format!("{root}/{video}/0.m4s");
     let start = Instant::now();
     let first = fetch(&server, &viewer, &segment_path).await;
@@ -2061,5 +2061,752 @@ async fn api_performance() {
             play_time[99]
         );
         assert!(first_byte[94] < 5.0, "range first-byte p95 exceeds 5 ms: {}", first_byte[94]);
+    }
+}
+
+/// FLK-26 acceptance against the actual release `flicks serve` with an isolated HOME:
+/// generated 16 s 4K HEVC Main10 PQ (closed and open GOP, 5.1 AAC) and, with
+/// FLICKS_TRANSCODE_MEDIA=<file>, one real read-only episode (its folder is added as is).
+/// Every rendition (direct, v1080/v720/v480, stereo audio) plays in AVPlayer from the start
+/// and after a seek through a test-only HTTP adapter that forwards to the real pinned-HTTPS
+/// server and keeps one variant in the master. Prints HLS_TRANSCODE_PERF / HLS_AVPLAYER /
+/// HLS_PSNR lines for docs/perf.md.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "binds port 7686, encodes 4K fixtures and plays in AVPlayer; run alone in release mode"]
+async fn transcode_ladder_avplayer() {
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    struct Process(std::process::Child);
+    impl Drop for Process {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    struct Source {
+        label: String,
+        path: PathBuf,
+        width: u32,
+        height: u32,
+        fps: f64,
+        pq: bool,
+        seek: f64,
+    }
+    struct Variant {
+        uri: String,
+        attrs: HashMap<String, String>,
+    }
+    fn attributes(line: &str) -> HashMap<String, String> {
+        let mut out = HashMap::new();
+        let (mut key, mut value, mut in_key, mut quoted) = (String::new(), String::new(), true, false);
+        for c in line.split_once(':').map_or("", |(_, b)| b).chars().chain(std::iter::once(',')) {
+            match c {
+                '"' => quoted = !quoted,
+                '=' if in_key => in_key = false,
+                ',' if !quoted => {
+                    out.insert(std::mem::take(&mut key), std::mem::take(&mut value));
+                    in_key = true;
+                }
+                c if in_key => key.push(c),
+                c => value.push(c),
+            }
+        }
+        out
+    }
+    fn bare(uri: &str) -> String {
+        uri.split('?').next().unwrap_or_default().to_owned()
+    }
+    /// (EXT-X-MAP URI, [(EXTINF text, segment URI)]), queries removed.
+    fn media_playlist(text: &str) -> (String, Vec<(String, String)>) {
+        let init = text.lines().find(|l| l.starts_with("#EXT-X-MAP:")).map(|l| bare(&attributes(l)["URI"])).unwrap();
+        let mut segments = Vec::new();
+        let mut duration = None;
+        for line in text.lines() {
+            if let Some(d) = line.strip_prefix("#EXTINF:") {
+                duration = Some(d.trim_end_matches(',').to_owned());
+            } else if !line.starts_with('#') && !line.is_empty() {
+                segments.push((duration.take().unwrap(), bare(line)));
+            }
+        }
+        (init, segments)
+    }
+    fn probe(ffprobe: &Path, args: &[&str], input: &Path) -> Value {
+        let output = Command::new(ffprobe).args(["-v", "error", "-of", "json"]).args(args).arg(input).output().unwrap();
+        assert!(output.status.success(), "ffprobe {}: {}", input.display(), String::from_utf8_lossy(&output.stderr));
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+    fn text(v: &Value) -> &str {
+        v.as_str().unwrap_or_default()
+    }
+    fn idr(data: &[u8], hevc: bool) -> bool {
+        let mut rest = data;
+        while let Some(len) = rest.get(..4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize) {
+            let Some(&head) = rest.get(4..4 + len).and_then(|n| n.first()) else {
+                return false;
+            };
+            let found = if hevc { matches!((head >> 1) & 0x3f, 19 | 20) } else { head & 0x1f == 5 };
+            if found {
+                return true;
+            }
+            rest = &rest[4 + len..];
+        }
+        false
+    }
+    async fn fetch(viewer: &Connection, path: &str) -> net::Response {
+        let auth = sign(&viewer.key, &viewer.server_key, "GET", path, b"", b"", flicks_server::unix_now());
+        net::send(&viewer.addr, viewer.tls.clone(), signed_request(Method::GET, path, &auth, None, b"")).await.unwrap()
+    }
+    /// The test-only adapter: `/only/<variant uri>/hls/...` forwards `/hls/...` (query intact) to
+    /// the real HTTPS server and, for the master, keeps only that variant's STREAM-INF.
+    async fn relay(
+        upstream: &str,
+        tls: Arc<ClientConfig>,
+        log: &Mutex<Vec<String>>,
+        request: Request<hyper::body::Incoming>,
+    ) -> hyper::Response<Full<Bytes>> {
+        let reply = |status: StatusCode, body: Vec<u8>, mime: &'static str| {
+            hyper::Response::builder()
+                .status(status)
+                .header(hyper::header::CONTENT_TYPE, mime)
+                .body(Full::new(Bytes::from(body)))
+                .unwrap()
+        };
+        let path = request.uri().path().to_owned();
+        let query = request.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+        let Some((only, rest)) = path.strip_prefix("/only/").and_then(|p| p.split_once('/')) else {
+            return reply(StatusCode::NOT_FOUND, Vec::new(), "text/plain");
+        };
+        let rest = format!("/{rest}");
+        let Ok(response) = net::send(upstream, tls, get(&format!("{rest}{query}"))).await else {
+            return reply(StatusCode::BAD_GATEWAY, Vec::new(), "text/plain");
+        };
+        log.lock().unwrap().push(format!("{} {rest}", response.status.as_u16()));
+        let mime = if rest.ends_with(".m3u8") { "application/vnd.apple.mpegurl" } else { "video/mp4" };
+        if response.status != StatusCode::OK || !rest.ends_with("/master.m3u8") || only == "auto" {
+            return reply(response.status, response.body.to_vec(), mime);
+        }
+        let (mut out, mut pending, mut found) = (String::new(), None, false);
+        for line in String::from_utf8_lossy(&response.body).lines() {
+            if line.starts_with("#EXT-X-STREAM-INF:") {
+                pending = Some(line.to_owned());
+            } else if let Some(inf) = pending.take().filter(|_| !line.starts_with('#')) {
+                if bare(line) == only {
+                    out.push_str(&format!("{inf}\n{line}\n"));
+                    found = true;
+                }
+            } else {
+                out.push_str(&format!("{line}\n"));
+            }
+        }
+        if !found {
+            return reply(StatusCode::NOT_FOUND, Vec::new(), "text/plain");
+        }
+        reply(StatusCode::OK, out.into_bytes(), mime)
+    }
+
+    let (ffmpeg, ffprobe) = flicks_testkit::require_oracles!();
+    if !flicks_testkit::ffmpeg_has_encoder(&ffmpeg, "libx265") {
+        flicks_testkit::skip("transcode_ladder_avplayer", "ffmpeg lacks libx265");
+        return;
+    }
+    assert!(std::net::TcpStream::connect("127.0.0.1:7686").is_err(), "port 7686 already in use");
+    let work = tempfile::tempdir().unwrap();
+    let player = work.path().join("avplayer");
+    let compiled = Command::new("swiftc")
+        .args(["-O", "-o"])
+        .arg(&player)
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/avplayer.swift"))
+        .output()
+        .unwrap();
+    assert!(compiled.status.success(), "swiftc: {}", String::from_utf8_lossy(&compiled.stderr));
+    let hdr_eligible = Command::new(&player).arg("--hdr-eligible").output().unwrap().stdout.starts_with(b"true");
+    let has_scale_vt = Command::new(&ffmpeg).args(["-hide_banner", "-filters"]).output().is_ok_and(|o| {
+        String::from_utf8_lossy(&o.stdout).lines().any(|l| l.split_whitespace().nth(1) == Some("scale_vt"))
+    });
+
+    // Fixtures: 4 s closed or open GOPs, nominal bitrate above the 1080p tier's 8 Mbps.
+    let synthetic = flicks_testkit::fixtures_dir("transcode/18mbps-pq");
+    let mut sources = Vec::new();
+    for open_gop in [false, true] {
+        let path = synthetic.join(format!("PQ {} GOP.mkv", if open_gop { "open" } else { "closed" }));
+        let params = format!(
+            "pools=4:frame-threads=2:keyint=96:min-keyint=96:scenecut=0:open-gop={}:bframes=3:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400",
+            u8::from(open_gop)
+        );
+        flicks_testkit::fixtures::generate(&path, |tmp| {
+        let output = Command::new(&ffmpeg)
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=3840x2160:rate=24"])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=0.2*sin(2*PI*220*t)|0.2*sin(2*PI*330*t)|0.2*sin(2*PI*440*t)|0.1*sin(2*PI*60*t)|0.2*sin(2*PI*550*t)|0.2*sin(2*PI*660*t):s=48000:c=5.1",
+            ])
+            .args(["-t", "16", "-pix_fmt", "yuv420p10le", "-c:v", "libx265", "-preset", "ultrafast", "-b:v", "18M", "-maxrate", "20M", "-bufsize", "10M"])
+            .args(["-x265-params", &params])
+            .args(["-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"])
+            .args(["-c:a", "aac", "-b:a", "384k"])
+            .arg(tmp)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        true
+        }).unwrap();
+        let info = probe(
+            &ffprobe,
+            &[
+                "-read_intervals",
+                "%+#16",
+                "-show_frames",
+                "-show_entries",
+                "format=bit_rate:stream=codec_name,profile,channels:frame=media_type,pix_fmt,color_transfer,color_primaries",
+            ],
+            &path,
+        );
+        let streams = info["streams"].as_array().unwrap();
+        assert_eq!((text(&streams[0]["codec_name"]), text(&streams[0]["profile"])), ("hevc", "Main 10"));
+        let picture = info["frames"].as_array().unwrap().iter().find(|f| f["media_type"] == "video").unwrap();
+        assert_eq!(
+            (text(&picture["color_transfer"]), text(&picture["color_primaries"]), text(&picture["pix_fmt"])),
+            ("smpte2084", "bt2020", "yuv420p10le")
+        );
+        assert_eq!(streams[1]["channels"], 6);
+        let bitrate: u64 = text(&info["format"]["bit_rate"]).parse().unwrap();
+        assert!(bitrate > 8_200_000, "fixture bitrate {bitrate} must exceed the 1080p tier");
+        eprintln!("HLS_FIXTURE {} bitrate={bitrate}", path.display());
+        let label = format!("4k-pq-{}", if open_gop { "open" } else { "closed" });
+        sources.push(Source { label, path, width: 3840, height: 2160, fps: 24.0, pq: true, seek: 9.0 });
+    }
+    let real = std::env::var_os("FLICKS_TRANSCODE_MEDIA").map(PathBuf::from);
+    if let Some(path) = &real {
+        let info = probe(
+            &ffprobe,
+            &["-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,r_frame_rate:format=duration"],
+            path,
+        );
+        let stream = &info["streams"][0];
+        assert_eq!(stream["codec_name"], "h264", "FLICKS_TRANSCODE_MEDIA must be an H.264 episode");
+        let (n, d) = text(&stream["r_frame_rate"]).split_once('/').unwrap();
+        let duration: f64 = text(&info["format"]["duration"]).parse().unwrap();
+        sources.push(Source {
+            label: "real-h264".into(),
+            path: path.clone(),
+            width: stream["width"].as_u64().unwrap() as u32,
+            height: stream["height"].as_u64().unwrap() as u32,
+            fps: n.parse::<f64>().unwrap() / d.parse::<f64>().unwrap(),
+            pq: false,
+            seek: (duration / 2.0).floor() + 0.5,
+        });
+    }
+
+    // The production server, its logs kept to check that no grant is ever written.
+    let home = tempfile::tempdir().unwrap();
+    let process = Process(
+        Command::new(env!("CARGO_BIN_EXE_flicks"))
+            .arg("serve")
+            .env("HOME", home.path())
+            .env_remove("FLICKS_TMDB_KEY")
+            .stdout(Stdio::from(std::fs::File::create(work.path().join("serve.out")).unwrap()))
+            .stderr(Stdio::from(std::fs::File::create(work.path().join("serve.err")).unwrap()))
+            .spawn()
+            .unwrap(),
+    );
+    let data = home.path().join("Library/Application Support/Flicks");
+    let root = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(root) = flicks_server::cli::local(&data)
+                && root.call::<Status>(Method::GET, "/admin/status", None::<&()>).await.is_ok()
+            {
+                break root;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let link = open_window(&root, "transcode", false).await;
+    let key = keys::generate().unwrap();
+    let request = pair::Request::new(&key, &root.server_key, &link.code, "AVPlayer").unwrap();
+    let paired =
+        net::send(&root.addr, root.tls.clone(), post_json("/pair/redeem", serde_json::to_vec(&request).unwrap()))
+            .await
+            .unwrap();
+    assert_eq!(paired.status, StatusCode::OK);
+    let viewer =
+        Connection { key, server_key: root.server_key.clone(), addr: root.addr.clone(), tls: root.tls.clone() };
+    let mut folders = vec![synthetic];
+    folders.extend(real.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf));
+    for folder in folders {
+        let _: Folder = root
+            .call(Method::POST, "/admin/folders", Some(&AddFolder { path: folder.to_string_lossy().into_owned() }))
+            .await
+            .unwrap();
+    }
+    let sizes: Vec<u64> = sources.iter().map(|s| std::fs::metadata(&s.path).unwrap().len()).collect();
+    let ids: Vec<i64> = tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            let items: Vec<Value> = viewer.call(Method::GET, "/items", None::<&()>).await.unwrap();
+            let ids: Vec<_> = sizes
+                .iter()
+                .filter_map(|size| {
+                    items.iter().find(|i| i["item"]["size"] == *size).and_then(|i| i["item"]["id"].as_i64())
+                })
+                .collect();
+            if ids.len() == sizes.len() {
+                break ids;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("sources catalogued");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let adapter_addr = listener.local_addr().unwrap();
+    let served: Arc<Mutex<Vec<String>>> = Arc::default();
+    let (upstream, upstream_tls, log) = (viewer.addr.clone(), viewer.tls.clone(), served.clone());
+    let adapter = tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let (upstream, tls, log) = (upstream.clone(), upstream_tls.clone(), log.clone());
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |request| {
+                    let (upstream, tls, log) = (upstream.clone(), tls.clone(), log.clone());
+                    async move { Ok::<_, std::convert::Infallible>(relay(&upstream, tls, &log, request).await) }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(hyper_util::rt::TokioIo::new(tcp), service)
+                    .await;
+            });
+        }
+    });
+
+    let mut tokens = Vec::new();
+    for (source, id) in sources.iter().zip(ids) {
+        let label = &source.label;
+        let frame = 1.0 / source.fps;
+        let response = fetch(&viewer, &format!("/hls/{id}/master.m3u8")).await;
+        assert_eq!(response.status, StatusCode::OK, "{label}: {}", String::from_utf8_lossy(&response.body));
+        let master = String::from_utf8(response.body.to_vec()).unwrap();
+        eprintln!("HLS_MASTER {label}\n{master}");
+        let lines: Vec<&str> = master.lines().collect();
+        let variants: Vec<Variant> = lines
+            .windows(2)
+            .filter(|w| w[0].starts_with("#EXT-X-STREAM-INF:"))
+            .map(|w| Variant { uri: bare(w[1]), attrs: attributes(w[0]) })
+            .collect();
+        let bandwidth = |v: &Variant| v.attrs["BANDWIDTH"].parse::<u64>().unwrap();
+        let direct = variants
+            .iter()
+            .find(|v| v.uri.strip_suffix(".m3u8").is_some_and(|s| s.parse::<usize>().is_ok()))
+            .expect("direct rendition");
+        if source.pq {
+            assert_eq!(direct.attrs.get("VIDEO-RANGE").map(String::as_str), Some("PQ"));
+        }
+        let tiers: Vec<&Variant> = variants.iter().filter(|v| v.uri != direct.uri).collect();
+        assert!(!tiers.is_empty(), "{label}: no transcoded tiers");
+        for tier in &tiers {
+            assert!(["v1080.m3u8", "v720.m3u8", "v480.m3u8"].contains(&tier.uri.as_str()), "{label}: {}", tier.uri);
+            assert!(bandwidth(tier) < bandwidth(direct), "{label}: {} is not smaller than direct", tier.uri);
+        }
+        if source.pq {
+            assert_eq!(tiers.len(), 3, "{label}: a 4K source offers v1080, v720 and v480");
+        }
+        let media: Vec<_> = lines.iter().filter(|l| l.starts_with("#EXT-X-MEDIA:")).map(|l| attributes(l)).collect();
+        let stereo = media
+            .iter()
+            .find(|m| {
+                m.get("TYPE").is_some_and(|t| t == "AUDIO")
+                    && m.get("CHANNELS").is_some_and(|c| c == "2")
+                    && tiers.iter().all(|t| t.attrs.get("AUDIO") == m.get("GROUP-ID"))
+            })
+            .expect("every transcoded tier uses a stereo audio group");
+        let stereo_uri = bare(&stereo["URI"]);
+
+        // Every rendition shares the direct rendition's cuts exactly.
+        let mut ladder = Vec::new();
+        for uri in std::iter::once(&direct.uri).chain(tiers.iter().map(|t| &t.uri)).chain([&stereo_uri]) {
+            let playlist = fetch(&viewer, &format!("/hls/{id}/{uri}")).await;
+            assert_eq!(playlist.status, StatusCode::OK, "{label} {uri}");
+            ladder.push((uri.clone(), media_playlist(std::str::from_utf8(&playlist.body).unwrap())));
+        }
+        let cuts: Vec<String> = ladder[0].1.1.iter().map(|(d, _)| d.clone()).collect();
+        for (uri, (_, segments)) in &ladder {
+            assert_eq!(segments.iter().map(|(d, _)| d.clone()).collect::<Vec<_>>(), cuts, "{label}: {uri} cuts differ");
+        }
+        let starts: Vec<f64> = cuts
+            .iter()
+            .scan(0.0, |t, d| {
+                let start = *t;
+                *t += d.parse::<f64>().unwrap();
+                Some(start)
+            })
+            .collect();
+        let n = cuts.len();
+        assert!(n >= 4, "{label}: {n} segments");
+        let mut picks = vec![n / 2, 1, n - 1];
+        if source.pq {
+            picks.push(0);
+        }
+        picks.dedup();
+
+        // Direct segments: keyframe presentation times, and catalogued cuts are real source keyframes.
+        let (direct_init, direct_segments) = &ladder[0].1;
+        let direct_init = fetch(&viewer, &format!("/hls/{id}/{direct_init}")).await.body;
+        let mut direct_start = HashMap::new();
+        let mut expected_counts = HashMap::new();
+        for &seq in &picks {
+            let segment = fetch(&viewer, &format!("/hls/{id}/{}", direct_segments[seq].1)).await;
+            assert_eq!(segment.status, StatusCode::OK);
+            let mut bytes = direct_init.to_vec();
+            bytes.extend(&segment.body);
+            let doc = flicks_container::isobmff::open(bytes.as_slice()).unwrap();
+            let track = &doc.tracks[0];
+            // The keyframe's presentation time (open-GOP leading pictures present before it).
+            direct_start.insert(seq, track.samples.get(0).unwrap().pts as f64 / f64::from(track.timescale));
+            let start = starts[seq];
+            let end = start + cuts[seq].parse::<f64>().unwrap();
+            let packets = probe(
+                &ffprobe,
+                &[
+                    "-select_streams",
+                    "v:0",
+                    "-read_intervals",
+                    &format!("{:.3}%{:.3}", (start - 1.0).max(0.0), end + 1.0),
+                    "-show_entries",
+                    "packet=pts_time,flags",
+                ],
+                &source.path,
+            );
+            // Audio sometimes outlasts video; count actual pictures, not EXTINF × fps.
+            expected_counts.insert(
+                seq,
+                packets["packets"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|p| {
+                        text(&p["pts_time"]).parse::<f64>().is_ok_and(|t| t >= start - 0.000001 && t < end - 0.000001)
+                    })
+                    .count(),
+            );
+            assert!(
+                packets["packets"].as_array().unwrap().iter().any(|p| text(&p["flags"]).contains('K')
+                    && (text(&p["pts_time"]).parse::<f64>().unwrap() - start).abs() <= frame + 0.001),
+                "{label}: cut {start} is not within one frame of a source keyframe"
+            );
+        }
+
+        // Transcoded tiers: nonsequential segments, timing, codec, size, frames, IDR, alignment, PSNR.
+        let mut sizes = HashMap::new();
+        for (uri, (init_uri, segments)) in ladder.iter().skip(1).take(tiers.len()) {
+            let tier = tiers.iter().find(|t| &t.uri == uri).unwrap();
+            let init = fetch(&viewer, &format!("/hls/{id}/{init_uri}")).await;
+            assert_eq!(init.status, StatusCode::OK);
+            for (i, &seq) in picks.iter().enumerate() {
+                let path = format!("/hls/{id}/{}", segments[seq].1);
+                let started = Instant::now();
+                let segment = fetch(&viewer, &path).await;
+                let cold = started.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(segment.status, StatusCode::OK, "{label} {path}");
+                let started = Instant::now();
+                let repeat = fetch(&viewer, &path).await;
+                let repeat_ms = started.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(repeat.status, StatusCode::OK);
+                assert_eq!(segment.body, repeat.body, "LRU repeat changed");
+                let after = fetch(&viewer, &format!("/hls/{id}/{init_uri}")).await;
+                assert_eq!(after.body, init.body, "init must be stable across independent encoder sessions");
+                let seconds: f64 = cuts[seq].parse().unwrap();
+                let kbps = segment.body.len() as f64 * 8.0 / seconds / 1000.0;
+                // /init generated segment zero and put it in the LRU; don't
+                // report a cache-hit latency as thousands of times realtime.
+                if seq != 0 {
+                    eprintln!(
+                        "HLS_TRANSCODE_PERF source={label} tier={uri} seq={seq} seg_s={seconds:.3} bytes={} kbps={kbps:.0} cold_ms={cold:.1} repeat_ms={repeat_ms:.1} realtime_x={:.2}",
+                        segment.body.len(),
+                        seconds * 1000.0 / cold
+                    );
+                }
+                if i == 0 && !cfg!(debug_assertions) {
+                    assert!(seconds * 1000.0 / cold >= 2.0, "{label} {uri}: segment {seq} encodes under 2x real time");
+                }
+                assert!(kbps * 1000.0 <= bandwidth(tier) as f64 * 1.5, "{label} {uri}: {kbps} kbps over BANDWIDTH");
+                let mut bytes = init.body.to_vec();
+                bytes.extend(&segment.body);
+                let file = work.path().join(format!("{label}-{}-{seq}.mp4", uri.trim_end_matches(".m3u8")));
+                std::fs::write(&file, &bytes).unwrap();
+                let info = probe(
+                    &ffprobe,
+                    &[
+                        "-select_streams",
+                        "v:0",
+                        "-count_frames",
+                        "-show_frames",
+                        "-show_entries",
+                        "stream=codec_name,profile,width,height,nb_read_frames:frame=pix_fmt,color_transfer,color_primaries",
+                    ],
+                    &file,
+                );
+                let stream = &info["streams"][0];
+                let codec = text(&stream["codec_name"]);
+                assert!(codec == "h264" || codec == "hevc", "{label} {uri}: {codec}");
+                let (w, h) = (stream["width"].as_u64().unwrap() as u32, stream["height"].as_u64().unwrap() as u32);
+                let box_h: u32 = uri.trim_start_matches('v').trim_end_matches(".m3u8").parse().unwrap();
+                let aspect = f64::from(source.width) / f64::from(source.height);
+                assert!(w < source.width && h < source.height && h <= box_h && w % 2 == 0 && h % 2 == 0, "{w}x{h}");
+                assert!((f64::from(w) / f64::from(h) / aspect - 1.0).abs() < 0.01, "{label} {uri}: aspect {w}x{h}");
+                assert!(h == box_h || f64::from(w) >= f64::from(box_h) * 16.0 / 9.0 - 16.0, "{label} {uri}: {w}x{h}");
+                if let Some(resolution) = tier.attrs.get("RESOLUTION") {
+                    assert_eq!(resolution, &format!("{w}x{h}"));
+                }
+                sizes.insert(uri.clone(), (w, h));
+                let frames: usize = text(&stream["nb_read_frames"]).parse().unwrap();
+                assert_eq!(frames, expected_counts[&seq], "{label} {uri} seq {seq}: frame count");
+                let doc = flicks_container::isobmff::open(bytes.as_slice()).unwrap();
+                let track = &doc.tracks[0];
+                let first = track.samples.get(0).unwrap();
+                let data = bytes.get(first.offset as usize..first.offset as usize + first.size as usize).unwrap();
+                assert!(
+                    first.is_sync && idr(data, codec == "hevc"),
+                    "{label} {uri} seq {seq}: does not start with IDR"
+                );
+                let start = first.pts as f64 / f64::from(track.timescale);
+                assert!(
+                    (start - direct_start[&seq]).abs() <= frame + 0.001,
+                    "{label} {uri} seq {seq}: starts at {start}, direct at {}",
+                    direct_start[&seq]
+                );
+                assert_eq!(codec, "h264");
+                for f in info["frames"].as_array().unwrap() {
+                    assert_eq!(
+                        (text(&f["color_transfer"]), text(&f["color_primaries"]), text(&f["pix_fmt"])),
+                        ("bt709", "bt709", "yuv420p")
+                    );
+                }
+                if i != 0 {
+                    continue;
+                }
+                // Compare the same presented pictures on the same clock after independently
+                // demuxing/decoding both inputs. The HDR oracle also applies Apple's transfer.
+                let hw = source.pq;
+                let reference = if hw {
+                    assert!(has_scale_vt, "PQ oracle needs ffmpeg scale_vt");
+                    format!(
+                        "scale_vt=w={w}:h={h}:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,hwdownload,format=p010le"
+                    )
+                } else {
+                    format!("scale={w}:{h}:flags=lanczos")
+                };
+                let mut command = Command::new(&ffmpeg);
+                command.args(["-hide_banner", "-nostats", "-v", "info", "-i"]).arg(&file);
+                if hw {
+                    command.args(["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"]);
+                }
+                let output = command
+                    .args(["-seek_timestamp", "1", "-ss", &format!("{:.6}", (starts[seq] - frame / 2.0).max(0.0)), "-t", &cuts[seq], "-i"])
+                    .arg(&source.path)
+                    .args([
+                        "-lavfi",
+                        &format!(
+                            "[0:v]settb=1/24,setpts=N,format=yuv420p[a];[1:v]{reference},settb=1/24,setpts=N,format=yuv420p[b];[a][b]psnr=shortest=1"
+                        ),
+                        "-f",
+                        "null",
+                        "-",
+                    ])
+                    .output()
+                    .unwrap();
+                let log = String::from_utf8_lossy(&output.stderr);
+                assert!(output.status.success(), "{log}");
+                let average = log.rsplit("average:").next().and_then(|s| s.split_whitespace().next()).unwrap();
+                let psnr = if average == "inf" { f64::INFINITY } else { average.parse::<f64>().unwrap() };
+                eprintln!(
+                    "HLS_PSNR source={label} tier={uri} seq={seq} oracle={} average_db={psnr:.2}",
+                    if hw { "scale_vt" } else { "scale" }
+                );
+                assert!(psnr >= if hw { 28.0 } else { 30.0 }, "{label} {uri}: PSNR {psnr:.2} dB");
+            }
+        }
+
+        // Stereo audio: AAC, two channels, and each picked segment covers its cut.
+        let (init, segments) = &ladder.last().unwrap().1;
+        let init = fetch(&viewer, &format!("/hls/{id}/{init}")).await;
+        for &seq in &picks {
+            let segment = fetch(&viewer, &format!("/hls/{id}/{}", segments[seq].1)).await;
+            assert_eq!(segment.status, StatusCode::OK);
+            let mut bytes = init.body.to_vec();
+            bytes.extend(&segment.body);
+            let file = work.path().join(format!("{label}-stereo-{seq}.mp4"));
+            std::fs::write(&file, &bytes).unwrap();
+            let info = probe(&ffprobe, &["-show_entries", "stream=codec_name,channels,sample_rate"], &file);
+            assert_eq!(
+                (text(&info["streams"][0]["codec_name"]), &info["streams"][0]["channels"]),
+                ("aac", &Value::from(2))
+            );
+            if source.pq && seq == picks[0] {
+                // The fixture puts distinct notes into L, R and C. The actual encoded
+                // stereo output must keep L/R separate and spread C to both speakers.
+                let raw = Command::new(&ffmpeg)
+                    .args(["-v", "error", "-i"])
+                    .arg(&file)
+                    .args(["-t", "0.5", "-f", "f32le", "pipe:1"])
+                    .output()
+                    .unwrap();
+                assert!(raw.status.success());
+                let pcm: Vec<_> =
+                    raw.stdout.as_chunks::<4>().0.iter().map(|b| f64::from(f32::from_le_bytes(*b))).collect();
+                let frames = pcm.as_chunks::<2>().0;
+                let amplitude = |channel: usize, hz: f64| {
+                    let angle = std::f64::consts::TAU * hz / 48000.;
+                    let (mut a, mut b) = (0., 0.);
+                    for (i, x) in frames.iter().enumerate() {
+                        let (sin, cos) = (angle * i as f64).sin_cos();
+                        a += sin * x[channel];
+                        b += cos * x[channel];
+                    }
+                    2. * a.hypot(b) / frames.len() as f64
+                };
+                assert!(amplitude(0, 220.) > 0.1 && amplitude(1, 330.) > 0.1);
+                assert!(amplitude(1, 220.) < 0.03 && amplitude(0, 330.) < 0.03);
+                assert!(amplitude(0, 440.) > 0.07 && amplitude(1, 440.) > 0.07);
+            }
+            let doc = flicks_container::isobmff::open(bytes.as_slice()).unwrap();
+            let track = &doc.tracks[0];
+            let seconds =
+                track.samples.iter().map(|s| u64::from(s.duration)).sum::<u64>() as f64 / f64::from(track.timescale);
+            assert!(
+                (seconds - cuts[seq].parse::<f64>().unwrap()).abs() <= 0.05,
+                "{label} stereo seq {seq}: {seconds} s"
+            );
+        }
+
+        // Each rendition in AVPlayer from the start and after a seek past the first segments.
+        let seek_seq = starts.iter().rposition(|s| *s <= source.seek).unwrap();
+        assert!(seek_seq >= 2);
+        let stereo_dir = stereo_uri.trim_end_matches(".m3u8");
+        let auto = Variant { uri: "auto".into(), attrs: HashMap::new() };
+        // Also play the intact native master, with no test-side variant filtering.
+        for variant in
+            std::iter::once(direct).chain(tiers.iter().copied()).chain((source.pq && !hdr_eligible).then_some(&auto))
+        {
+            let grant: Value = viewer.call(Method::POST, &format!("/hls/{id}/token"), None::<&()>).await.unwrap();
+            let grant = grant["url"].as_str().unwrap().to_owned();
+            let token = grant.split_once("token=").unwrap().1.to_owned();
+            // On an SDR-only display AVPlayer correctly refuses a PQ-only multivariant
+            // playlist. Force the original video via its *actual authenticated media*
+            // playlist in this case; never falsify VIDEO-RANGE to make the test pass.
+            let grant = if source.pq && variant.uri == direct.uri && !hdr_eligible {
+                eprintln!(
+                    "HLS_DIRECT_PQ {label}: AVPlayer HDR-ineligible display; testing direct video media playlist"
+                );
+                grant.replacen("master.m3u8", &direct.uri, 1)
+            } else {
+                grant
+            };
+            served.lock().unwrap().clear();
+            let (program, url, seek) = (
+                player.clone(),
+                format!("http://{adapter_addr}/only/{}{grant}", variant.uri),
+                format!("{:.3}", source.seek),
+            );
+            let output =
+                tokio::task::spawn_blocking(move || Command::new(program).arg(url).arg(seek).output().unwrap())
+                    .await
+                    .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).replace(&token, "REDACTED");
+            assert!(!stdout.contains(&token), "AVPlayer report leaked the grant");
+            let runs: Vec<Value> = stdout
+                .lines()
+                .filter_map(|l| l.strip_prefix("AVPLAYER "))
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            let served = served.lock().unwrap().clone();
+            eprintln!("HLS_AVPLAYER_LOG source={label} variant={} {stdout}{stderr}\nserved: {served:?}", variant.uri);
+            assert!(output.status.success() && runs.len() == 2, "{label} {}: AVPlayer failed", variant.uri);
+            let expected = if variant.uri == direct.uri {
+                Some((source.width, source.height))
+            } else {
+                sizes.get(&variant.uri).copied()
+            };
+            for run in &runs {
+                let access = run["access"].as_array().unwrap();
+                let last = access.last().cloned().unwrap_or_default();
+                eprintln!(
+                    "HLS_AVPLAYER source={label} variant={} phase={} ready_ms={:.0} seek_ms={:.0} first_frame_ms={:.0} size={}x{} indicated_bps={} observed_bps={} stalls={} errors={}",
+                    variant.uri,
+                    text(&run["phase"]),
+                    run["ready_ms"].as_f64().unwrap_or(f64::NAN),
+                    run["seek_ms"].as_f64().unwrap_or(0.0),
+                    run["first_frame_ms"].as_f64().unwrap_or(f64::NAN),
+                    run["width"],
+                    run["height"],
+                    last["indicated_bps"],
+                    last["observed_bps"],
+                    last["stalls"],
+                    run["errors"].as_array().map_or(0, Vec::len)
+                );
+                let decoded = (run["width"].as_u64().unwrap() as u32, run["height"].as_u64().unwrap() as u32);
+                if let Some(size) = expected {
+                    assert_eq!(decoded, size);
+                } else {
+                    assert!(sizes.values().any(|s| *s == decoded), "HDR-ineligible player must choose an SDR tier");
+                }
+                assert!(!access.is_empty(), "{label} {}: empty access log", variant.uri);
+                assert!(run["errors"].as_array().unwrap().is_empty(), "{label} {}: {}", variant.uri, run["errors"]);
+            }
+            let dir = variant.uri.trim_end_matches(".m3u8");
+            assert!(served.iter().all(|s| s.starts_with("200 ")), "{label} {}: {served:?}", variant.uri);
+            assert!(
+                served.iter().any(|s| if variant.uri == "auto" {
+                    tiers.iter().any(|t| s.ends_with(&format!("/{}/{seek_seq}.m4s", t.uri.trim_end_matches(".m3u8"))))
+                } else {
+                    s.ends_with(&format!("/{dir}/{seek_seq}.m4s"))
+                }),
+                "{label} {}: no seek segment",
+                variant.uri
+            );
+            if variant.uri != direct.uri {
+                assert!(served.iter().any(|s| s.contains(&format!("/{stereo_dir}/")) && s.ends_with(".m4s")));
+            }
+            tokens.push(token);
+        }
+
+        // Ordinary refusals through the real server: unknown tier, past the end, altered or doubled credentials.
+        let grant: Value = viewer.call(Method::POST, &format!("/hls/{id}/token"), None::<&()>).await.unwrap();
+        let grant = grant["url"].as_str().unwrap().to_owned();
+        let query = grant.split_once('?').unwrap().1.to_owned();
+        tokens.push(query.trim_start_matches("token=").to_owned());
+        let tier = tiers[0].uri.trim_end_matches(".m3u8");
+        for (path, expected) in [
+            (format!("/hls/{id}/v9999.m3u8?{query}"), StatusCode::NOT_FOUND),
+            (format!("/hls/{id}/{tier}/{n}.m4s?{query}"), StatusCode::NOT_FOUND),
+            (format!("/hls/{id}/{tier}/init.mp4?{query}x"), StatusCode::UNAUTHORIZED),
+        ] {
+            assert_eq!(
+                net::send(&viewer.addr, viewer.tls.clone(), get(&path)).await.unwrap().status,
+                expected,
+                "unexpected status for HLS refusal"
+            );
+        }
+        let path = format!("/hls/{id}/{tier}/init.mp4?{query}");
+        let auth = sign(&viewer.key, &viewer.server_key, "GET", &path, b"", b"", flicks_server::unix_now());
+        let doubled = signed_request(Method::GET, &path, &auth, None, b"");
+        assert_eq!(
+            net::send(&viewer.addr, viewer.tls.clone(), doubled).await.unwrap().status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    adapter.abort();
+    drop(process);
+    for name in ["serve.out", "serve.err"] {
+        let log = std::fs::read_to_string(work.path().join(name)).unwrap_or_default();
+        for token in &tokens {
+            let tag = token.rsplit('.').next().unwrap();
+            assert!(!log.contains(tag), "{name} contains an HLS grant");
+        }
     }
 }

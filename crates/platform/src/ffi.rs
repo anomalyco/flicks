@@ -8,14 +8,17 @@ use objc2_core_media::{
     kCMBlockBufferAssureMemoryNowFlag,
 };
 use objc2_core_video::{
-    CVImageBuffer, CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane,
-    CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane, CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType,
+    CVAttachmentMode, CVColorPrimariesGetStringForIntegerCodePoint, CVImageBuffer, CVPixelBuffer,
+    CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight,
+    CVPixelBufferGetHeightOfPlane, CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType,
     CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth, CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress,
-    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferIOSurfacePropertiesKey,
-    kCVPixelBufferPixelFormatTypeKey,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, CVTransferFunctionGetStringForIntegerCodePoint,
+    CVYCbCrMatrixGetStringForIntegerCodePoint, kCVImageBufferColorPrimariesKey, kCVImageBufferTransferFunctionKey,
+    kCVImageBufferYCbCrMatrixKey, kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferPixelFormatTypeKey,
 };
 use objc2_video_toolbox::{
     VTDecodeFrameFlags, VTDecodeInfoFlags, VTDecompressionOutputCallbackRecord, VTDecompressionSession,
+    kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder,
     kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
 };
 use std::{
@@ -24,7 +27,7 @@ use std::{
     sync::{Mutex, PoisonError},
 };
 
-fn check(status: i32, operation: &'static str) -> Result<()> {
+pub(super) fn check(status: i32, operation: &'static str) -> Result<()> {
     if status == 0 { Ok(()) } else { Err(Error::Platform { operation, status }) }
 }
 
@@ -101,6 +104,7 @@ impl Drop for Locked<'_> {
 
 struct Shared {
     info: FrameInfo,
+    transcode: bool,
     out: Mutex<Vec<Result<Frame>>>,
 }
 
@@ -166,6 +170,25 @@ unsafe extern "C-unwind" fn output_callback(
         if pts.timescale != 1 || !pts.flags.contains(CMTimeFlags::Valid) {
             return Err(Error::InvalidData("invalid output timestamp"));
         }
+        if shared.transcode {
+            // SAFETY: set the colorimetry on this completed decoder output *before* publishing
+            // it. Apple documents CFString values for these CoreVideo attachment keys.
+            unsafe {
+                let c = info.color;
+                for (key, value) in [
+                    (kCVImageBufferColorPrimariesKey, CVColorPrimariesGetStringForIntegerCodePoint(c.primaries.into())),
+                    (
+                        kCVImageBufferTransferFunctionKey,
+                        CVTransferFunctionGetStringForIntegerCodePoint(c.transfer.into()),
+                    ),
+                    (kCVImageBufferYCbCrMatrixKey, CVYCbCrMatrixGetStringForIntegerCodePoint(c.matrix.into())),
+                ] {
+                    if let Some(value) = value {
+                        pb.set_attachment(key, value.as_ref(), CVAttachmentMode::ShouldPropagate);
+                    }
+                }
+            }
+        }
         Ok(Frame { pts: pts.value, info, buffer: Buffer(pb) })
     }))
     .unwrap_or(Err(Error::InvalidData("panic in output callback")));
@@ -174,12 +197,16 @@ unsafe extern "C-unwind" fn output_callback(
 }
 
 impl Session {
-    pub fn new(info: &StreamInfo) -> Result<Self> {
+    pub fn new(info: &StreamInfo, transcode: bool) -> Result<Self> {
         let format = format_description(info)?;
         // SAFETY: immutable Apple framework constants, initialized before use.
         let (hw_key, pf_key, io_key) = unsafe {
             (
-                kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+                if transcode {
+                    kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder
+                } else {
+                    kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder
+                },
                 kCVPixelBufferPixelFormatTypeKey,
                 kCVPixelBufferIOSurfacePropertiesKey,
             )
@@ -188,7 +215,7 @@ impl Session {
         let pf = CFNumber::new_i32(pixel_format(&info.frame) as i32);
         let io = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
         let attrs = CFDictionary::<CFString, CFType>::from_slices(&[pf_key, io_key], &[pf.as_ref(), io.as_ref()]);
-        let shared = Box::new(Shared { info: info.frame, out: Mutex::new(Vec::new()) });
+        let shared = Box::new(Shared { info: info.frame, transcode, out: Mutex::new(Vec::new()) });
         let record = VTDecompressionOutputCallbackRecord {
             decompressionOutputCallback: Some(output_callback),
             decompressionOutputRefCon: &*shared as *const Shared as *mut c_void,
