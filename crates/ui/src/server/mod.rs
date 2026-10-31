@@ -14,7 +14,7 @@ use std::time::Duration;
 use rune::{Color, Cursor, El, Path, ScrollSpec, Shape, TextEdit, Tx, canvas, col, row, spacer, text, text_input};
 use serde::Deserialize;
 
-use crate::{Flicks, Request, Screen, style};
+use crate::{Flicks, Request, Screen, hairline, style};
 
 /// How long a pairing window stays open (the server's `pair::WINDOW`) and the copied link with it.
 const PAIRING_OPEN: Duration = Duration::from_secs(5 * 60);
@@ -203,11 +203,8 @@ pub fn list(s: &Flicks) -> El {
             .key(format!("server-{i}"))
             .w_full()
             .h(64.0)
-            .px(20.0)
             .gap(14.0)
             .center_y()
-            .radius(8.0)
-            .fill(style::raised())
             .child(text(server.name.clone()).font(style::HEADING).color(style::text()).truncate())
             .child(spacer())
             .child(row().gap(8.0).center_y().child(dot).child(text(state).font(style::META).color(style::muted())))
@@ -215,14 +212,13 @@ pub fn list(s: &Flicks) -> El {
         if server.admin {
             let key = server.key.clone();
             line = line
-                .hover(style::faint())
                 .cursor(Cursor::Pointer)
                 .focusable(true)
                 .on_press(move |s: &mut Flicks| open(s, &key, Tab::Folders));
         }
         line
     });
-    page(col().gap(10.0).child(title("Servers").mb(14.0)).children(rows))
+    page(col().gap(10.0).child(title("Servers").mb(14.0)).child(lines(rows)))
 }
 
 /// One server's tab.
@@ -289,7 +285,12 @@ fn folders(s: &Flicks, lists: &Lists) -> El {
                 .on_submit(|s: &mut Flicks, _| add_folder(s)),
         )
         .child(button("add-folder", "Add Folder", ready).on_press(add_folder));
-    col().w_full().gap(8.0).children(rows).child(empty(lists.folders.is_empty(), "No folders yet.")).child(add.mt(12.0))
+    col()
+        .w_full()
+        .gap(8.0)
+        .child(lines(rows))
+        .child(empty(lists.folders.is_empty(), "No folders yet."))
+        .child(add.mt(12.0))
 }
 
 fn add_folder(s: &mut Flicks) {
@@ -318,7 +319,7 @@ fn users(s: &Flicks, lists: &Lists) -> El {
             s.servers.user_admin = !s.servers.user_admin;
         }))
         .child(button("add-user", "Add User", ready).on_press(add_user));
-    col().w_full().gap(8.0).children(rows).child(add.mt(12.0))
+    col().w_full().gap(8.0).child(lines(rows)).child(add.mt(12.0))
 }
 
 fn add_user(s: &mut Flicks) {
@@ -342,7 +343,7 @@ fn devices(s: &Flicks, lists: &Lists) -> El {
         };
         item(label, end)
     });
-    col().w_full().gap(8.0).children(rows).child(empty(lists.devices.is_empty(), "No devices."))
+    col().w_full().gap(8.0).child(lines(rows)).child(empty(lists.devices.is_empty(), "No devices."))
 }
 
 fn add_device(s: &Flicks) -> El {
@@ -436,17 +437,19 @@ fn title(label: &str) -> El {
 
 /// A row of a list: its label, and a role or button at the end.
 fn item(label: El, end: El) -> El {
-    row()
-        .w_full()
-        .min_h(52.0)
-        .px(16.0)
-        .py(8.0)
-        .gap(14.0)
-        .center_y()
-        .radius(8.0)
-        .fill(style::raised())
-        .child(label.grow(1.0).min_w(0.0))
-        .child(end)
+    row().w_full().min_h(52.0).py(8.0).gap(14.0).center_y().child(label.grow(1.0).min_w(0.0)).child(end)
+}
+
+/// Rows with hairlines between them.
+fn lines(rows: impl Iterator<Item = El>) -> El {
+    let mut list = col().w_full();
+    for (i, line) in rows.enumerate() {
+        if i > 0 {
+            list = list.child(hairline());
+        }
+        list = list.child(line);
+    }
+    list
 }
 
 fn empty(is_empty: bool, message: &str) -> El {
