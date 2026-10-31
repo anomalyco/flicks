@@ -99,7 +99,7 @@ pub(super) fn segment(
                 .find(|p| p.pts_us == pts)
                 .ok_or_else(|| invalid("unexpected encoder timestamp"))?;
             let nominal = u64::from(packet.duration) * u64::from(TS) / u64::from(track.config.timescale);
-            u32::try_from(i128::from(nominal) + i128::from(composition_offset)).map_err(invalid)?
+            u32::try_from((i128::from(nominal) + i128::from(composition_offset)).max(1)).map_err(invalid)?
         };
         samples.push(WriteSample { data: &s.data, duration, composition_offset, is_sync: s.idr });
     }

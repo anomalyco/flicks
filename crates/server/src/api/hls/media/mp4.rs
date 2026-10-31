@@ -207,7 +207,7 @@ impl Source {
                 data,
                 pts_us: us(pts, t.timescale)?,
                 keyframe: s.is_sync,
-                duration: s.duration,
+                duration: if s.duration == 0 { track.duration } else { s.duration },
                 dts: Some(dts),
                 pts: Some(pts),
             });
@@ -472,6 +472,67 @@ mod tests {
                         )
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_and_one_tick_mp4_tails_keep_the_last_picture() {
+        use isobmff::{Brand, Mp4Writer, WriteSample, WriterOptions};
+        let (oracle, _) = flicks_testkit::require_oracles!();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.mp4");
+        ffmpeg(
+            &oracle,
+            &["-f", "lavfi", "-i", "testsrc2=size=160x96:rate=25", "-frames:v", "3", "-c:v", "libx264", "-bf", "0"],
+            &path,
+        );
+        let file = File::open(path).unwrap();
+        let mp4 = isobmff::open(&file).unwrap();
+        // Two pictures share the final PTS. On the output decode clock VT separates them by 1 µs.
+        for tail in [0, 1] {
+            let mut writer = Mp4Writer::new(tempfile::tempfile().unwrap(), WriterOptions::new(Brand::Mp4)).unwrap();
+            let t = writer.add_track(TrackConfig::new(mp4.tracks[0].entries[0].clone(), 1_000_000)).unwrap();
+            for (i, duration) in [40_000, 40_000, tail].into_iter().enumerate() {
+                let data = mp4.read_sample(&file, 0, i).unwrap();
+                writer
+                    .write_sample(
+                        t,
+                        WriteSample {
+                            data: &data,
+                            duration,
+                            composition_offset: if i == 2 { -40_000 } else { 0 },
+                            is_sync: i == 0,
+                        },
+                    )
+                    .unwrap();
+            }
+            let source = Source::open(writer.finish().unwrap()).unwrap();
+            let track = &source.tracks().unwrap()[0];
+            let packets = source.packets(track, 0, 100, false).unwrap();
+            assert_eq!(packets.len(), 3);
+            assert_eq!(packets[2].pts_us, packets[1].pts_us);
+            assert_eq!(packets[2].duration, if tail == 0 { track.duration } else { tail });
+            super::super::remux(track, &packets, 1, 0).unwrap();
+            #[cfg(target_os = "macos")]
+            {
+                use super::super::{Rendition, Tier, video};
+                let tier = Tier { name: Rendition::Video(480), width: 128, height: 72, bitrate: 1_200_000 };
+                let (mut init, segment) = video::segment(
+                    track,
+                    tier,
+                    &packets,
+                    1,
+                    0..100,
+                    0,
+                    std::time::Instant::now() + super::super::DEADLINE,
+                )
+                .unwrap();
+                init.extend(segment);
+                let output = isobmff::open(&init).unwrap();
+                let last = output.tracks[0].samples.get(2).unwrap();
+                assert_eq!((last.dts, last.pts), (40_001, 40_000));
+                assert_eq!(last.duration, if tail == 0 { 39_999 } else { 1 });
             }
         }
     }
