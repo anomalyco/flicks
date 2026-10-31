@@ -225,6 +225,9 @@ impl<'a, S: ByteSource + ?Sized> Io<'a, S> {
 
     /// Exactly `n` bytes at `pos`.
     fn read_vec(&mut self, pos: u64, n: u64) -> Result<Vec<u8>> {
+        if n > self.src.max_read_len() {
+            return Err(Error::TooLarge("read size"));
+        }
         if pos.checked_add(n).is_none_or(|e| e > self.len) {
             return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "read past end of file")));
         }
@@ -392,7 +395,7 @@ fn parse_block<S: ByteSource + ?Sized>(
     let hdr = (tl + 3) as u64;
     let lacing = Lacing::from_flags(flags);
     let frames = if lacing == Lacing::None {
-        vec![(data_start + hdr, (len - hdr) as u32)]
+        vec![(data_start + hdr, u32::try_from(len - hdr).map_err(|_| Error::TooLarge("frame size"))?)]
     } else {
         let body = io.read_vec(data_start + hdr, len - hdr)?;
         match parse_lacing(lacing, &body) {
@@ -1198,23 +1201,7 @@ impl<S: ByteSource> Demuxer<S> {
         let t = self.file.tracks.get(track).ok_or(Error::NoSuchTrack(track))?;
         let ticks = t.ns_to_ticks(time_ns);
         if !self.file.indexed {
-            let tn = t.number;
-            let cue = self
-                .file
-                .cues
-                .iter()
-                .filter(|c| {
-                    c.time as i128 * self.file.info.timestamp_scale as i128 - t.codec_delay_ns as i128
-                        <= time_ns as i128
-                })
-                .filter_map(|c| c.positions.iter().find(|p| p.track == tn).map(|p| (c.time, *p)))
-                .next_back()
-                .or_else(|| {
-                    self.file.cues.iter().find_map(|c| c.positions.iter().find(|p| p.track == tn).map(|p| (c.time, *p)))
-                });
-            if let Some((time, cp)) = cue
-                && let Some(sp) = self.seek_via_cue(track, ticks, time, cp)?
-            {
+            if let Some(sp) = self.seek_cue(track, time_ns, MAX_FRAMES)? {
                 return Ok(sp);
             }
             self.build_index()?;
@@ -1237,6 +1224,30 @@ impl<S: ByteSource> Demuxer<S> {
         Ok(sp)
     }
 
+    /// Seek using Cues only. Never fall back to indexing the entire file. If the
+    /// cue needs cluster refinement, bound the number of frame headers retained.
+    pub fn seek_cue(&mut self, track: usize, time_ns: i64, max_frames: usize) -> Result<Option<SeekPoint>> {
+        let t = self.file.tracks.get(track).ok_or(Error::NoSuchTrack(track))?;
+        let ticks = t.ns_to_ticks(time_ns);
+        let tn = t.number;
+        let cue = self
+            .file
+            .cues
+            .iter()
+            .filter(|c| {
+                c.time as i128 * self.file.info.timestamp_scale as i128 - t.codec_delay_ns as i128 <= time_ns as i128
+            })
+            .filter_map(|c| c.positions.iter().find(|p| p.track == tn).map(|p| (c.time, *p)))
+            .next_back()
+            .or_else(|| {
+                self.file.cues.iter().find_map(|c| c.positions.iter().find(|p| p.track == tn).map(|p| (c.time, *p)))
+            });
+        match cue {
+            Some((time, cp)) => self.seek_via_cue(track, ticks, time, cp, max_frames),
+            None => Ok(None),
+        }
+    }
+
     fn position_at(&mut self, c: ClusterInfo, block_offset: u64, lace: u16) {
         self.pending.clear();
         self.done = false;
@@ -1246,7 +1257,14 @@ impl<S: ByteSource> Demuxer<S> {
         self.skip_laces = (lace > 0).then_some((block_offset, lace));
     }
 
-    fn seek_via_cue(&mut self, track: usize, ticks: i64, cue_time: u64, cp: CuePosition) -> Result<Option<SeekPoint>> {
+    fn seek_via_cue(
+        &mut self,
+        track: usize,
+        ticks: i64,
+        cue_time: u64,
+        cp: CuePosition,
+        max_frames: usize,
+    ) -> Result<Option<SeekPoint>> {
         let cluster_position = cp.cluster_position;
         let Some(abs) = self.file.segment_data_start.checked_add(cluster_position) else {
             self.file.warnings.push(format!("cue position {cluster_position} is past the segment end"));
@@ -1315,6 +1333,7 @@ impl<S: ByteSource> Demuxer<S> {
         }
         let mut warnings = Vec::new();
         let mut budget = FrameBudget::new(io.len);
+        budget.frames = budget.frames.min(max_frames);
         let (ci, blocks) = scan_cluster(&mut io, &h, self.file.segment_end, &self.lookup, &mut budget, &mut warnings)?;
         let t = &self.file.tracks[track];
         let mut frames = Vec::new();
@@ -1355,6 +1374,10 @@ impl<S: ByteSource> Demuxer<S> {
 
     fn materialize(&mut self, f: FrameRef) -> Result<Packet> {
         let t = &self.file.tracks[f.track];
+        let prefix = if t.frames_readable() { t.frame_prefix_len() } else { 0 };
+        if u64::from(f.size).saturating_add(prefix) > self.src.max_read_len() {
+            return Err(Error::TooLarge("packet size"));
+        }
         let mut data = if t.frames_readable() { t.frame_prefix(f.size as u64) } else { Vec::new() };
         let at = data.len();
         data.resize(at + f.size as usize, 0);

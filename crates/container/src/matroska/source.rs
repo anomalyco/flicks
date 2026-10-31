@@ -13,6 +13,11 @@ pub trait ByteSource {
     fn len(&self) -> u64;
     /// Fill `buf` entirely with bytes starting at `offset`; fail with `UnexpectedEof` if past the end.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
+    /// Per-allocation limit for demux reads, checked before allocating a payload.
+    /// Ordinary file readers impose no extra limit; on-demand servers can set one.
+    fn max_read_len(&self) -> u64 {
+        u64::MAX
+    }
     /// True if the source holds no bytes.
     fn is_empty(&self) -> bool {
         self.len() == 0
@@ -49,6 +54,9 @@ impl<T: ByteSource + ?Sized> ByteSource for &T {
     fn len(&self) -> u64 {
         (**self).len()
     }
+    fn max_read_len(&self) -> u64 {
+        (**self).max_read_len()
+    }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         (**self).read_at(offset, buf)
     }
@@ -58,6 +66,9 @@ impl<T: ByteSource + ?Sized> ByteSource for Arc<T> {
     fn len(&self) -> u64 {
         (**self).len()
     }
+    fn max_read_len(&self) -> u64 {
+        (**self).max_read_len()
+    }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         (**self).read_at(offset, buf)
     }
@@ -66,6 +77,9 @@ impl<T: ByteSource + ?Sized> ByteSource for Arc<T> {
 impl<T: ByteSource + ?Sized> ByteSource for Box<T> {
     fn len(&self) -> u64 {
         (**self).len()
+    }
+    fn max_read_len(&self) -> u64 {
+        (**self).max_read_len()
     }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         (**self).read_at(offset, buf)

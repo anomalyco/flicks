@@ -513,12 +513,27 @@ fn read_range<S: ByteSource + ?Sized>(src: &S, offset: u64, size: u64) -> Result
 
 /// Parse an MP4/MOV file. Only box headers, `ftyp`, `moov` and `moof` boxes are read.
 pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
+    open_inner(src, None)
+}
+
+/// Open a progressive file for a bounded, indexed read. Refuse fragments before
+/// loading them, and check caller budgets *before* allocating headers or tables.
+pub fn open_progressive<S: ByteSource>(src: S, max_header: u64, max_samples: usize) -> Result<Mp4File> {
+    open_inner(src, Some((max_header, max_samples)))
+}
+
+fn open_inner<S: ByteSource>(src: S, limits: Option<(u64, usize)>) -> Result<Mp4File> {
     let len = src.len();
     let mut offset = 0u64;
     let mut ftyp: Option<Vec<u8>> = None;
     let mut moov: Option<(u64, Vec<u8>)> = None;
     let mut moofs: Vec<(u64, Vec<u8>)> = Vec::new();
-    while offset + 8 <= len {
+    let mut top_boxes = 0usize;
+    while len.saturating_sub(offset) >= 8 {
+        top_boxes += 1;
+        if limits.is_some() && top_boxes > 4096 {
+            return Err(Error::TooLarge("top-level box count"));
+        }
         let n = (len - offset).min(32) as usize;
         let mut hb = [0u8; 32];
         src.read_at(offset, &mut hb[..n])?;
@@ -534,7 +549,11 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
         };
         match &h.kind.0 {
             b"ftyp" if ftyp.is_none() => ftyp = Some(read_body(1 << 16)?),
-            b"moov" if moov.is_none() => moov = Some((offset, read_body(MAX_HEADER_BOX)?)),
+            b"moov" if moov.is_none() => {
+                moov =
+                    Some((offset, read_body(limits.map_or(MAX_HEADER_BOX, |(header, _)| header.min(MAX_HEADER_BOX)))?))
+            }
+            b"moof" if limits.is_some() => return Err(Error::Unsupported("fragmented MP4".into())),
             b"moof" => moofs.push((offset, read_body(MAX_HEADER_BOX)?)),
             _ => {}
         }
@@ -608,6 +627,12 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
         }
     }
     let mut budget = SampleBudget::new(len);
+    if let Some((_, max_samples)) = limits {
+        if file.fragmented {
+            return Err(Error::Unsupported("fragmented MP4".into()));
+        }
+        budget.samples = budget.samples.min(max_samples);
+    }
     for p in trak_payloads {
         let t = parse_trak(p, &file, len, &mut budget)?;
         file.tracks.push(t);
@@ -1694,6 +1719,16 @@ mod tests {
         let f = open(d.as_slice()).unwrap();
         assert_eq!(f.tracks[0].samples.len(), 4);
         assert!(f.tracks[0].samples.sizes.capacity() < 64, "{}", f.tracks[0].samples.sizes.capacity());
+    }
+
+    #[test]
+    fn progressive_open_checks_header_and_sample_budgets() {
+        let mut file = handmade(None);
+        assert!(open_progressive(&file, 65536, 4).is_ok());
+        assert!(matches!(open_progressive(&file, 1, 4), Err(Error::TooLarge(_))));
+        assert!(matches!(open_progressive(&file, 65536, 3), Err(Error::TooLarge(_))));
+        file.splice(..0, *b"\0\0\0\x08moof");
+        assert!(matches!(open_progressive(&file, 65536, 4), Err(Error::Unsupported(_))));
     }
 
     #[test]

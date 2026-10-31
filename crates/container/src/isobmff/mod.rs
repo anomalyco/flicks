@@ -25,7 +25,9 @@ pub use codec::{
     FlacConfig, HevcConfig, HevcNalArray, MasteringDisplay, OpusConfig, PcmConfig, SampleEntry, TimecodeConfig,
     VideoParams, VpcConfig, parse_asc,
 };
-pub use demux::{Edit, Metadata, Mp4File, Sample, SampleGroup, SampleIter, SampleTable, Track, TrackKind, open};
+pub use demux::{
+    Edit, Metadata, Mp4File, Sample, SampleGroup, SampleIter, SampleTable, Track, TrackKind, open, open_progressive,
+};
 pub use error::{Error, Result};
 pub use mux::{Brand, FragmentedWriter, Mp4Writer, TrackConfig, WriteSample, WriterOptions};
 pub use source::ByteSource;
