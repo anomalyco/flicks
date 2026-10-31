@@ -10,7 +10,13 @@ use flicks_container::matroska::ByteSource;
 /// display calls never perform source I/O.
 pub enum Source {
     Local(PathBuf),
-    Network { connection: Arc<flicks_client::Connection>, file: i64, size: u64 },
+    /// Automatically use the server's signed HLS ladder unless only direct is available or
+    /// a measured, fast LAN link can comfortably carry the original over byte ranges.
+    Network {
+        connection: Arc<flicks_client::Connection>,
+        file: i64,
+        size: u64,
+    },
 }
 
 impl Source {

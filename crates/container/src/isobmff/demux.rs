@@ -513,16 +513,22 @@ fn read_range<S: ByteSource + ?Sized>(src: &S, offset: u64, size: u64) -> Result
 
 /// Parse an MP4/MOV file. Only box headers, `ftyp`, `moov` and `moof` boxes are read.
 pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
-    open_inner(src, None)
+    open_inner(src, None, false)
 }
 
 /// Open a progressive file for a bounded, indexed read. Refuse fragments before
 /// loading them, and check caller budgets *before* allocating headers or tables.
 pub fn open_progressive<S: ByteSource>(src: S, max_header: u64, max_samples: usize) -> Result<Mp4File> {
-    open_inner(src, Some((max_header, max_samples)))
+    open_inner(src, Some((max_header, max_samples)), false)
 }
 
-fn open_inner<S: ByteSource>(src: S, limits: Option<(u64, usize)>) -> Result<Mp4File> {
+/// Parse a fragmented init segment (`ftyp` + `moov` with `mvex`, no `moof`) whose tracks have no
+/// samples. Non-empty sample tables fail before their samples are built.
+pub(crate) fn open_init(data: &[u8], max_header: u64) -> Result<Mp4File> {
+    open_inner(data, Some((max_header, 0)), true)
+}
+
+fn open_inner<S: ByteSource>(src: S, limits: Option<(u64, usize)>, init: bool) -> Result<Mp4File> {
     let len = src.len();
     let mut offset = 0u64;
     let mut ftyp: Option<Vec<u8>> = None;
@@ -628,8 +634,8 @@ fn open_inner<S: ByteSource>(src: S, limits: Option<(u64, usize)>) -> Result<Mp4
     }
     let mut budget = SampleBudget::new(len);
     if let Some((_, max_samples)) = limits {
-        if file.fragmented {
-            return Err(Error::Unsupported("fragmented MP4".into()));
+        if file.fragmented != init {
+            return Err(Error::Unsupported(if init { "unfragmented init" } else { "fragmented MP4" }.into()));
         }
         budget.samples = budget.samples.min(max_samples);
     }

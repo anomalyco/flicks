@@ -11,6 +11,7 @@ pub(crate) struct Packet {
 }
 
 pub(crate) enum Demux {
+    Hls(Box<crate::hls::Hls>),
     Mkv(Box<mkv::Demuxer<Bytes>>),
     Mp4 { file: Box<mp4::Mp4File>, bytes: Bytes, cursors: Vec<usize> },
 }
@@ -23,11 +24,16 @@ impl Demux {
                 .get(track)
                 .zip(cursors.get(track))
                 .is_some_and(|(track, cursor)| *cursor >= track.samples.len()),
-            Self::Mkv(_) => false,
+            Self::Mkv(_) | Self::Hls(_) => false,
         }
     }
 
     pub fn open(source: Source) -> Result<(Self, Vec<Track>, f64)> {
+        if let Source::Network { connection, file, size } = &source
+            && let Some((hls, tracks, duration)) = crate::hls::Hls::open(connection.clone(), *file, *size)?
+        {
+            return Ok((Self::Hls(Box::new(hls)), tracks, duration));
+        }
         let bytes = Bytes::open(source)?;
         let mut magic = [0; 4];
         bytes.read_at(0, &mut magic)?;
@@ -57,42 +63,7 @@ impl Demux {
         } else {
             let file = mp4::open(&bytes)?;
             let duration = if file.timescale == 0 { 0.0 } else { file.duration as f64 / file.timescale as f64 };
-            let tracks = file
-                .tracks
-                .iter()
-                .enumerate()
-                .map(|(id, t)| {
-                    use mkv::Codec as M;
-                    use mp4::CodecConfig as C;
-                    let codec = match t.codec() {
-                        Some(C::Avc(c)) => M::Avc { avcc: c.to_bytes() },
-                        Some(C::Hevc(c)) => M::Hevc { hvcc: c.to_bytes() },
-                        Some(C::Av1(c)) => M::Av1 { av1c: c.to_bytes() },
-                        Some(C::Vp9(_)) => M::Vp9 { private: Vec::new() },
-                        Some(C::Aac(c)) => M::Aac { asc: c.asc.clone() },
-                        Some(C::Ac3 { .. }) => M::Ac3,
-                        Some(C::Eac3 { .. }) => M::Eac3,
-                        Some(C::Opus(c)) => M::Opus {
-                            head: flicks_opus::OpusHead::from_dops(&c.to_bytes()).map_err(Error::decode)?.to_bytes(),
-                        },
-                        other => M::Other(other.map_or("unknown", C::name).into()),
-                    };
-                    Ok(Track {
-                        id,
-                        kind: match t.kind {
-                            mp4::TrackKind::Video => TrackKind::Video,
-                            mp4::TrackKind::Audio => TrackKind::Audio,
-                            mp4::TrackKind::Subtitle => TrackKind::Subtitle,
-                            _ => TrackKind::Other,
-                        },
-                        codec,
-                        language: t.language.clone(),
-                        name: t.handler_name.clone(),
-                        default: t.enabled,
-                        enabled: t.timescale != 0,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let tracks = file.tracks.iter().enumerate().map(|(id, t)| mp4_track(id, t)).collect::<Result<Vec<_>>>()?;
             let cursors = vec![0; tracks.len()];
             Ok((Self::Mp4 { file: Box::new(file), bytes, cursors }, tracks, duration))
         }
@@ -100,6 +71,7 @@ impl Demux {
 
     pub fn next(&mut self, selected: &[usize]) -> Result<Option<Packet>> {
         match self {
+            Self::Hls(hls) => hls.next(selected),
             Self::Mkv(d) => {
                 for _ in 0..1_000_000 {
                     let Some(p) = d.next_packet()? else {
@@ -149,8 +121,9 @@ impl Demux {
         }
     }
 
-    pub fn seek(&mut self, video: usize, target: i64) -> Result<()> {
+    pub fn seek(&mut self, video: usize, target: i64, audio: Option<usize>) -> Result<()> {
         match self {
+            Self::Hls(hls) => hls.seek(target, audio)?,
             Self::Mkv(d) => {
                 d.source().invalidate()?;
                 d.seek(video, target)?;
@@ -200,9 +173,41 @@ impl Demux {
     }
 }
 
-fn ns(time: i64, scale: u32) -> i64 {
+pub(crate) fn ns(time: i64, scale: u32) -> i64 {
     (i128::from(time) * 1_000_000_000 / i128::from(scale.max(1))).clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 fn ticks(time: i64, scale: u32) -> i64 {
     (i128::from(time) * i128::from(scale) / 1_000_000_000).clamp(i64::MIN as i128, i64::MAX as i128) as i64
+}
+
+pub(crate) fn mp4_track(id: usize, t: &mp4::Track) -> Result<Track> {
+    use mkv::Codec as M;
+    use mp4::CodecConfig as C;
+    let codec = match t.codec() {
+        Some(C::Avc(c)) => M::Avc { avcc: c.to_bytes() },
+        Some(C::Hevc(c)) => M::Hevc { hvcc: c.to_bytes() },
+        Some(C::Av1(c)) => M::Av1 { av1c: c.to_bytes() },
+        Some(C::Vp9(_)) => M::Vp9 { private: Vec::new() },
+        Some(C::Aac(c)) => M::Aac { asc: c.asc.clone() },
+        Some(C::Ac3 { .. }) => M::Ac3,
+        Some(C::Eac3 { .. }) => M::Eac3,
+        Some(C::Opus(c)) => {
+            M::Opus { head: flicks_opus::OpusHead::from_dops(&c.to_bytes()).map_err(Error::decode)?.to_bytes() }
+        }
+        other => M::Other(other.map_or("unknown", C::name).into()),
+    };
+    Ok(Track {
+        id,
+        kind: match t.kind {
+            mp4::TrackKind::Video => TrackKind::Video,
+            mp4::TrackKind::Audio => TrackKind::Audio,
+            mp4::TrackKind::Subtitle => TrackKind::Subtitle,
+            _ => TrackKind::Other,
+        },
+        codec,
+        language: t.language.clone(),
+        name: t.handler_name.clone(),
+        default: t.enabled,
+        enabled: t.timescale != 0,
+    })
 }

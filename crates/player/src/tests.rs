@@ -505,6 +505,15 @@ fn network_ranges_and_seeks() {
         (connection, entries[0].item.clone(), server.key)
     });
     let source = || Source::Network { connection: connection.clone(), file: item.id, size: item.size };
+    let before = connections.load(Ordering::SeqCst);
+    for bad in ["../1/master.m3u8", "/admin/status.m3u8", "https://other/0.m3u8", "0/0.m4s?token=x", "%2e%2e/1.m3u8"] {
+        assert!(matches!(runtime.block_on(connection.hls(item.id, bad)), Err(flicks_client::Error::BadAddress)));
+    }
+    assert_eq!(connections.load(Ordering::SeqCst), before);
+    fail_once.store(true, Ordering::SeqCst);
+    let master = runtime.block_on(connection.hls(item.id, "master.m3u8")).unwrap().0;
+    assert!(master.starts_with(b"#EXTM3U\n"));
+    assert_eq!(connections.load(Ordering::SeqCst) - before, 2, "retried signed HLS GET");
     let reader = source::Bytes::open(source()).unwrap();
     let mut buf = vec![0; 300_000];
     for at in [0, 300_000, 20, 500_000, 17] {
@@ -516,7 +525,10 @@ fn network_ranges_and_seeks() {
     assert_eq!(buf, bytes[2..2 + buf.len()]);
     drop(reader);
     let before = connections.load(Ordering::SeqCst);
+    let open = Instant::now();
     let mut p = Player::with_audio(source(), AudioSink::Null).unwrap();
+    eprintln!("unthrottled network open to decoded preroll: {:?}", open.elapsed());
+    assert!(p.stats().adaptive.is_none(), "unthrottled loopback stays on byte ranges");
     let (_, offset) = run(&mut p, 16.0, false);
     let ranges = connections.load(Ordering::SeqCst) - before;
     eprintln!(
@@ -625,6 +637,7 @@ fn network_ranges_and_seeks() {
     drop(runtime);
     run(&mut offline, 16.0, false);
     assert_eq!(offline.stats().displayed, 384);
+    assert!(offline.stats().adaptive.is_none());
 }
 
 #[test]
@@ -709,7 +722,7 @@ fn paced_playback(path: &Path, seconds: u32, mut sample_call: impl FnMut(Duratio
     let mut skipped_ticks = 0;
     while tick < seconds * 120 {
         // This is what was already decoded *before* the caller went to sleep, not a batch just polled.
-        let ready = (p.frames.front().map(VideoFrame::pts), p.frames.back().map(VideoFrame::pts));
+        let ready = (p.frames.front().map(|f| f.video.pts()), p.frames.back().map(|f| f.video.pts()));
         let (position, audio_end, dropped) = (p.position(), p.audio_end, p.stats().dropped);
         let deadline = start + Duration::from_secs_f64(tick as f64 / 120.0);
         std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
@@ -823,4 +836,394 @@ fn device_clock_pause_resume() {
     assert_eq!(p.stats().dropped, 0);
     assert!(max_offset < 0.020);
     std::fs::remove_file(path).unwrap();
+}
+
+/// Presentation times (seconds) of an MP4's first video track with its edit offset applied,
+/// sorted in presentation order (including any duplicates). Read-only.
+#[cfg(target_os = "macos")]
+fn presentation_times(path: &Path) -> (Vec<f64>, u32) {
+    use flicks_container::isobmff as mp4;
+    let file = std::fs::File::open(path).unwrap();
+    let mp4 = mp4::open_progressive(&file, 256 << 20, 2_000_000).unwrap();
+    let track = mp4.tracks.iter().find(|t| t.kind == mp4::TrackKind::Video).unwrap();
+    let mut times: Vec<f64> = track
+        .samples
+        .iter()
+        .map(|s| (s.pts + track.edit_offset) as f64 / track.timescale as f64)
+        .filter(|t| *t >= -0.001)
+        .collect();
+    times.sort_by(f64::total_cmp);
+    (times, track.height)
+}
+
+/// FLK-47 acceptance: `Source::Network` through the real signed production path to the actual
+/// release `flicks serve` (isolated HOME), via a loopback proxy that shapes downstream bytes of
+/// every TLS connection together on wall time: 20, 8, 3, 8 Mbps for 35 s each, then 20 Mbps for
+/// the last 70 s. Display is wall-clock paced at 120 Hz with no fill() calls. Plays a generated
+/// 240 s 3840x2160 HEVC Main10 (closed GOP, IDR every 4 s, ~11 Mbps) and, with
+/// FLICKS_PLAYER_MEDIA=<file>, one real read-only MP4 (its folder is added as is). Prints
+/// ADAPTIVE_* lines for docs/perf.md.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "binds port 7686, generates ~330 MB of 4K HEVC, ~4 min paced per source; release flicks serve"]
+fn adaptive_throttle() {
+    use flicks_container::isobmff as mp4;
+    use flicks_server::server::{AddFolder, OpenPairing, Pairing, Status};
+    use std::collections::HashMap;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const STEPS: [(f64, u64); 5] =
+        [(0.0, 20_000_000), (35.0, 8_000_000), (70.0, 3_000_000), (105.0, 8_000_000), (140.0, 20_000_000)];
+    const RUN: f64 = 210.0;
+    const STARTUP_MAX: f64 = 3.0;
+    const BUFFER_SECONDS_MAX: f64 = 60.0;
+    const BUFFER_BYTES_MAX: usize = 128 << 20;
+    struct Process(std::process::Child);
+    impl Drop for Process {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    /// The shared link: `next` is when it is free again; `start` None means unshaped.
+    struct Link {
+        start: Option<Instant>,
+        next: Instant,
+    }
+    let rate = |elapsed: f64| STEPS.iter().rev().find(|(at, _)| elapsed >= *at).map_or(STEPS[0].1, |s| s.1);
+
+    let ff = flicks_testkit::require_ffmpeg!();
+    let exe = std::env::var_os("FLICKS_SERVER_EXE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| flicks_testkit::workspace_root().join("target/release/flicks"));
+    assert!(exe.exists(), "build it first: cargo build --release -p flicks-server, or set FLICKS_SERVER_EXE");
+    assert!(std::net::TcpStream::connect("127.0.0.1:7686").is_err(), "port 7686 already in use");
+
+    // 4 s seed, then a stream-copied 240 s loop with continuous audio.
+    let synthetic = tempfile::tempdir_in(flicks_testkit::fixtures_dir("player")).unwrap();
+    let seed = synthetic.path().join("seed.mp4");
+    let generated = synthetic.path().join("Adaptive.2026.mp4");
+    let ok = |c: &mut Command| assert!(c.stderr(Stdio::inherit()).status().unwrap().success());
+    ok(Command::new(&ff)
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=3840x2160:rate=24,noise=alls=14:allf=t+u"])
+        .args(["-t", "4", "-an", "-c:v", "libx265", "-preset", "veryfast", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1"])
+        .arg("-x265-params")
+        .arg(concat!(
+            "keyint=96:min-keyint=96:scenecut=0:open-gop=0",
+            ":bitrate=11000:vbv-maxrate=13000:vbv-bufsize=13000:log-level=error"
+        ))
+        .arg(&seed));
+    ok(Command::new(&ff)
+        .args(["-v", "error", "-y", "-stream_loop", "-1", "-i"])
+        .arg(&seed)
+        // Real CoreAudio device clock without sending programme audio to the desk's speakers.
+        .args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v", "-map", "1:a"])
+        .args(["-t", "240", "-frames:v", "5760", "-c:v", "copy", "-c:a", "aac", "-ac", "2", "-movflags", "+faststart"])
+        .arg(&generated));
+    std::fs::remove_file(&seed).unwrap();
+    {
+        let file = std::fs::File::open(&generated).unwrap();
+        let m = mp4::open(&file).unwrap();
+        let v = m.tracks.iter().find(|t| t.kind == mp4::TrackKind::Video).unwrap();
+        let bytes: u64 = v.samples.iter().map(|s| u64::from(s.size)).sum();
+        let mbps = bytes as f64 * 8.0 / (v.samples.len() as f64 / 24.0) / 1e6;
+        let sync: Vec<_> = v.samples.iter().enumerate().filter(|(_, s)| s.is_sync).map(|(i, _)| i).collect();
+        eprintln!(
+            "ADAPTIVE_FIXTURE 3840x2160 HEVC Main10 frames={} avg={mbps:.2}Mbps idr={}",
+            v.samples.len(),
+            sync.len()
+        );
+        assert_eq!((v.width, v.height, v.samples.len()), (3840, 2160, 5760));
+        assert!((10.0..=12.5).contains(&mbps), "average video bitrate {mbps:.2} Mbps");
+        assert!(sync.iter().enumerate().all(|(n, &i)| i == n * 96) && sync.len() == 60, "IDR every 4 s");
+    }
+    let mut sources = vec![("generated-4k", generated.clone())];
+    sources.extend(std::env::var_os("FLICKS_PLAYER_MEDIA").map(|p| ("real", PathBuf::from(p))));
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _server = Process(
+        Command::new(&exe)
+            .arg("serve")
+            .env("HOME", home.path())
+            .env_remove("FLICKS_TMDB_KEY")
+            .stdout(Stdio::from(std::fs::File::create(home.path().join("serve.out")).unwrap()))
+            .stderr(Stdio::from(std::fs::File::create(home.path().join("serve.err")).unwrap()))
+            .spawn()
+            .unwrap(),
+    );
+    let link = Arc::new(Mutex::new(Link { start: None, next: Instant::now() }));
+    let proxied = Arc::new(AtomicU64::new(0));
+    let (connection, items) = runtime.block_on(async {
+        let data = home.path().join("Library/Application Support/Flicks");
+        let root = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(root) = flicks_server::cli::local(&data)
+                    && root.call::<Status>(hyper::Method::GET, "/admin/status", None::<&()>).await.is_ok()
+                {
+                    break root;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = listener.local_addr().unwrap();
+        let (link, proxied) = (link.clone(), proxied.clone());
+        tokio::spawn(async move {
+            while let Ok((incoming, _)) = listener.accept().await {
+                let (link, proxied) = (link.clone(), proxied.clone());
+                tokio::spawn(async move {
+                    let Ok(outgoing) = tokio::net::TcpStream::connect(("127.0.0.1", 7686)).await else { return };
+                    let ((mut client_in, mut client_out), (mut server_in, mut server_out)) =
+                        (incoming.into_split(), outgoing.into_split());
+                    let up = tokio::spawn(async move {
+                        let _ = tokio::io::copy(&mut client_in, &mut server_out).await;
+                        let _ = server_out.shutdown().await;
+                    });
+                    let mut buf = vec![0; 8192];
+                    while let Ok(n @ 1..) = server_in.read(&mut buf).await {
+                        let done = {
+                            let mut l = link.lock().unwrap();
+                            match l.start {
+                                None => None,
+                                Some(start) => {
+                                    // Carry a few milliseconds of scheduler lateness, not unlimited
+                                    // idle credit. Rounding every 8 KiB sleep up would shape a
+                                    // 20 Mbps link to ~15 Mbps even on an otherwise idle Mac.
+                                    let at = l.next.max(Instant::now() - Duration::from_millis(4));
+                                    let bps = rate(at.saturating_duration_since(start).as_secs_f64());
+                                    l.next = at + Duration::from_secs_f64(n as f64 * 8.0 / bps as f64);
+                                    Some(l.next)
+                                }
+                            }
+                        };
+                        if let Some(done) = done {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(done)).await;
+                        }
+                        proxied.fetch_add(n as u64, Ordering::Relaxed);
+                        if client_out.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                    let _ = client_out.shutdown().await;
+                    up.abort();
+                });
+            }
+        });
+        let mut folders = vec![synthetic.path().to_path_buf()];
+        folders.extend(sources.get(1).and_then(|(_, p)| p.parent()).map(Path::to_path_buf));
+        for folder in folders {
+            let _: flicks_server::db::Folder = root
+                .call(
+                    hyper::Method::POST,
+                    "/admin/folders",
+                    Some(&AddFolder { path: folder.to_string_lossy().into_owned() }),
+                )
+                .await
+                .unwrap();
+        }
+        let pairing: Pairing = root
+            .call(
+                hyper::Method::POST,
+                "/admin/pair",
+                Some(&OpenPairing { user: "player".into(), admin: false, addrs: vec![proxy.to_string()] }),
+            )
+            .await
+            .unwrap();
+        let mut client = flicks_client::Client::open(&home.path().join("client")).unwrap();
+        let server = client.pair(&pairing.link, "Adaptive Player").await.unwrap();
+        // The link also lists the server's own addresses; every byte must cross the proxy.
+        let connection = Arc::new(flicks_client::Connection {
+            addr: proxy.to_string(),
+            ..client.connect(&server.key).await.unwrap()
+        });
+        let sizes: Vec<u64> = sources.iter().map(|(_, p)| std::fs::metadata(p).unwrap().len()).collect();
+        let items: Vec<(i64, u64)> = tokio::time::timeout(Duration::from_secs(180), async {
+            loop {
+                let entries = connection.items().await.unwrap();
+                let found: Vec<_> = sizes
+                    .iter()
+                    .filter_map(|size| entries.iter().find(|e| e.item.size == *size).map(|e| (e.item.id, e.item.size)))
+                    .collect();
+                if found.len() == sizes.len() {
+                    break found;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("sources catalogued");
+        (connection, items)
+    });
+
+    for ((label, path), (file, size)) in sources.iter().zip(items) {
+        let (expected, source_height) = presentation_times(path);
+        let height = |tier: Tier| match tier {
+            Tier::Direct => source_height,
+            Tier::P1080 => 1080,
+            Tier::P720 => 720,
+            Tier::P480 => 480,
+        };
+        let rss_stop = Arc::new(AtomicBool::new(false));
+        let rss_peak = Arc::new(AtomicU64::new(0));
+        let rss = {
+            let (stop, peak) = (rss_stop.clone(), rss_peak.clone());
+            std::thread::spawn(move || {
+                let pid = std::process::id().to_string();
+                while !stop.load(Ordering::Relaxed) {
+                    if let Ok(out) = Command::new("ps").args(["-o", "rss=", "-p", &pid]).output()
+                        && let Ok(kib) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>()
+                    {
+                        peak.fetch_max(kib, Ordering::Relaxed);
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            })
+        };
+        let bytes_before = proxied.load(Ordering::Relaxed);
+        let open = Instant::now();
+        {
+            let mut l = link.lock().unwrap();
+            l.start = Some(open);
+            l.next = open;
+        }
+        let sink = if *label == "generated-4k" {
+            AudioSink::Device(Box::new(flicks_audio::Output::open().expect("CoreAudio device for paced acceptance")))
+        } else {
+            // Decode the real episode's entire audio track, without playing it into the room.
+            AudioSink::Null
+        };
+        let mut p = Player::with_audio(Source::Network { connection: connection.clone(), file, size }, sink).unwrap();
+        p.play();
+        let mut shown: Vec<f64> = Vec::new();
+        let mut startup = None;
+        let (mut rebuffers, mut rebuffer_time, mut buffering_since) = (0u32, 0f64, None::<Instant>);
+        let mut switches: Vec<(f64, f64, Tier, Tier)> = Vec::new();
+        let mut per_tier: HashMap<Tier, f64> = HashMap::new();
+        let mut last: Option<(f64, Tier)> = None;
+        let (mut max_av, mut max_seconds, mut max_bytes, mut wrong_size) = (0f64, 0f64, 0usize, 0u32);
+        let mut max_call = Duration::ZERO;
+        let mut max_switch_call = Duration::ZERO;
+        let mut max_switch_av = 0f64;
+        let mut phase_ends = Vec::new();
+        for tick in 0.. {
+            let deadline = open + Duration::from_secs_f64(tick as f64 / 120.0);
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            let now = Instant::now();
+            let wall = now.duration_since(open).as_secs_f64();
+            if wall >= RUN || p.state() == State::Ended {
+                break;
+            }
+            let frame = p.next_frame_for_display(now).unwrap();
+            let call = now.elapsed();
+            let returned = wall + call.as_secs_f64();
+            max_call = max_call.max(call);
+            let adaptive = p.stats().adaptive.expect("network playback reports adaptive stats");
+            max_seconds = max_seconds.max(adaptive.buffer_seconds);
+            max_bytes = max_bytes.max(adaptive.buffer_bytes);
+            if let Some(frame) = frame {
+                startup.get_or_insert(returned);
+                let (pts, tier) = (frame.pts(), adaptive.tier);
+                wrong_size += u32::from(frame.size()[1] != height(tier));
+                max_av = max_av.max(p.stats().av_offset.abs());
+                if let Some((previous, from)) = last {
+                    *per_tier.entry(from).or_default() += pts - previous;
+                    if from != tier {
+                        switches.push((returned, pts, from, tier));
+                        max_switch_call = max_switch_call.max(call);
+                        max_switch_av = max_switch_av.max(p.stats().av_offset.abs());
+                    }
+                }
+                last = Some((pts, tier));
+                shown.push(pts);
+            }
+            let buffering = startup.is_some() && p.state() == State::Buffering;
+            match (buffering, buffering_since) {
+                (true, None) => {
+                    rebuffers += 1;
+                    buffering_since = Some(now);
+                }
+                (false, Some(since)) => {
+                    rebuffer_time += now.duration_since(since).as_secs_f64();
+                    buffering_since = None;
+                }
+                _ => {}
+            }
+            if phase_ends.len() < STEPS.len() && wall >= STEPS.get(phase_ends.len() + 1).map_or(RUN, |s| s.0) - 0.5 {
+                phase_ends.push((wall, adaptive.tier, adaptive.throughput_bps, adaptive.buffer_seconds));
+            }
+        }
+        rss_stop.store(true, Ordering::Relaxed);
+        rss.join().unwrap();
+        let stats = p.stats();
+        let downloaded = proxied.load(Ordering::Relaxed) - bytes_before;
+        eprintln!(
+            "ADAPTIVE {label}: startup={:.3}s rebuffers={rebuffers} ({rebuffer_time:.3}s) switches={} frames={} \
+             dropped={} max_av={:.3}ms peak_buffer={max_seconds:.1}s/{:.1}MiB peak_rss={:.0}MiB \
+             max_call={max_call:?} switch_call={max_switch_call:?} switch_av={:.3}ms wrong_size={wrong_size} proxied={:.1}MB",
+            startup.unwrap_or(f64::NAN),
+            switches.len(),
+            shown.len(),
+            stats.dropped,
+            max_av * 1000.0,
+            max_bytes as f64 / 1048576.0,
+            rss_peak.load(Ordering::Relaxed) as f64 / 1024.0,
+            max_switch_av * 1000.0,
+            downloaded as f64 / 1e6
+        );
+        eprintln!("ADAPTIVE {label} media seconds per tier: {per_tier:?}");
+        for (wall, pts, from, to) in &switches {
+            eprintln!("ADAPTIVE {label} switch wall={wall:.1}s pts={pts:.3}s {from:?} -> {to:?}");
+        }
+        for ((at, bps), (wall, tier, throughput, buffer)) in STEPS.iter().zip(&phase_ends) {
+            eprintln!(
+                "ADAPTIVE {label} step {at:.0}s@{:.0}Mbps end wall={wall:.1}s shown={tier:?} \
+                 throughput={:.2}Mbps buffer={buffer:.1}s",
+                *bps as f64 / 1e6,
+                *throughput as f64 / 1e6
+            );
+        }
+
+        // Every presented frame is the next source frame: none missing or repeated across switches.
+        let frame = expected.get(1).zip(expected.first()).map_or(1.0 / 24.0, |(b, a)| b - a);
+        let tolerance = (frame / 4.0).min(0.002);
+        assert!(last.is_some_and(|(pts, _)| pts > RUN - STARTUP_MAX - 1.0), "{label}: only {} frames", shown.len());
+        for (i, pts) in shown.iter().enumerate() {
+            let want = expected.get(i).copied().unwrap_or(f64::NAN);
+            assert!(
+                (pts - want).abs() <= tolerance,
+                "{label}: presented frame {i} pts={pts:.4}s, source frame {i} is {want:.4}s (missing or duplicate)"
+            );
+        }
+        assert!(startup.is_some_and(|s| s < STARTUP_MAX), "{label}: startup {startup:?}");
+        assert_eq!((rebuffers, stats.dropped), (0, 0), "{label}: rebuffers and dropped frames");
+        assert!(max_av < 0.020, "{label}: A/V {max_av}");
+        assert_eq!(wrong_size, 0, "{label}: frames whose size doesn't match the reported tier");
+        assert!(max_seconds <= BUFFER_SECONDS_MAX && max_bytes <= BUFFER_BYTES_MAX, "{label}: buffer");
+        assert!(
+            switches.iter().any(|&(wall, _, _, to)| (70.0..150.0).contains(&wall) && to == Tier::P480),
+            "{label}: no low-tier response to the 3 Mbps phase"
+        );
+        let (wall, _, _, to) = *switches.last().expect("switches");
+        assert!(to == Tier::Direct && wall < RUN - 10.0, "{label}: no return to full quality ({to:?} at {wall:.1}s)");
+
+        // A seek on the same adaptive network player, still on the 20 Mbps link.
+        let target = 37.5;
+        let start = Instant::now();
+        p.pause().unwrap();
+        p.seek(target).unwrap();
+        let frame = p.next_frame_for_display(Instant::now()).unwrap().expect("frame after seek");
+        let elapsed = start.elapsed();
+        let tier = p.stats().adaptive.expect("adaptive").tier;
+        eprintln!("ADAPTIVE {label} seek {target}s -> {:.3}s {tier:?}: {elapsed:?}", frame.pts());
+        assert!((target - 0.001..target + 0.25).contains(&frame.pts()), "{label}: seek landed at {}", frame.pts());
+        assert_eq!(frame.size()[1], height(tier), "{label}: seek frame size vs tier");
+        assert!(elapsed < Duration::from_secs(2), "{label}: seek took {elapsed:?}");
+        drop(p);
+        link.lock().unwrap().start = None;
+    }
 }
