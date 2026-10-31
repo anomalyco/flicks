@@ -335,14 +335,14 @@ fn view(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
     }
     // Home and a title's page run full-bleed under the top bar; the rest start below it.
     let (name, body, hero) = match &s.screen {
-        Screen::Home => ("home", library::home(s, cx), Some("hero")),
-        Screen::Detail(key) => ("detail", library::detail(s, key), Some("detail-hero")),
+        Screen::Home => ("home", library::home(s, cx), Some("hero-band")),
+        Screen::Detail(key) => ("detail", library::detail(s, key), Some("detail-band")),
         Screen::Search => ("search", library::search(s), None),
         Screen::AddServer => ("add-server", add_server::view(s), None),
         Screen::Servers => ("servers", server::list(s), None),
         Screen::Server(key, tab) => ("server", server::view(s, key, *tab), None),
     };
-    // The bar turns solid once the hero has scrolled up under it.
+    // The bar turns solid once the backdrop band has scrolled up under it (at once, without one).
     let solid = hero.and_then(|key| cx.layout_with(key, |r| r[1] + r[3] < style::BAR_H + 160.0)).unwrap_or(true);
     let body =
         if hero.is_some() { body } else { col().w_full().h_full().pt(style::BAR_H).child(body.grow(1.0).min_h(0.0)) };
@@ -463,6 +463,11 @@ pub fn message(title: &str, detail: &str) -> El {
         .gap(8.0)
         .child(text(title).font(style::HEADING).color(style::text()))
         .child(text(detail).font(style::BODY).color(style::muted()))
+}
+
+/// Between the rows of a list.
+pub(crate) fn hairline() -> El {
+    el().w_full().h(1.0).fill(style::faint())
 }
 
 impl Default for Flicks {

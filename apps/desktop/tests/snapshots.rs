@@ -33,7 +33,7 @@ fn rect(element: &Value) -> [f32; 4] {
 fn library_and_server_screens_render_headless() {
     // Each scene: texts it shows, and keyed elements (by prefix) whose box must be drawn.
     let scenes: [(&str, &[&str], &[&str]); 8] = [
-        // The featured title over Home's first row.
+        // The featured title above Home's first row.
         (
             "home",
             &["VisionQuest", "Resume", "More Info", "Continue Watching", "S1 · E2  ·  31m left"],
@@ -45,7 +45,8 @@ fn library_and_server_screens_render_headless() {
             &["play"],
         ),
         ("search", &["S1 · E2", "S1 · E6"], &["title-"]),
-        ("servers", &["Servers", "Living Room Mac", "Online", "Admin", "Ana's PC", "Offline", "Viewer"], &["server-"]),
+        // The server rows are text on the page, between hairlines: nothing to sample.
+        ("servers", &["Servers", "Living Room Mac", "Online", "Admin", "Ana's PC", "Offline", "Viewer"], &[]),
         (
             "server-folders",
             &["Living Room Mac", "Folders", "/Volumes/Media/TV", "Remove", "Add Folder"],

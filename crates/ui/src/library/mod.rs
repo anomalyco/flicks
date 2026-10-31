@@ -1,14 +1,14 @@
-//! The library screens: Home (a featured title over rows of tiles), a title's page and search.
+//! The library screens: Home (a featured title above rows of tiles), a title's page and search.
 
 pub mod catalog;
 pub mod fixture;
 
 use rune::{
-    Color, Cursor, Cx, El, ScrollPos, ScrollSpec, Shadow, Shape, SurfaceFit, TextStyle, Transition, col, el, row,
-    spacer, text, text_input,
+    Color, Cursor, Cx, El, ScrollPos, ScrollSpec, Shape, SurfaceFit, TextStyle, Transition, col, el, row, spacer, text,
+    text_input,
 };
 
-use crate::{Flicks, Screen, Status, artwork_key, message, style};
+use crate::{Flicks, Screen, Status, artwork_key, hairline, message, style};
 use catalog::{Catalog, episode_label, source, watched};
 use flicks_client::merge::Title;
 
@@ -22,8 +22,7 @@ pub fn home(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
         }
         Status::Ready => {}
     }
-    // The rows start over the bottom of the hero, as Netflix's do.
-    let mut rows = col().w_full().gap(10.0).mt(-ROWS_OVERLAP);
+    let mut rows = col().w_full().gap(28.0).pt(40.0);
     for (i, r) in s.catalog.rows.iter().enumerate() {
         rows = rows.child(shelf(s, cx, i, &r.name, &r.titles, r.groups));
     }
@@ -41,8 +40,8 @@ pub(crate) fn featured(catalog: &Catalog) -> Option<usize> {
     row("Continue Watching").or_else(|| row("Recently Added"))
 }
 
-/// Apple TV's top shelf: the featured title's backdrop across the window, with its name, facts
-/// and buttons on a panel.
+/// The featured title: its backdrop as a band across the window, then its name, facts and
+/// buttons on the page below.
 fn hero(s: &Flicks) -> Option<El> {
     let t = featured(&s.catalog)?;
     let (title, group) = (s.catalog.titles.get(t)?, s.catalog.group_for(t)?);
@@ -57,18 +56,19 @@ fn hero(s: &Flicks) -> Option<El> {
     let mut info = col()
         .key(format!("hero-info-{t}"))
         .transition(Transition::opacity())
-        .max_w(620.0 + 2.0 * PANEL_PAD)
+        .max_w(620.0)
         .gap(14.0)
         .child(text(group.name.clone()).key("hero-title").font(style::DISPLAY).color(style::text()).max_lines(2))
-        .child(text(facts.join("  ·  ")).font(style::META).color(style::text().alpha(0.78)));
+        .child(text(facts.join("  ·  ")).font(style::META).color(style::muted()));
     if let (Some(done), Some(ms)) = (progress, title.item.duration_ms) {
         let left = ((1.0 - done as f64) * ms as f64) as u64;
-        info =
-            info.child(
-                row().gap(12.0).center_y().child(progress_bar(done).w(180.0)).child(
-                    text(format!("{} left", duration(left))).font(style::SMALL).color(style::text().alpha(0.78)),
-                ),
-            );
+        info = info.child(
+            row()
+                .gap(12.0)
+                .center_y()
+                .child(progress_bar(done).w(180.0))
+                .child(text(format!("{} left", duration(left))).font(style::SMALL).color(style::muted())),
+        );
     }
     let key = group.key.clone();
     let more = row()
@@ -93,48 +93,36 @@ fn hero(s: &Flicks) -> Option<El> {
         buttons = buttons.child(play_button(if progress.is_some() { "Resume" } else { "Play" }, t));
     }
     info = info.child(buttons.child(more));
-
-    // The backdrop, unaltered, stops where the rows begin so their headings sit on the page.
-    let art = backdrop(s, title).key(format!("hero-art-{t}")).transition(Transition::opacity());
-    let art = el()
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h(style::HERO_H - ROWS_OVERLAP)
-        .clip_rounded(0.0)
-        .child(art.absolute(0.0, 0.0).w_full().h(style::HERO_H));
-    Some(
-        col()
-            .key("hero")
-            .w_full()
-            .h(style::HERO_H)
-            .justify_end()
-            .px(style::GUTTER - PANEL_PAD)
-            .pb(170.0 - PANEL_PAD)
-            .child(art)
-            .child(panel(info)),
-    )
+    Some(below_band(band(s, title, "hero-band", format!("hero-art-{t}")), info).key("hero"))
 }
 
-/// How far Home's rows start over the bottom of the hero.
-const ROWS_OVERLAP: f32 = 120.0;
-/// Around text on a panel over artwork.
-const PANEL_PAD: f32 = 24.0;
+/// A title's backdrop as a full-width band, keyed `key` (the top bar watches it), or none when
+/// the title has no artwork. Until the image arrives the band keeps its place, empty.
+fn band(s: &Flicks, title: &Title, key: &str, art: String) -> Option<El> {
+    let item = &source(title)?.item;
+    item.backdrop.as_ref().or(item.poster.as_ref())?;
+    let image = artwork(s, title, true).map(|image| {
+        el().key(art).transition(Transition::opacity()).w_full().h_full().pixels_fit(image.pixels(), SurfaceFit::Fill)
+    });
+    Some(el().key(key).w_full().h(style::BAND_H).children(image))
+}
 
-/// Text over artwork sits on a solid near-black panel, never a fade.
-fn panel(content: El) -> El {
-    content.self_start().padding(PANEL_PAD).radius(14.0).fill(style::bg())
+/// The band, then `info` on the page under it (or under the top bar, with no band).
+fn below_band(band: Option<El>, info: El) -> El {
+    let top = if band.is_some() { 28.0 } else { style::BAR_H + 28.0 };
+    col().w_full().children(band).child(col().w_full().px(style::GUTTER).pt(top).child(info))
 }
 
 /// A row of tiles that scrolls sideways, with, for a mouse, arrows that page it while the row is
 /// hovered.
 fn shelf(s: &Flicks, cx: &mut Cx<Flicks>, i: usize, name: &str, titles: &[usize], whole_groups: bool) -> El {
-    let cards = name == "Continue Watching";
-    let tiles: Vec<El> = titles.iter().map(|&t| tile(s, t, &format!("r{i}"), whole_groups, cards)).collect();
-    let (w, h) = if cards { (style::CARD_W, style::CARD_H) } else { (style::POSTER_W, style::POSTER_H) };
+    let wide = name == "Continue Watching";
+    let tiles: Vec<El> = titles.iter().map(|&t| tile(s, t, &format!("r{i}"), whole_groups, wide)).collect();
+    let (w, h) = if wide { (style::STILL_W, style::STILL_H) } else { (style::POSTER_W, style::POSTER_H) };
     let key = format!("row-{i}");
     let scroll = format!("row-{i}-scroll");
-    // Room above and below the tiles for a lifted tile and its shadow.
-    let (above, below) = (16.0, 34.0);
+    // Room above and below the tiles for a lifted tile.
+    let (above, below) = (16.0, 8.0);
     let row_x = s.row_x.clone();
     let at = key.clone();
     let strip = row()
@@ -205,19 +193,18 @@ fn still<'a>(s: &'a Flicks, title: &Title) -> Option<&'a rune::Image> {
     s.artwork.get(&artwork_key(&source.server, name))
 }
 
-/// A poster (or, in Continue Watching, a 16:9 card) and one line under it, keyed
-/// `title-<title>-<place>`. The artwork carries
-/// the name, so the line is what the tile adds: the episode, the episode count or the year. A
-/// tile in a TV Shows or Movies row stands for its whole group. Hovered, it lifts. A title none
-/// of whose servers answered is dimmed.
-fn tile(s: &Flicks, t: usize, place: &str, whole_group: bool, card: bool) -> El {
+/// A poster (or, in Continue Watching, a 16:9 still), keyed `title-<title>-<place>`, with the
+/// name and one line under it: the episode, the episode count or the year. A tile in a TV Shows
+/// or Movies row stands for its whole group. Hovered, it lifts. A title none of whose servers
+/// answered is dimmed.
+fn tile(s: &Flicks, t: usize, place: &str, whole_group: bool, wide: bool) -> El {
     let (Some(title), Some(group)) = (s.catalog.titles.get(t), s.catalog.group_for(t)) else { return el() };
     let offline = if whole_group { s.refreshed && !s.catalog.group_available(group) } else { s.offline(t) };
     let progress = watched(title);
     let sub = match (whole_group, episode_label(&title.item)) {
         _ if offline => "Offline".to_string(),
         (false, Some(episode)) => match (progress, title.item.duration_ms) {
-            (Some(done), Some(ms)) if card => {
+            (Some(done), Some(ms)) if wide => {
                 format!("{episode}  ·  {} left", duration(((1.0 - done as f64) * ms as f64) as u64))
             }
             _ => episode,
@@ -225,24 +212,12 @@ fn tile(s: &Flicks, t: usize, place: &str, whole_group: bool, card: bool) -> El 
         _ if group.is_show() => episodes(group.titles.len()),
         _ => group.year.map(|y| y.to_string()).unwrap_or_default(),
     };
-    let (w, h) = if card { (style::CARD_W, style::CARD_H) } else { (style::POSTER_W, style::POSTER_H) };
-    let image = if card { still(s, title) } else { artwork(s, title, false) };
-    let mut art = match image {
-        Some(image) if card => el().size(w, h).pixels_fit(image.pixels(), SurfaceFit::Fill).child(
-            el().pin(Some(0.0), None, Some(0.0), Some(0.0))
-                .px(16.0)
-                .pt(12.0)
-                .pb(30.0)
-                .fill(style::bg())
-                .child(name_on_art(&group.name, 22.0).max_lines(2)),
-        ),
-        Some(image) => el().size(w, h).pixels_fit(image.pixels(), SurfaceFit::Fill),
-        None => title_card(&group.name, w, h, if card { 26.0 } else { 22.0 }),
+    let (w, h) = if wide { (style::STILL_W, style::STILL_H) } else { (style::POSTER_W, style::POSTER_H) };
+    let image = if wide { still(s, title) } else { artwork(s, title, false) };
+    let art = match image {
+        Some(image) => el().pixels_fit(image.pixels(), SurfaceFit::Fill),
+        None => blank(),
     };
-    if let Some(done) = progress {
-        let inset = 14.0;
-        art = art.child(progress_bar(done).absolute(inset, h - inset - 4.0).w(w - 2.0 * inset));
-    }
 
     // A title can show in several rows, so its key names the row too.
     let key = format!("title-{t}-{place}");
@@ -251,14 +226,9 @@ fn tile(s: &Flicks, t: usize, place: &str, whole_group: bool, card: bool) -> El 
     let open = group.key.clone();
     let mut art = art
         .key(key)
-        .radius(style::TILE_RADIUS)
-        .clip_rounded(style::TILE_RADIUS)
-        .border(1.0, Color::WHITE.alpha(0.08))
-        .box_shadow(if lifted {
-            Shadow { y: 22.0, blur: 44.0, color: Color::BLACK.alpha(0.6), ..Shadow::default() }
-        } else {
-            Shadow { y: 6.0, blur: 16.0, color: Color::BLACK.alpha(0.3), ..Shadow::default() }
-        })
+        .size(w, h)
+        .radius(style::ART_RADIUS)
+        .clip_rounded(style::ART_RADIUS)
         .scale(if lifted { style::LIFT } else { 1.0 })
         .scale_motion(style::LIFT_SPRING)
         .label(format!("{}, {sub}", group.name))
@@ -277,49 +247,31 @@ fn tile(s: &Flicks, t: usize, place: &str, whole_group: bool, card: bool) -> El 
     if lifted {
         art = art.raise();
     }
-    col()
-        .opacity(if offline { 0.4 } else { 1.0 })
-        .w(w)
-        .gap(12.0)
-        .child(art)
-        .child(text(sub).font(style::SMALL).color(style::muted()).truncate().px(2.0))
+    // Under the image, clear of it lifted: how far in, then the name and the line.
+    let mut tile = col().opacity(if offline { 0.4 } else { 1.0 }).w(w).child(art);
+    if let Some(done) = progress {
+        tile = tile.child(progress_bar(done).mt(12.0));
+    }
+    tile.child(text(group.name.clone()).font(style::NAME).color(style::text()).truncate().mt(12.0))
+        .child(text(sub).font(style::SMALL).color(style::muted()).truncate().mt(4.0))
 }
 
 fn episodes(n: usize) -> String {
     if n == 1 { "1 episode".into() } else { format!("{n} episodes") }
 }
 
+/// How far in a title is: a thin flat bar.
 fn progress_bar(watched: f32) -> El {
     el().w_full()
-        .h(4.0)
-        .radius(2.0)
-        .fill(Color::WHITE.alpha(0.28))
-        .child(el().w_frac(watched).h_full().radius(2.0).fill(style::accent()))
+        .h(3.0)
+        .radius(1.5)
+        .fill(style::faint())
+        .child(el().w_frac(watched).h_full().radius(1.5).fill(style::accent()))
 }
 
 /// What stands in for a title's artwork: a flat dark surface.
 fn blank() -> El {
     el().fill(style::raised())
-}
-
-fn name_on_art(name: &str, size: f32) -> El {
-    text(name.to_string())
-        .font(TextStyle::new(size, 800.0).lh(size * 1.05).tracking(-size * 0.03))
-        .color(style::text())
-        .max_lines(4)
-}
-
-/// What shows until (or instead of) a poster: the name, once, on a flat surface.
-fn title_card(name: &str, w: f32, h: f32, size: f32) -> El {
-    blank().size(w, h).child(name_on_art(name, size).pin(Some(16.0), None, Some(16.0), Some(30.0)))
-}
-
-/// A title's backdrop, else the plain page.
-fn backdrop(s: &Flicks, title: &Title) -> El {
-    match artwork(s, title, true) {
-        Some(image) => el().pixels_fit(image.pixels(), SurfaceFit::Fill),
-        None => el().fill(style::bg()),
-    }
 }
 
 pub fn detail(s: &Flicks, key: &catalog::GroupKey) -> El {
@@ -354,10 +306,10 @@ pub fn detail(s: &Flicks, key: &catalog::GroupKey) -> El {
     };
     let mut info = col()
         .key("detail-info")
-        .max_w(680.0 + 2.0 * PANEL_PAD)
+        .max_w(680.0)
         .gap(14.0)
         .child(text(group.name.clone()).key("detail-title").font(style::DISPLAY).color(style::text()).wrap())
-        .child(text(facts.join("  ·  ")).font(style::META).color(style::text().alpha(0.78)));
+        .child(text(facts.join("  ·  ")).font(style::META).color(style::muted()));
     info = if offline {
         info.child(
             text("Offline: its server didn't answer.").key("offline").font(style::BODY).color(style::muted()).mt(8.0),
@@ -365,45 +317,37 @@ pub fn detail(s: &Flicks, key: &catalog::GroupKey) -> El {
     } else {
         info.child(play_button(&play_label, next).mt(10.0))
     };
-    // The backdrop, sharp, over the same picture blurred behind the page.
-    let hero = col()
-        .key("detail-hero")
-        .w_full()
-        .h(style::HERO_H)
-        .justify_end()
-        .px(style::GUTTER - PANEL_PAD)
-        .pb(36.0 - PANEL_PAD)
-        .child(backdrop(s, lead).absolute(0.0, 0.0).w_full().h_full())
-        .child(panel(info));
 
-    let mut page = col().w_full().pb(56.0).child(hero);
+    let mut page = col().w_full().pb(56.0).child(below_band(band(s, lead, "detail-band", "detail-art".into()), info));
     if group.is_show() {
         let mut seasons: Vec<Option<u16>> = titles.iter().map(|(_, t)| t.item.season).collect();
         seasons.dedup();
         let season = s.season.filter(|n| seasons.contains(&Some(*n))).or(next_title.item.season);
-        let mut list = col().key("episodes").w_full().px(style::GUTTER - 16.0).gap(4.0);
+        let mut list = col().key("episodes").w_full().px(style::GUTTER).pt(40.0);
         let heading = match seasons.as_slice() {
             [only] => text(only.map_or("Episodes".to_string(), |n| format!("Season {n}")))
                 .font(style::HEADING)
                 .color(style::text())
-                .px(16.0)
-                .mb(10.0),
+                .mb(6.0),
             _ => row()
                 .gap(6.0)
-                .px(10.0)
-                .mb(10.0)
+                .ml(-16.0)
+                .mb(6.0)
                 .focus_group()
                 .children(seasons.iter().map(|&n| season_tab(n, n == season))),
         };
         list = list.child(heading);
-        for &(t, title) in titles.iter().filter(|(_, title)| seasons.len() < 2 || title.item.season == season) {
+        for (i, &(t, title)) in
+            titles.iter().filter(|(_, title)| seasons.len() < 2 || title.item.season == season).enumerate()
+        {
+            if i > 0 {
+                list = list.child(hairline());
+            }
             list = list.child(episode_row(s, title, t, s.offline(t)));
         }
         page = page.child(list);
     }
-    let blurred = backdrop(s, lead).absolute(0.0, 0.0).w_full().h_full().blur(48.0).opacity(0.55);
-    let dim = el().absolute(0.0, 0.0).w_full().h_full().fill(style::bg().alpha(0.55));
-    el().w_full().h_full().child(blurred).child(dim).child(scrolling(page))
+    scrolling(page)
 }
 
 fn season_tab(season: Option<u16>, on: bool) -> El {
@@ -466,15 +410,10 @@ fn episode_row(s: &Flicks, title: &Title, t: usize, offline: bool) -> El {
     facts.extend(quality(item));
     let (w, h) = (176.0, 99.0);
     let mut thumb = match still(s, title) {
-        Some(image) => el().size(w, h).pixels_fit(image.pixels(), SurfaceFit::Fill),
-        None => blank().size(w, h).child(
-            text(item.episode.map(|e| e.to_string()).unwrap_or_default())
-                .font(TextStyle::new(34.0, 800.0).tracking(-1.0))
-                .color(Color::WHITE.alpha(0.9))
-                .pin(Some(14.0), None, None, Some(8.0)),
-        ),
+        Some(image) => el().pixels_fit(image.pixels(), SurfaceFit::Fill),
+        None => blank(),
     };
-    thumb = thumb.radius(8.0).clip_rounded(8.0).border(1.0, Color::WHITE.alpha(0.08)).center();
+    thumb = thumb.size(w, h).radius(style::ART_RADIUS).clip_rounded(style::ART_RADIUS).center();
     if !offline {
         // A play glyph shows on the thumbnail while the row is hovered.
         thumb = thumb.child(
@@ -486,22 +425,21 @@ fn episode_row(s: &Flicks, title: &Title, t: usize, offline: bool) -> El {
                 .child(play_icon(Color::WHITE, 14.0).ml(3.0)),
         );
     }
-    if let Some(watched) = watched(title) {
-        thumb = thumb.child(progress_bar(watched).absolute(8.0, h - 12.0).w(w - 16.0));
-    }
-    let middle = col()
+    let mut middle = col()
         .grow(1.0)
         .gap(6.0)
         .child(text(name).font(TextStyle::new(16.0, 650.0)).color(style::text()))
         .child(text(facts.join("  ·  ")).font(style::SMALL).color(style::muted()));
+    if let Some(watched) = watched(title) {
+        middle = middle.child(progress_bar(watched).w(160.0).mt(4.0));
+    }
     let row = row()
         .key(format!("episode-{t}"))
         .opacity(if offline { 0.4 } else { 1.0 })
         .w_full()
-        .padding(12.0)
+        .py(14.0)
         .gap(20.0)
         .center_y()
-        .radius(12.0)
         .hover_group()
         .child(thumb)
         .child(middle)
@@ -509,8 +447,7 @@ fn episode_row(s: &Flicks, title: &Title, t: usize, offline: bool) -> El {
     if offline {
         return row;
     }
-    row.hover(style::faint())
-        .cursor(Cursor::Pointer)
+    row.cursor(Cursor::Pointer)
         .focusable(true)
         .focus_ring(2.0, 0.0, style::focus())
         .on_press(move |s: &mut Flicks| s.open_player(t))
