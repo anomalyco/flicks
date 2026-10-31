@@ -19,7 +19,6 @@ const DEADLINE: Duration = Duration::from_secs(5);
 /// Local names deliberately cannot alias TMDB's size-prefixed cache entries.
 pub(crate) fn valid_name(name: &str) -> bool {
     name.strip_prefix("still-v2-")
-        .or_else(|| name.strip_prefix("still-"))
         .and_then(|s| s.strip_suffix(".jpg"))
         .is_some_and(|id| id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()))
 }
@@ -43,7 +42,7 @@ pub(crate) fn start(dir: &Path) -> io::Result<SyncSender<()>> {
                 let ids = {
                     let mut stmt = conn.prepare(
                         "SELECT f.id FROM library_files f JOIN folders ON folders.path=f.root
-                        WHERE f.video_codec IS NOT NULL AND (f.still IS NULL OR f.still LIKE 'still-%') ORDER BY f.id",
+                        WHERE f.video_codec IS NOT NULL AND (f.still IS NULL OR f.still LIKE 'still-v2-%') ORDER BY f.id",
                     )?;
                     stmt.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?
                 };
@@ -91,8 +90,8 @@ pub(crate) fn start(dir: &Path) -> io::Result<SyncSender<()>> {
                     if output.is_file() {
                         conn.execute(
                             "UPDATE library_files SET still=?1,
-                            backdrop=CASE WHEN backdrop IS NULL OR backdrop LIKE 'still-%' THEN ?1 ELSE backdrop END
-                            WHERE id=?2 AND oshash=?3 AND (still IS NULL OR still LIKE 'still-%')
+                            backdrop=CASE WHEN backdrop IS NULL OR backdrop LIKE 'still-v2-%' THEN ?1 ELSE backdrop END
+                            WHERE id=?2 AND oshash=?3 AND (still IS NULL OR still LIKE 'still-v2-%')
                             AND EXISTS(SELECT 1 FROM folders WHERE folders.path=library_files.root)",
                             params![name, id, item.oshash],
                         )?;
@@ -129,7 +128,7 @@ fn clean(conn: &Connection, dir: &Path) -> Result<(), crate::Error> {
         if !matches!(extension, "jpg" | "skip" | "part") {
             continue;
         }
-        let Some(hash) = stem.strip_prefix("still-v2-").or_else(|| stem.strip_prefix("still-")) else { continue };
+        let Some(hash) = stem.strip_prefix("still-v2-") else { continue };
         if valid_name(&format!("{stem}.jpg"))
             && (!live.contains(hash) || (extension == "jpg" && !images.contains(&name)))
         {
