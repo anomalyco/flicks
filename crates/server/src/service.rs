@@ -1,34 +1,43 @@
 //! Running at login (`flicks service install|uninstall`): a per-user launchd agent on macOS
-//! (FLK-16) or systemd user service on Linux (FLK-39) that runs `flicks serve` and keeps it
-//! running.
+//! (FLK-16), systemd user service on Linux (FLK-39) or Scheduled Task on Windows (FLK-52) that
+//! runs `flicks serve` and keeps it running.
 
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 
 use crate::Error;
 
+#[path = "service_windows.rs"]
+mod windows;
+
 /// The agent's launchd label, and the name of its plist.
 const LABEL: &str = "com.flicks.server";
 
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
-    /// Run `flicks serve` at login (at boot on Linux) and keep it running (macOS and Linux).
+    /// Run `flicks serve` at login (at boot on Linux and Windows) and keep it running.
     #[command(subcommand)]
     Service(ServiceCommand),
 }
 
 #[derive(Debug, clap::Subcommand)]
 pub enum ServiceCommand {
-    /// Install the launchd agent or systemd user service and start it now.
+    /// Install the launchd agent, systemd user service or Scheduled Task and start it now.
     Install,
     /// Stop the service and remove it.
     Uninstall,
 }
 
 pub async fn run(command: Command) -> Result<(), Error> {
+    if cfg!(windows) {
+        return match command {
+            Command::Service(ServiceCommand::Install) => windows::install(&std::env::current_exe()?),
+            Command::Service(ServiceCommand::Uninstall) => windows::uninstall(),
+        };
+    }
     let linux = cfg!(target_os = "linux");
     if !cfg!(target_os = "macos") && !linux {
-        return Err(Error::Usage("`flicks service` isn't supported on this platform yet (macOS and Linux only)"));
+        return Err(Error::Usage("`flicks service` isn't supported on this platform (macOS, Linux and Windows only)"));
     }
     let home = crate::home_dir().ok_or(Error::NoHome)?;
     match (command, linux) {
