@@ -14,7 +14,7 @@ Built one platform at a time. Live card status is on the agent board; this table
 | 2. macOS app | **Nearly done**: library, server and player screens play real episodes with hardware decode, sound, subtitles, seeking and resume. Left: the final look (design board), fullscreen (needs Rune), the 2-hour playback test |
 | 3. Linux server | **Code complete**: runs as a systemd service on Ubuntu (survives reboot), and clients merge several servers into one library. The app view of it comes with milestone 2 |
 | 4. Linux app | Not started |
-| 5. Windows | **Started**: the server and CLI client build, pass every test and run on Windows; the app is next |
+| 5. Windows | **Server done**: builds, passes every test, runs at boot as a per-user task (`flicks service install`); the app is next |
 | 6. Web | **Started**: the same Rune app runs in the browser (wasm, served by `flicks serve --web`): Home, title page, search, pairing; no playback yet |
 
 ### Milestone 1: macOS server
