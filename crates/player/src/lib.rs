@@ -5,12 +5,15 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod abr;
 mod audio;
 mod demux;
+mod hls;
 mod source;
 mod video;
 mod worker;
 
+pub use abr::{AdaptiveStats, Tier};
 use flicks_container::matroska::Codec;
 pub use flicks_subtitle::Cue;
 pub use source::Source;
@@ -24,6 +27,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Client(#[from] flicks_client::Error),
     #[error(transparent)]
     Mkv(#[from] flicks_container::matroska::Error),
     #[error(transparent)]
@@ -79,6 +84,8 @@ pub struct Stats {
     /// Displayed frame PTS minus the audio clock, seconds (updated on each display).
     pub av_offset: f64,
     pub hardware_fallbacks: u64,
+    /// None for local files, downloads and byte-range playback.
+    pub adaptive: Option<AdaptiveStats>,
 }
 
 /// The null sink still decodes every sample. Its clock advances only through queued audio,
@@ -88,6 +95,13 @@ pub enum AudioSink {
     Null,
 }
 
+// Tag at decode, not at download or from a guessed resolution. Delayed pictures flushed
+// from the old decoder may be presented after the next rendition has already started decode.
+struct QueuedFrame {
+    video: VideoFrame,
+    tier: Option<Tier>,
+}
+
 pub struct Player {
     worker: worker::Worker,
     tracks: Vec<Track>,
@@ -95,7 +109,7 @@ pub struct Player {
     subtitle_track: Option<usize>,
     hardware: bool,
     sink: AudioSink,
-    frames: VecDeque<VideoFrame>,
+    frames: VecDeque<QueuedFrame>,
     audio_pending: VecDeque<audio::Chunk>,
     subtitles: flicks_subtitle::Track,
     sidecar: Option<flicks_subtitle::Track>,
@@ -111,6 +125,7 @@ pub struct Player {
     running: bool,
     eof: bool,
     stats: Stats,
+    shown_tier: Option<Tier>,
 }
 
 impl Player {
@@ -162,6 +177,7 @@ impl Player {
             running: false,
             eof: false,
             stats: Stats::default(),
+            shown_tier: None,
         };
         player.worker.request(worker::Command::Fill(0.0))?;
         let batch = player.worker.wait()?;
@@ -188,7 +204,7 @@ impl Player {
         self.state
     }
     pub fn stats(&self) -> Stats {
-        self.stats
+        Stats { adaptive: self.worker.hls.as_ref().map(|m| m.stats(self.shown_tier, self.position)), ..self.stats }
     }
     pub fn is_hardware(&self) -> bool {
         self.hardware
@@ -231,6 +247,9 @@ impl Player {
             output.pause()?;
         }
         self.clear_audio();
+        if let Some(hls) = &self.worker.hls {
+            hls.interrupt();
+        }
         if self.worker.pending {
             // A seek abandons the old region, including its decode/read failure.
             // A stopped worker is reported by the new request below.
@@ -245,6 +264,7 @@ impl Player {
         self.audio_pending.clear();
         self.subtitles = Default::default();
         self.position = target;
+        self.shown_tier = None;
         self.video_end = target;
         self.video_ready = target;
         self.audio_finished = false;
@@ -309,7 +329,7 @@ impl Player {
         }
         if !self.worker.pending
             && !self.eof
-            && (self.frames.back().is_none_or(|f| f.pts() < self.position + 0.2)
+            && (self.frames.back().is_none_or(|f| f.video.pts() < self.position + 0.2)
                 || (!self.audio_finished && self.audio_end < self.position + 0.2))
         {
             self.worker.request(worker::Command::Fill(self.position))?;
@@ -340,7 +360,7 @@ impl Player {
             self.update_clock(now);
         }
         let mut result = None;
-        while self.frames.front().is_some_and(|f| f.pts() <= self.position + 0.001) {
+        while self.frames.front().is_some_and(|f| f.video.pts() <= self.position + 0.001) {
             let frame = self.frames.pop_front().ok_or(Error::Media("missing queued frame"))?;
             if result.is_some() {
                 self.stats.dropped += 1;
@@ -352,14 +372,15 @@ impl Player {
             self.anchor = Some((now, self.position));
         }
         if let Some(frame) = &result {
+            self.shown_tier = frame.tier;
             self.stats.displayed += 1;
-            self.stats.av_offset = frame.pts() - self.position;
+            self.stats.av_offset = frame.video.pts() - self.position;
         }
         if self.eof && self.frames.is_empty() && self.position + 0.002 >= self.audio_end.max(self.video_end) {
             self.state = State::Ended;
             self.running = false;
         }
-        Ok(result)
+        Ok(result.map(|f| f.video))
     }
 
     fn accept(&mut self, batch: worker::Batch) -> Result<()> {
@@ -376,7 +397,7 @@ impl Player {
             return Err(Error::Media("interleaving exceeds playback buffer"));
         }
         if let Some(frame) = batch.frames.back() {
-            self.video_ready = frame.pts();
+            self.video_ready = frame.video.pts();
         }
         self.frames.extend(batch.frames);
         self.audio_pending.extend(batch.audio);
@@ -438,6 +459,9 @@ impl Player {
         }
     }
     fn fail(&mut self) {
+        if let Some(hls) = &self.worker.hls {
+            hls.interrupt();
+        }
         self.clear_audio();
         self.running = false;
         self.state = State::Failed;
@@ -447,6 +471,7 @@ impl Player {
 impl worker::Decoder {
     fn open(source: Source) -> Result<Self> {
         let (demux, tracks, duration) = demux::Demux::open(source)?;
+        let tier = if let demux::Demux::Hls(hls) = &demux { Some(hls.configured) } else { None };
         let choose = |kind| {
             tracks
                 .iter()
@@ -469,6 +494,7 @@ impl worker::Decoder {
             audio_track,
             subtitle_track,
             video,
+            tier,
             audio,
             frames: VecDeque::new(),
             audio_pending: VecDeque::new(),
@@ -487,7 +513,7 @@ impl worker::Decoder {
     fn restart(&mut self, target: f64) -> Result<()> {
         let subtitle =
             self.subtitle_track.map(|id| self.demux.subtitle_at(id, (target * 1e9) as i64)).transpose()?.flatten();
-        self.demux.seek(self.video_track, (target * 1e9) as i64)?;
+        self.demux.seek(self.video_track, (target * 1e9) as i64, self.audio_track)?;
         self.video = video::Decoder::new(&self.tracks.get(self.video_track).ok_or(Error::Track)?.codec, self.software)?;
         self.audio = self
             .audio_track
@@ -514,12 +540,15 @@ impl worker::Decoder {
     }
 
     fn fill(&mut self) -> Result<()> {
+        if let demux::Demux::Hls(hls) = &self.demux {
+            hls.position(self.position);
+        }
         let horizon = self.position + 0.35;
         let selected: Vec<_> =
             std::iter::once(self.video_track).chain(self.audio_track).chain(self.subtitle_track).collect();
         for _ in 0..100_000 {
             if self.eof
-                || (self.frames.back().is_some_and(|f| f.pts() >= horizon)
+                || (self.frames.back().is_some_and(|f| f.video.pts() >= horizon)
                     && (self.audio_track.is_none_or(|id| self.demux.exhausted(id)) || self.audio_end >= horizon))
             {
                 return Ok(());
@@ -530,6 +559,17 @@ impl worker::Decoder {
                 return Err(Error::Media("interleaving exceeds playback buffer"));
             }
             let packet = self.demux.next(&selected)?;
+            if let demux::Demux::Hls(hls) = &mut self.demux
+                && let Some((tier, codec)) = hls.take_config()
+            {
+                // Finish delayed B pictures from the old decoder *before* submitting the new IDR.
+                // Leave queued video, the audio decoder, its clock and device output untouched.
+                let delayed = self.video.decode(None)?;
+                self.keep_frames(delayed);
+                self.video = video::Decoder::new(&codec, self.software)?;
+                self.tier = Some(tier);
+                self.tracks.get_mut(self.video_track).ok_or(Error::Track)?.codec = codec;
+            }
             let frames =
                 match packet {
                     None => {
@@ -596,11 +636,20 @@ impl worker::Decoder {
                         Vec::new()
                     }
                 };
-            self.decoded += frames.len() as u64;
-            // Decode preroll, but do not count it as dropped display frames.
-            self.frames.extend(frames.into_iter().filter(|f| f.pts() + 0.001 >= self.trim_start));
+            self.keep_frames(frames);
         }
         Err(Error::Media("decode preroll exceeds limit"))
+    }
+
+    fn keep_frames(&mut self, frames: Vec<VideoFrame>) {
+        self.decoded += frames.len() as u64;
+        // Decode preroll, but do not count it as dropped display frames.
+        self.frames.extend(
+            frames
+                .into_iter()
+                .filter(|f| f.pts() + 0.001 >= self.trim_start)
+                .map(|video| QueuedFrame { video, tier: self.tier }),
+        );
     }
 
     fn fallback(&mut self) -> Result<()> {

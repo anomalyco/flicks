@@ -1,4 +1,4 @@
-use crate::{Error, Result, Track, VideoFrame, audio, demux, video};
+use crate::{Error, QueuedFrame, Result, Tier, Track, audio, demux, video};
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
@@ -10,8 +10,9 @@ pub(crate) struct Decoder {
     pub audio_track: Option<usize>,
     pub subtitle_track: Option<usize>,
     pub video: video::Decoder,
+    pub tier: Option<Tier>,
     pub audio: Option<audio::Decoder>,
-    pub frames: VecDeque<VideoFrame>,
+    pub frames: VecDeque<QueuedFrame>,
     pub audio_pending: VecDeque<audio::Chunk>,
     pub subtitles: flicks_subtitle::Track,
     pub duration: f64,
@@ -26,7 +27,7 @@ pub(crate) struct Decoder {
 }
 
 pub(crate) struct Batch {
-    pub frames: VecDeque<VideoFrame>,
+    pub frames: VecDeque<QueuedFrame>,
     pub audio: VecDeque<audio::Chunk>,
     pub subtitles: flicks_subtitle::Track,
     pub audio_end: f64,
@@ -50,10 +51,15 @@ pub(crate) struct Worker {
     receiver: Receiver<Result<Batch>>,
     thread: Option<JoinHandle<()>>,
     pub pending: bool,
+    pub hls: Option<std::sync::Arc<crate::hls::Monitor>>,
 }
 
 impl Worker {
     pub fn new(mut decoder: Decoder) -> Result<Self> {
+        let hls = match &decoder.demux {
+            demux::Demux::Hls(hls) => Some(hls.monitor.clone()),
+            _ => None,
+        };
         let (sender, commands) = mpsc::sync_channel(1);
         let (results, receiver) = mpsc::sync_channel(1);
         let thread = std::thread::Builder::new().name("flicks-decode".into()).spawn(move || {
@@ -86,7 +92,7 @@ impl Worker {
                 }
             }
         })?;
-        Ok(Self { sender: Some(sender), receiver, thread: Some(thread), pending: false })
+        Ok(Self { sender: Some(sender), receiver, thread: Some(thread), pending: false, hls })
     }
 
     pub fn request(&mut self, command: Command) -> Result<()> {
@@ -122,6 +128,9 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
+        if let Some(hls) = &self.hls {
+            hls.interrupt();
+        }
         self.sender.take();
         // At most one response exists; draining it lets the worker close normally.
         if self.pending {
