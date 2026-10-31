@@ -635,6 +635,66 @@ CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 \
   cargo test -p flicks-player --release two_hour_playback -- --ignored --nocapture
 ```
 
+### Two-hour rerun on `65a9052` and caller diagnosis (`f3f2202`, 2026-10-30)
+
+The rerun on the partly busy M5 Max **failed**: MP4 went from 80 drops to one,
+not zero. These are 1080p H.264, 24 fps,
+continuous AAC, two independent null sinks. Offset is frame PTS minus the audio
+clock at release, not onscreen or acoustic sync. This is not a 4K acceptance run.
+
+| 7,200 s, before harness change | Decoded | Displayed | Dropped | Max absolute offset | Max display call | Max caller gap |
+|---|---:|---:|---:|---:|---:|---:|
+| MP4 | 172,800 | 172,799 | 1 | 30.597 ms | 0.563 ms | 46.107 ms |
+| MKV | 172,800 | 172,800 | 0 | 40.043 ms | 4.957 ms | 44.051 ms |
+
+Those maxima were not timestamped together. To distinguish a late poll from a
+slow decoder, the diagnostic now records the previous return → next entry gap,
+current call cost, clock, and frames/audio already queued **before** the sleep.
+On the same two files, the first ten minutes in release, with **12 `nice -n 19`
+Rust compile loops** and other work on the Mac:
+
+| 600 s per file, original pacing → interactive pacing | MP4 | MKV |
+|---|---:|---:|
+| Displayed / dropped, both runs | 14,400 / 0 | 14,400 / 0 |
+| Max absolute offset (ms) | 18.651 → 5.533 | 18.930 → 5.583 |
+| Max caller gap (ms) | 29.849 → 13.840 | 25.022 → 13.271 |
+| Time outside the preceding call **at the peak offset** (ms) | 25.062 → 12.648 | 25.022 → 13.114 |
+| Current call **at the peak offset** (µs) | 2.0 → 23.7 | 13.5 → 16.8 |
+
+Both original-pacing peaks occurred at tick **35,600** (296.68 s). Both queues
+already contained the released frame and at least another 250 ms of video.
+As a separate positive control, we delayed **only the caller** before poll 2,400
+of a 60 s loaded run (temporary delay requested: MP4 30 ms, MKV 36 ms). MP4
+returned PTS 20.000 at clock 20.030406: **30.406 ms** late after **36.853 ms
+outside** the engine, call **19.6 µs**. MKV skipped PTS 20.000 and returned
+20.042 at clock 20.043227: **one drop**, **48.716 ms outside**, call **23.1 µs**;
+its video was queued through 20.292 and audio through 20.309 *before* that gap.
+Two later MP4 wake delays (4/42 ms at ticks 3,599/3,600) did not skip a frame.
+At 24 fps a video frame lasts 41.67 ms: depending on phase, a 44–46 ms absence
+can span two due pictures. No worker stall or device-clock jitter is needed to
+produce either failure. This identifies a sufficient cause, not a retrospective
+per-event trace of the two-hour run. No forced delays ship in either harness.
+
+Only the macOS pacing threads now request user-interactive QoS, **after** creating
+the decoder workers. They poll with the actual monotonic wake time and do not
+replay expired 120 Hz ticks. This models refresh opportunities, not the entire
+app: the desktop polls its engine every ~4 ms and Rune's compositor presents on
+the display link. **No frames are excluded**: the two-hour gate still requires
+`Ended`, 172,800 displayed, zero raw drops and max absolute offset <20 ms on each
+file. Skipped refresh ticks are reported separately (zero in the 10 min after run).
+
+`FLICKS_REQUIRE_ORACLES=1 scripts/check.sh` passed (819 tests/doctests, 36 ignored).
+**No new two-hour result:** at 22:45 EDT the load was 9.69 / 17.36 / 24.89 on
+18 cores and another `rustc` was building `flicks_desktop`. Reproduce:
+
+```sh
+cd /Users/vogel/dev/flicks-fix-2h
+# 10 min, reads existing generated media; omit _2 to use the same file twice:
+FLICKS_PLAYER_MEDIA=/path/to/two-hour.mp4 FLICKS_PLAYER_MEDIA_2=/path/to/two-hour.mkv \
+  cargo test -p flicks-player --release scheduling_diagnostic -- --ignored --nocapture
+# Quiet Mac only (uptime: load <~4; pgrep -fl rustc: no other builds):
+FLICKS_REQUIRE_ORACLES=1 cargo test -p flicks-player --release two_hour_playback -- --ignored --nocapture
+```
 
 ## FLK-19 review — HLS tokens, open GOPs and audio clocks (2026-10-30)
 

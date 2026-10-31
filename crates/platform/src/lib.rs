@@ -10,6 +10,8 @@ mod config;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod ffi;
+#[cfg(target_os = "macos")]
+pub use ffi::set_user_interactive_qos;
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]

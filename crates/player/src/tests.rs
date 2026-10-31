@@ -681,41 +681,7 @@ fn two_hour_playback() {
         assert_eq!(file.tracks[decoder.video_track].samples.len(), 172_800);
     }
     drop(decoder);
-    let runs = [mp4.clone(), mkv.clone()].map(|path| {
-        std::thread::spawn(move || {
-            let mut p = player(&path);
-            p.play();
-            let start = Instant::now();
-            let mut offset = 0f64;
-            let mut max_call = Duration::ZERO;
-            let mut max_gap = Duration::ZERO;
-            let mut previous = start;
-            for tick in 0..(7202 * 120) {
-                let deadline = start + Duration::from_secs_f64(tick as f64 / 120.0);
-                std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
-                let now = Instant::now();
-                max_gap = max_gap.max(now.duration_since(previous));
-                previous = now;
-                let call = Instant::now();
-                if p.next_frame_for_display(now).unwrap().is_some() {
-                    offset = offset.max(p.stats().av_offset.abs());
-                }
-                max_call = max_call.max(call.elapsed());
-                if p.state() == State::Ended {
-                    break;
-                }
-            }
-            eprintln!(
-                "2h {}: {:?}, max offset={:.3}ms, wall={:?}, position={}, max call={max_call:?}, max gap={max_gap:?}",
-                path.extension().unwrap().to_string_lossy(),
-                p.stats(),
-                offset * 1000.0,
-                start.elapsed(),
-                p.position()
-            );
-            (p.state(), p.stats(), offset)
-        })
-    });
+    let runs = [mp4.clone(), mkv.clone()].map(|path| std::thread::spawn(move || paced_playback(&path, 7202, |_| {})));
     let results = runs.map(|run| run.join().unwrap());
     assert!(results.iter().all(|(state, _, _)| *state == State::Ended));
     assert!(results.iter().all(|(_, stats, _)| stats.displayed == 172_800 && stats.dropped == 0));
@@ -725,53 +691,102 @@ fn two_hour_playback() {
     }
 }
 
-#[test]
-#[ignore = "60s diagnostic using FLICKS_PLAYER_MEDIA, no file writes"]
-fn scheduling_diagnostic() {
-    let path = PathBuf::from(std::env::var_os("FLICKS_PLAYER_MEDIA").unwrap());
-    let mut players = [player(&path), player(&path)];
-    for p in &mut players {
-        p.fill().unwrap();
-        p.play();
-    }
+// One pacing thread per player in both the short diagnostic and the two-hour acceptance run.
+fn paced_playback(path: &Path, seconds: u32, mut sample_call: impl FnMut(Duration)) -> (State, Stats, f64) {
+    let mut p = player(path);
+    // Model a display-link caller, not a background CLI timer. Open first so the decoder
+    // worker doesn't inherit the pacer's scheduling priority.
+    #[cfg(target_os = "macos")]
+    flicks_platform::set_user_interactive_qos().unwrap();
+    let label = path.extension().unwrap_or_default().to_string_lossy();
+    p.play();
     let start = Instant::now();
-    let mut previous = start;
-    let mut max_gap = Duration::ZERO;
-    let mut calls = Vec::new();
+    let (mut previous, mut previous_end) = (start, start);
+    let (mut max_gap, mut max_call) = (Duration::ZERO, Duration::ZERO);
     let mut max_offset = 0f64;
-    for tick in 0..7200 {
+    let mut peak = String::new();
+    let mut tick = 0;
+    let mut skipped_ticks = 0;
+    while tick < seconds * 120 {
+        // This is what was already decoded *before* the caller went to sleep, not a batch just polled.
+        let ready = (p.frames.front().map(VideoFrame::pts), p.frames.back().map(VideoFrame::pts));
+        let (position, audio_end, dropped) = (p.position(), p.audio_end, p.stats().dropped);
         let deadline = start + Duration::from_secs_f64(tick as f64 / 120.0);
         std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
         let now = Instant::now();
-        let gap = now.duration_since(previous);
+        let pts = p.next_frame_for_display(now).unwrap().map(|frame| frame.pts());
+        let end = Instant::now();
+        let call = end - now;
+        let gap = now - previous;
         max_gap = max_gap.max(gap);
-        previous = now;
-        for p in &mut players {
-            let dropped = p.stats().dropped;
-            let call = Instant::now();
-            let shown = p.next_frame_for_display(call).unwrap().is_some();
-            let elapsed = call.elapsed();
-            calls.push(elapsed);
-            if shown {
-                max_offset = max_offset.max(p.stats().av_offset.abs());
-            }
-            if dropped != p.stats().dropped {
-                eprintln!(
-                    "drop at tick {tick}: caller gap={gap:?}, call={elapsed:?}, delta={}",
-                    p.stats().dropped - dropped
+        max_call = max_call.max(call);
+        sample_call(call);
+        if let Some(pts) = pts {
+            let stats = p.stats();
+            let delta = stats.dropped - dropped;
+            let offset = stats.av_offset.abs();
+            if offset > max_offset || delta > 0 {
+                let event = format!(
+                    "tick={tick}, gap={gap:?} (outside call {:?}), wake late={:?}, call={call:?}, \
+                     clock={position:.6}->{:.6}, prequeued PTS={ready:.6?}, audio end={audio_end:.6}, \
+                     released={pts:.6}, offset={:.3}ms, drops={delta}",
+                    now - previous_end,
+                    now.saturating_duration_since(deadline),
+                    p.position(),
+                    stats.av_offset * 1000.0
                 );
+                if delta > 0 {
+                    eprintln!("{label} drop: {event}");
+                }
+                if offset > max_offset {
+                    max_offset = offset;
+                    peak = event;
+                }
             }
         }
+        previous = now;
+        previous_end = end;
+        if p.state() == State::Ended {
+            break;
+        }
+        // A display link doesn't replay expired refreshes back-to-back. The poll above
+        // used the actual wake time; its offset and all of its drops still count.
+        let next = (tick + 1).max((start.elapsed().as_secs_f64() * 120.0) as u32 + 1);
+        skipped_ticks += next - (tick + 1);
+        tick = next;
     }
-    calls.sort();
     eprintln!(
-        "60s two-player scheduling: calls p50={:?} p99={:?} max={:?}, max caller gap={max_gap:?}, max offset={:.3}ms, stats={:?}",
-        calls[calls.len() / 2],
-        calls[calls.len() * 99 / 100],
-        calls.last(),
+        "{label}: {:?}, max offset={:.3}ms [{peak}], wall={:?}, position={}, \
+         max call={max_call:?}, max gap={max_gap:?}, skipped refresh ticks={skipped_ticks}",
+        p.stats(),
         max_offset * 1000.0,
-        players.each_ref().map(Player::stats)
+        start.elapsed(),
+        p.position()
     );
+    (p.state(), p.stats(), max_offset)
+}
+
+#[test]
+#[ignore = "10min diagnostic using FLICKS_PLAYER_MEDIA and optionally FLICKS_PLAYER_MEDIA_2, no file writes"]
+fn scheduling_diagnostic() {
+    let first = PathBuf::from(std::env::var_os("FLICKS_PLAYER_MEDIA").unwrap());
+    let second = std::env::var_os("FLICKS_PLAYER_MEDIA_2").map(PathBuf::from).unwrap_or_else(|| first.clone());
+    let runs = [first, second].map(|path| {
+        std::thread::spawn(move || {
+            let mut calls = Vec::with_capacity(72_000);
+            paced_playback(&path, 600, |call| calls.push(call));
+            calls.sort_unstable();
+            eprintln!(
+                "{}: call p50={:?}, p99={:?}",
+                path.display(),
+                calls[calls.len() / 2],
+                calls[calls.len() * 99 / 100]
+            );
+        })
+    });
+    for run in runs {
+        run.join().unwrap();
+    }
 }
 
 #[test]

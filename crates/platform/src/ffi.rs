@@ -31,6 +31,20 @@ pub(super) fn check(status: i32, operation: &'static str) -> Result<()> {
     if status == 0 { Ok(()) } else { Err(Error::Platform { operation, status }) }
 }
 
+/// Request macOS UI scheduling for the calling thread; leave decode and I/O on their own workers.
+pub fn set_user_interactive_qos() -> Result<()> {
+    const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21; // <sys/qos.h>
+    // SAFETY: macOS <pthread/qos.h> takes qos_class_t (unsigned int) and int, and returns int.
+    unsafe extern "C" {
+        fn pthread_set_qos_class_self_np(class: u32, relative_priority: i32) -> i32;
+    }
+    check(
+        // SAFETY: this takes two scalars, a valid QoS class and a relative priority in [-15, 0].
+        unsafe { pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) },
+        "pthread_set_qos_class_self_np",
+    )
+}
+
 fn pixel_format(info: &FrameInfo) -> u32 {
     u32::from_be_bytes(match (info.pixel_format, info.color.full_range) {
         (PixelFormat::Nv12, false) => *b"420v",
