@@ -17,6 +17,12 @@ mod aac_encode_ffi;
 #[cfg(target_os = "macos")]
 pub use aac_encode_ffi::AacEncoder;
 
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod h264_encode_ffi;
+#[cfg(target_os = "macos")]
+pub use h264_encode_ffi::{EncodedVideo, H264Encoder, VideoSample};
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 #[path = "permissions_ffi.rs"]
@@ -32,7 +38,7 @@ pub enum Error {
     InvalidData(&'static str),
     #[error("{operation} failed ({status})")]
     Platform { operation: &'static str, status: i32 },
-    #[error("decoder is finished or failed; create a new decoder")]
+    #[error("codec run is finished or failed")]
     Finished,
 }
 
@@ -128,25 +134,67 @@ impl Decoder {
     pub fn new(codec: Codec, configuration: &[u8]) -> Result<Self> {
         #[cfg(target_os = "macos")]
         {
-            let info = config::StreamInfo::parse(codec, configuration)?;
-            let session = ffi::Session::new(&info)?;
-            Ok(Self {
-                session,
-                info,
-                pending: Vec::new(),
-                in_flight: Vec::new(),
-                last_pts: None,
-                first: true,
-                skip_rasl: false,
-                h264_recovery_pts: None,
-                finished: false,
-            })
+            Self::open(config::StreamInfo::parse(codec, configuration)?, false)
         }
         #[cfg(not(target_os = "macos"))]
         {
             let _ = (codec, configuration);
             Err(Error::Unsupported("VideoToolbox requires macOS"))
         }
+    }
+
+    /// Inspect a hardware-compatible avcC/hvcC without starting a codec session.
+    /// Used to avoid advertising an unsupported transcode format or source size.
+    #[cfg(target_os = "macos")]
+    pub fn transcode_format(codec: Codec, configuration: &[u8]) -> Result<FrameInfo> {
+        Ok(Self::transcode_info(codec, configuration)?.frame)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn transcode_info(codec: Codec, configuration: &[u8]) -> Result<config::StreamInfo> {
+        let info = config::StreamInfo::parse(codec, configuration)?;
+        if u64::from(info.frame.width) * u64::from(info.frame.height) > 4096 * 2304 {
+            return Err(Error::Unsupported("source exceeds transcode pixel budget"));
+        }
+        Ok(info)
+    }
+
+    /// A bounded server transcode run. Prefer hardware but allow VideoToolbox's software
+    /// decoder when hardware is unavailable. Container colour tags override the SPS when
+    /// specified, so pixel transfer sees the source's actual transfer function/primaries.
+    #[cfg(target_os = "macos")]
+    pub fn for_transcode(codec: Codec, configuration: &[u8], color: Option<ColorInfo>) -> Result<Self> {
+        let mut info = Self::transcode_info(codec, configuration)?;
+        if let Some(c) = color {
+            let src = &mut info.frame.color;
+            if c.primaries != 2 {
+                src.primaries = c.primaries;
+            }
+            if c.transfer != 2 {
+                src.transfer = c.transfer;
+            }
+            if c.matrix != 2 {
+                src.matrix = c.matrix;
+            }
+            src.full_range = c.full_range;
+        }
+        Self::open(info, true)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open(info: config::StreamInfo, transcode: bool) -> Result<Self> {
+        let session = ffi::Session::new(&info, transcode)?;
+        Ok(Self {
+            session,
+            info,
+            pending: Vec::new(),
+            in_flight: Vec::new(),
+            last_pts: None,
+            first: true,
+            skip_rasl: false,
+            h264_recovery_pts: None,
+            finished: false,
+        })
     }
 
     /// Submit one complete access unit. PTS uses the caller's consistent tick units; negative
@@ -654,6 +702,39 @@ mod tests {
     fn other_platforms_are_unsupported() {
         assert!(matches!(Decoder::new(Codec::H264, &[]), Err(Error::Unsupported(_))));
         assert!(matches!(Decoder::new(Codec::Hevc, &[]), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn h264_encoder_preserves_pts_and_forces_idrs() {
+        let _ff = flicks_testkit::require_ffmpeg!();
+        assert!(H264Encoder::new(1920, 0, 3_000_000, 41667).is_err());
+        assert!(H264Encoder::new(1279, 720, 3_000_000, 41667).is_err());
+        let (config, packets) = fixture(Codec::H264, 8, false, "318x242", 16);
+        let mut dec = Decoder::for_transcode(Codec::H264, &config, None).unwrap();
+        let mut frames = Vec::new();
+        for (data, pts) in packets {
+            frames.extend(dec.decode(&data, pts).unwrap());
+        }
+        frames.extend(dec.flush().unwrap());
+        let mut enc = H264Encoder::new(160, 122, 600_000, 41667).unwrap();
+        for (i, frame) in frames.iter().enumerate() {
+            enc.encode(frame.pixel_buffer(), i as i64 * 41667, i == 9).unwrap();
+        }
+        let out = enc.finish().unwrap();
+        assert_eq!(out.avcc.get(1..4), Some([0x64, 0, 0x2a].as_slice()), "advertised RFC 6381 codec");
+        assert_eq!(out.samples.len(), 16);
+        assert!(out.samples[0].idr && out.samples[9].idr);
+        for (i, s) in out.samples.iter().enumerate() {
+            assert_eq!(s.pts_us, i as i64 * 41667);
+        }
+        let info = config::StreamInfo::parse(Codec::H264, &out.avcc).unwrap();
+        assert_eq!((info.frame.crop.2, info.frame.crop.3), (160, 122));
+        assert_eq!((info.frame.color.primaries, info.frame.color.transfer, info.frame.color.matrix), (1, 1, 1));
+        let mut enc = H264Encoder::new(160, 122, 600_000, 41667).unwrap();
+        enc.encode(frames[0].pixel_buffer(), 10, false).unwrap();
+        assert!(enc.encode(frames[0].pixel_buffer(), 10, false).is_err());
+        assert!(enc.finish().is_err());
     }
 
     #[test]
