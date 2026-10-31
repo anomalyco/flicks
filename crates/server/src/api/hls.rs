@@ -18,7 +18,14 @@ use hyper::{
 };
 use serde_json::json;
 use sha2::Sha256;
-use std::io;
+use std::{
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 // Bound simultaneous demux/segment allocations independently of HTTP connections.
 static WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
@@ -129,17 +136,7 @@ async fn render(state: &State, caller: &Caller, parts: &Parts) -> Result<Reply, 
     let Some((id, resource)) = location(parts.uri.path()) else {
         return Ok(status(StatusCode::NOT_FOUND));
     };
-    let facts = state
-        .db
-        .call(move |conn| {
-            let Some(item) = super::visible_item(conn, id)? else {
-                return Ok(None);
-            };
-            let keys = flicks_library::keyframes(conn, id).map_err(super::library_error)?;
-            Ok(Some((item, keys)))
-        })
-        .await?;
-    let Some((item, keys)) = facts else {
+    let Some(item) = state.db.call(move |conn| super::visible_item(conn, id)).await? else {
         return Ok(status(StatusCode::NOT_FOUND));
     };
     if parts.method == Method::POST && resource == "token" && parts.uri.query().is_none() {
@@ -173,33 +170,11 @@ async fn render(state: &State, caller: &Caller, parts: &Parts) -> Result<Reply, 
     let Some(resource) = media::Resource::parse(resource) else {
         return Ok(status(StatusCode::NOT_FOUND));
     };
-    let permit = match WORKERS.try_acquire() {
-        Ok(permit) => permit,
-        Err(_) => return Ok(status(StatusCode::SERVICE_UNAVAILABLE)),
-    };
-    let deadline = std::time::Instant::now() + media::DEADLINE;
-    // At most four requests are admitted, two encoding. Waiting for an encoder
-    // is bounded too; return 503 rather than spawning an unbounded blocking queue.
-    let encoder = if resource.encodes() {
-        match tokio::time::timeout_at(deadline.into(), ENCODERS.acquire()).await {
-            Ok(Ok(p)) => Some(p),
-            _ => return Ok(status(StatusCode::SERVICE_UNAVAILABLE)),
-        }
-    } else {
-        None
-    };
-    let cache = state.api.hls.clone();
-    let work = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let _encoder = encoder;
-        media::render(item, keys, resource, &suffix, &cache, deadline)
-    });
-    // A stuck OS codec cannot hold an HTTP connection indefinitely. Its permits
-    // stay on the worker until it actually stops, not on the cancelled request.
-    let Ok(joined) = tokio::time::timeout_at(deadline.into(), work).await else {
+    let deadline = Instant::now() + media::DEADLINE;
+    let work = media::render(state, item, resource, suffix, deadline);
+    let Ok(result) = tokio::time::timeout_at(deadline.into(), work).await else {
         return Ok(status(StatusCode::SERVICE_UNAVAILABLE));
     };
-    let result = joined.map_err(|e| io::Error::other(e.to_string()))?;
     match result {
         Ok((mime, bytes)) => {
             let mut response = Response::new(full(bytes));
@@ -210,9 +185,47 @@ async fn render(state: &State, caller: &Caller, parts: &Parts) -> Result<Reply, 
         Err(e) => Ok(status(match e.kind() {
             io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
             io::ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => StatusCode::SERVICE_UNAVAILABLE,
+            io::ErrorKind::Other => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::UNPROCESSABLE_ENTITY,
         })),
     }
+}
+
+#[derive(Clone)]
+struct Work {
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Work {
+    fn new(deadline: Instant) -> Self {
+        Self { deadline, cancelled: Arc::default() }
+    }
+
+    fn check(&self) -> io::Result<()> {
+        if self.cancelled.load(Ordering::Relaxed) || Instant::now() >= self.deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        Ok(())
+    }
+}
+
+struct CancelOnDrop(Arc<AtomicBool>);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+async fn permits(
+    resource: media::Resource,
+) -> io::Result<(tokio::sync::SemaphorePermit<'static>, Option<tokio::sync::SemaphorePermit<'static>>)> {
+    // Waiting encodes must not occupy the workers used for playlists and remuxes.
+    let encoder =
+        if resource.encodes() { Some(ENCODERS.acquire().await.map_err(|_| io::ErrorKind::WouldBlock)?) } else { None };
+    let worker = WORKERS.try_acquire().map_err(|_| io::ErrorKind::WouldBlock)?;
+    Ok((worker, encoder))
 }
 
 fn invalid(e: impl std::fmt::Display) -> io::Error {
