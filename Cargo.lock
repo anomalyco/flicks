@@ -1611,6 +1611,8 @@ dependencies = [
  "flicks-h264",
  "flicks-hevc",
  "flicks-testkit",
+ "objc2-audio-toolbox",
+ "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",
@@ -1650,6 +1652,9 @@ name = "flicks-server"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "flicks-aac",
+ "flicks-ac3",
+ "flicks-audio",
  "flicks-av1",
  "flicks-client",
  "flicks-container",
