@@ -471,6 +471,14 @@ impl Default for Flicks {
     }
 }
 
+/// The window's frame on macOS: the traffic lights on the top bar's centre line, where the logo
+/// and nav sit (`App::chrome`).
+pub const CHROME: rune::Chrome = rune::Chrome {
+    full_size_content: true,
+    traffic_lights: Some((20.0, (style::BAR_H - rune::Chrome::TRAFFIC_LIGHT) / 2.0)),
+    drag_regions: false,
+};
+
 /// The app: its window, scenes for headless renders, image cache and keys.
 pub fn spec() -> AppSpec<Flicks> {
     AppSpec {
