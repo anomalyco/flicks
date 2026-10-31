@@ -1,7 +1,7 @@
 //! Independent AAC-LC stereo segments on one absolute AAC sample grid.
 #![cfg(target_os = "macos")]
 
-use super::{Packet, Track, invalid};
+use super::{Packet, Track, Work, invalid};
 use flicks_audio::{Channel, interleave, layout, mix};
 use flicks_container::isobmff::{CodecConfig, SampleEntry, TrackConfig, WriteSample, cmaf};
 use flicks_platform::AacEncoder;
@@ -65,7 +65,7 @@ pub(super) fn segment(
     start_ms: u64,
     end_ms: u64,
     delay_us: u64,
-    deadline: std::time::Instant,
+    work: &Work,
 ) -> io::Result<Vec<u8>> {
     if end_ms <= start_ms || end_ms - start_ms > 32_000 || packets.is_empty() || packets.len() > MAX_PACKETS {
         return Err(invalid("stereo segment duration or packet count"));
@@ -138,9 +138,7 @@ pub(super) fn segment(
     };
     let mut next_sample: Option<i128> = None;
     for packet in packets {
-        if std::time::Instant::now() >= deadline {
-            return Err(invalid("audio decode deadline"));
-        }
+        work.check()?;
         let timestamp = i128::from(packet.pts_us) * i128::from(rate);
         // Round to the closest source sample, including negative preroll times.
         let nominal = (timestamp + 500_000).div_euclid(1_000_000);
@@ -160,6 +158,7 @@ pub(super) fn segment(
         } else {
             let mut data = packet.data.as_slice();
             while !data.is_empty() {
+                work.check()?;
                 // Account for every aggregated E-AC-3 frame in write's decoded
                 // sample budget; the outer packet cap alone doesn't bound them.
                 let header = flicks_ac3::parse_header(data).map_err(invalid)?;
@@ -177,7 +176,9 @@ pub(super) fn segment(
         }
         next_sample = Some(sample);
     }
+    work.check()?;
     let encoded = encoder.encode(&pcm).map_err(invalid)?;
+    work.check()?;
     let count = frames / FRAME as usize;
     let selected = encoded.get(skip..skip + count).ok_or_else(|| invalid("short AAC encoder output"))?;
     let samples: Vec<_> = selected

@@ -3,7 +3,7 @@
 //! caller adds one common shift so every edited DTS is at least zero.
 //! Transcode input adds decode context around the same catalog cuts.
 
-use super::{Packet, Track, codec_name, invalid, sps_info};
+use super::{Packet, Track, Work, codec_name, invalid, sps_info};
 use flicks_container::isobmff::{self, AvcConfig, CodecConfig, SampleEntry, TrackConfig, TrackKind, cmaf};
 use std::{fs::File, io, ops::Range};
 
@@ -20,15 +20,16 @@ const AUDIO_PAD_US: i64 = 200_000;
 pub(super) struct Source {
     file: File,
     mp4: isobmff::Mp4File,
+    work: Work,
 }
 
 impl Source {
-    pub(super) fn open(file: File) -> io::Result<Self> {
+    pub(super) fn open(file: File, work: Work) -> io::Result<Self> {
         let mp4 = isobmff::open_progressive(&file, MAX_MOOV_BYTES, MAX_FILE_SAMPLES).map_err(invalid)?;
         if mp4.tracks.len() > MAX_TRACKS {
             return Err(invalid("too many tracks"));
         }
-        let source = Self { file, mp4 };
+        let source = Self { file, mp4, work };
         let video = source.video_index()?;
         if !matches!(
             source.mp4.tracks.get(video).and_then(|t| t.codec()),
@@ -175,6 +176,7 @@ impl Source {
         let mut bytes = 0usize;
         let mut packets = Vec::with_capacity(range.len());
         for i in range {
+            self.work.check()?;
             let s = t.samples.get(i).ok_or_else(|| invalid("sample"))?;
             if s.size > 16 << 20 {
                 return Err(invalid("sample too large"));
@@ -207,7 +209,7 @@ impl Source {
                 data,
                 pts_us: us(pts, t.timescale)?,
                 keyframe: s.is_sync,
-                duration: s.duration,
+                duration: if s.duration == 0 { track.duration } else { s.duration },
                 dts: Some(dts),
                 pts: Some(pts),
             });
@@ -338,6 +340,10 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    fn open(file: File) -> io::Result<Source> {
+        Source::open(file, Work::new(std::time::Instant::now() + super::super::DEADLINE))
+    }
+
     fn ffmpeg(ffmpeg: &Path, args: &[&str], out: &Path) {
         let output =
             std::process::Command::new(ffmpeg).args(["-v", "error", "-y"]).args(args).arg(out).output().unwrap();
@@ -402,7 +408,7 @@ mod tests {
         for (encoder, extra) in [("libx264", &[][..]), ("libx265", &["-x265-params", "log-level=error:open-gop=1"][..])]
         {
             let path = episode(&ffmpeg_path, dir.path(), encoder, extra);
-            let source = Source::open(File::open(&path).unwrap()).unwrap();
+            let source = open(File::open(&path).unwrap()).unwrap();
             let tracks = source.tracks().unwrap();
             assert!(tracks[0].video);
             assert_eq!(tracks.len(), 3, "{encoder}: video, AAC, AC-3");
@@ -477,6 +483,58 @@ mod tests {
     }
 
     #[test]
+    fn zero_and_one_tick_mp4_tails_keep_the_last_picture() {
+        use isobmff::{Brand, Mp4Writer, WriteSample, WriterOptions};
+        let (oracle, _) = flicks_testkit::require_oracles!();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.mp4");
+        ffmpeg(
+            &oracle,
+            &["-f", "lavfi", "-i", "testsrc2=size=160x96:rate=25", "-frames:v", "3", "-c:v", "libx264", "-bf", "0"],
+            &path,
+        );
+        let file = File::open(path).unwrap();
+        let mp4 = isobmff::open(&file).unwrap();
+        // Two pictures share the final PTS. On the output decode clock VT separates them by 1 µs.
+        for tail in [0, 1] {
+            let mut writer = Mp4Writer::new(tempfile::tempfile().unwrap(), WriterOptions::new(Brand::Mp4)).unwrap();
+            let t = writer.add_track(TrackConfig::new(mp4.tracks[0].entries[0].clone(), 1_000_000)).unwrap();
+            for (i, duration) in [40_000, 40_000, tail].into_iter().enumerate() {
+                let data = mp4.read_sample(&file, 0, i).unwrap();
+                writer
+                    .write_sample(
+                        t,
+                        WriteSample {
+                            data: &data,
+                            duration,
+                            composition_offset: if i == 2 { -40_000 } else { 0 },
+                            is_sync: i == 0,
+                        },
+                    )
+                    .unwrap();
+            }
+            let source = open(writer.finish().unwrap()).unwrap();
+            let track = &source.tracks().unwrap()[0];
+            let packets = source.packets(track, 0, 100, false).unwrap();
+            assert_eq!(packets.len(), 3);
+            assert_eq!(packets[2].pts_us, packets[1].pts_us);
+            assert_eq!(packets[2].duration, if tail == 0 { track.duration } else { tail });
+            super::super::remux(track, &packets, 1, 0).unwrap();
+            #[cfg(target_os = "macos")]
+            {
+                use super::super::{Rendition, Tier, video};
+                let tier = Tier { name: Rendition::Video(480), width: 128, height: 72, bitrate: 1_200_000 };
+                let (mut init, segment) = video::segment(track, tier, &packets, 1, 0..100, 0, &source.work).unwrap();
+                init.extend(segment);
+                let output = isobmff::open(&init).unwrap();
+                let last = output.tracks[0].samples.get(2).unwrap();
+                assert_eq!((last.dts, last.pts), (40_001, 40_000));
+                assert_eq!(last.duration, if tail == 0 { 39_999 } else { 1 });
+            }
+        }
+    }
+
+    #[test]
     fn fragments_and_rate_edits_are_refused() {
         let (ffmpeg_path, _) = flicks_testkit::require_oracles!();
         let dir = tempfile::tempdir().unwrap();
@@ -495,7 +553,7 @@ mod tests {
             ],
             &frag,
         );
-        assert!(Source::open(File::open(&frag).unwrap()).is_err());
+        assert!(open(File::open(&frag).unwrap()).is_err());
         let path = episode(&ffmpeg_path, dir.path(), "libx264", &[]);
         let mut bytes = std::fs::read(&path).unwrap();
         let elst = bytes.windows(4).position(|w| w == b"elst").unwrap();
@@ -504,7 +562,7 @@ mod tests {
         bytes[rate..rate + 4].copy_from_slice(&0x2_0000i32.to_be_bytes());
         let edited = dir.path().join("rate.mp4");
         std::fs::write(&edited, &bytes).unwrap();
-        let source = Source::open(File::open(&edited).unwrap()).unwrap();
+        let source = open(File::open(&edited).unwrap()).unwrap();
         assert!(source.tracks().is_err());
     }
 
@@ -536,7 +594,7 @@ mod tests {
         let mut opened = 0;
         for bytes in cases {
             std::fs::write(&case, &bytes).unwrap();
-            let Ok(source) = Source::open(File::open(&case).unwrap()) else {
+            let Ok(source) = open(File::open(&case).unwrap()) else {
                 continue;
             };
             opened += 1;

@@ -1,16 +1,16 @@
 //! Indexed CFR Matroska. Do not scan or retain the rest of a hostile file for one cut.
-use super::{MAX_SCAN_BYTES, Packet, Resource, TS, Track, codec_name, invalid, sps_info};
+use super::{MAX_SCAN_BYTES, Packet, Resource, TS, Track, Work, codec_name, invalid, sps_info};
 use flicks_container::{
     isobmff::{self, CodecConfig, SampleEntry, TrackConfig, cmaf},
     matroska::{self, ByteSource, Codec, Demuxer},
 };
-use std::{cell::Cell, fs::File, io, time::Instant};
+use std::{cell::Cell, fs::File, io};
 
 struct Input {
     file: File,
     len: u64,
     left: Cell<usize>,
-    deadline: Instant,
+    work: Work,
 }
 impl ByteSource for Input {
     fn len(&self) -> u64 {
@@ -21,9 +21,7 @@ impl ByteSource for Input {
     }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         self.left.set(self.left.get().checked_sub(buf.len()).ok_or_else(|| invalid("HLS read limit"))?);
-        if Instant::now() >= self.deadline {
-            return Err(invalid("HLS read deadline"));
-        }
+        self.work.check()?;
         self.file.read_at(offset, buf)
     }
 }
@@ -121,9 +119,9 @@ pub(super) struct Source {
     video: usize,
 }
 impl Source {
-    pub(super) fn open(file: File, deadline: Instant) -> io::Result<Self> {
+    pub(super) fn open(file: File, work: Work) -> io::Result<Self> {
         let len = file.metadata()?.len();
-        let demux = Demuxer::new(Input { file, len, left: Cell::new(MAX_SCAN_BYTES), deadline }).map_err(invalid)?;
+        let demux = Demuxer::new(Input { file, len, left: Cell::new(MAX_SCAN_BYTES), work }).map_err(invalid)?;
         if demux.file().cues.is_empty() || demux.tracks().len() > 32 {
             return Err(invalid("indexed MKV with <=32 tracks required"));
         }
@@ -162,6 +160,7 @@ impl Source {
         if dolby > 0 {
             self.seek(start, true)?;
             for _ in 0..4096 {
+                self.demux.source().work.check()?;
                 let Some(p) = self.demux.next_packet().map_err(invalid)? else { break };
                 if wanted(p.track)
                     && self.demux.tracks().get(p.track).is_some_and(|t| matches!(t.codec, Codec::Ac3 | Codec::Eac3))
@@ -204,6 +203,7 @@ impl Source {
         let mut trailing = 0;
         let mut keep = 0;
         for _ in 0..cmaf::MAX_SAMPLES {
+            self.demux.source().work.check()?;
             let Some(mut p) = self.demux.next_packet().map_err(invalid)? else {
                 finished = true;
                 break;

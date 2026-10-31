@@ -1,7 +1,7 @@
-use super::{Packet, TS, Tier, Track, invalid};
+use super::{Packet, TS, Tier, Track, Work, invalid};
 use flicks_container::isobmff::{AvcConfig, CodecConfig, ColorInfo, SampleEntry, TrackConfig, WriteSample, cmaf};
 use flicks_platform::{Codec, Decoder, Frame, H264Encoder};
-use std::{io, time::Instant};
+use std::io;
 
 fn format(track: &Track) -> io::Result<(Codec, Vec<u8>)> {
     Ok(match &track.config.entry.codec {
@@ -33,7 +33,7 @@ pub(super) fn segment(
     seq: u32,
     cut: std::ops::Range<u64>,
     delay_us: u64,
-    deadline: Instant,
+    work: &Work,
 ) -> io::Result<(Vec<u8>, Vec<u8>)> {
     if packets.len() > 2065 {
         return Err(invalid("video segment frame limit"));
@@ -47,9 +47,7 @@ pub(super) fn segment(
     let mut source_pts = Vec::new();
     let mut encoder_pts: Option<i64> = None;
     let mut encode = |frame: Frame| -> io::Result<()> {
-        if Instant::now() >= deadline {
-            return Err(invalid("video encode deadline"));
-        }
+        work.check()?;
         if range.contains(&frame.pts) {
             // MP4 can timestamp two pictures at the same instant (the real episode
             // does). VT requires strictly increasing submission times. Separate its
@@ -62,16 +60,16 @@ pub(super) fn segment(
         Ok(())
     };
     for p in packets {
-        if Instant::now() >= deadline {
-            return Err(invalid("video decode deadline"));
-        }
+        work.check()?;
         for f in decoder.decode(&p.data, p.pts_us).map_err(invalid)? {
             encode(f)?;
         }
     }
+    work.check()?;
     for f in decoder.flush().map_err(invalid)? {
         encode(f)?;
     }
+    work.check()?;
     let out = encoder.finish().map_err(invalid)?;
     let avcc = AvcConfig::parse(&out.avcc).map_err(invalid)?;
     let mut entry = SampleEntry::avc(avcc, tier.width, tier.height);
@@ -86,6 +84,7 @@ pub(super) fn segment(
         .ok_or_else(|| invalid("presentation time overflow"))?;
     let mut samples = Vec::with_capacity(out.samples.len());
     for (i, s) in out.samples.iter().enumerate() {
+        work.check()?;
         let pts = *source_pts.get(i).ok_or_else(|| invalid("unexpected encoded picture"))?;
         let composition_offset = i32::try_from(i128::from(pts) - i128::from(s.pts_us)).map_err(invalid)?;
         // No B-frames in this rendition. Preserve each source presentation instant,
@@ -99,7 +98,7 @@ pub(super) fn segment(
                 .find(|p| p.pts_us == pts)
                 .ok_or_else(|| invalid("unexpected encoder timestamp"))?;
             let nominal = u64::from(packet.duration) * u64::from(TS) / u64::from(track.config.timescale);
-            u32::try_from(i128::from(nominal) + i128::from(composition_offset)).map_err(invalid)?
+            u32::try_from((i128::from(nominal) + i128::from(composition_offset)).max(1)).map_err(invalid)?
         };
         samples.push(WriteSample { data: &s.data, duration, composition_offset, is_sync: s.idr });
     }
