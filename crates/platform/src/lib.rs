@@ -11,6 +11,12 @@ mod config;
 #[allow(unsafe_code)]
 mod ffi;
 
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod aac_encode_ffi;
+#[cfg(target_os = "macos")]
+pub use aac_encode_ffi::AacEncoder;
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 #[path = "permissions_ffi.rs"]
@@ -648,6 +654,71 @@ mod tests {
     fn other_platforms_are_unsupported() {
         assert!(matches!(Decoder::new(Codec::H264, &[]), Err(Error::Unsupported(_))));
         assert!(matches!(Decoder::new(Codec::Hevc, &[]), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn aac_stereo_encoder_is_bounded_and_flushes() {
+        assert!(AacEncoder::new(0).is_err());
+        assert!(AacEncoder::new(96000).is_err());
+        assert!(AacEncoder::new(48000).unwrap().encode(&[0.0]).is_err());
+        assert!(AacEncoder::new(48000).unwrap().encode(&[f32::NAN, 0.0]).is_err());
+        for rate in [8000, 44100, 48000] {
+            let encoder = AacEncoder::new(rate).unwrap();
+            let priming = encoder.priming_frames();
+            let packets = encoder.encode(&vec![0.0; 8192]).unwrap();
+            assert!(packets.iter().all(|p| !p.is_empty()));
+            assert!(packets.len() * 1024 >= 4096 + priming as usize);
+            assert!(packets.len() <= 16);
+            eprintln!("AAC {rate} Hz: {priming} priming frames, {} packets for 4096 PCM frames", packets.len());
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn aac_priming_trim_preserves_impulse_position() {
+        use flicks_container::isobmff::{SampleEntry, TrackConfig, WriteSample, cmaf};
+        let ffmpeg = flicks_testkit::require_ffmpeg!();
+        for (rate, asc) in [(44100, vec![0x12, 0x10]), (48000, vec![0x11, 0x90])] {
+            let encoder = AacEncoder::new(rate).unwrap();
+            let priming = encoder.priming_frames() as usize;
+            let padding = (1024 - priming % 1024) % 1024;
+            let mut pcm = vec![0.0; (padding + 4096 + 4096 + 1024) * 2];
+            let impulse = padding + 4096 + 1700;
+            pcm[impulse * 2] = 0.9;
+            pcm[impulse * 2 + 1] = 0.9;
+            let packets = encoder.encode(&pcm).unwrap();
+            let skip = (priming + padding + 4096) / 1024;
+            let samples: Vec<_> = packets[skip..skip + 4]
+                .iter()
+                .map(|data| WriteSample { data, duration: 1024, composition_offset: 0, is_sync: true })
+                .collect();
+            let mut mp4 = cmaf::write_init_segment(&[TrackConfig::new(SampleEntry::aac(asc, 2, rate), rate)]).unwrap();
+            mp4.extend(cmaf::write_media_segment(1, 0, &samples).unwrap());
+            let path = flicks_testkit::temp_path(&flicks_testkit::fixtures_dir("platform").join("aac-priming.mp4"));
+            std::fs::write(&path, mp4).unwrap();
+            let result = std::process::Command::new(&ffmpeg)
+                .args(["-v", "error", "-threads", "1", "-i"])
+                .arg(&path)
+                .args(["-f", "f32le", "-acodec", "pcm_f32le", "-threads", "1", "pipe:1"])
+                .output()
+                .unwrap();
+            std::fs::remove_file(&path).unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            let decoded: Vec<f32> = result.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+            assert_eq!(decoded.len(), 4096 * 2);
+            let (peak, value) = decoded
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .enumerate()
+                .map(|(i, frame)| (i, frame[0].abs()))
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap();
+            assert!(peak.abs_diff(1700) <= 1, "{rate} Hz: impulse at {peak}");
+            assert!(value > 0.1);
+            eprintln!("AAC {rate} Hz: trimmed impulse at {peak}, expected 1700");
+        }
     }
 
     #[test]
