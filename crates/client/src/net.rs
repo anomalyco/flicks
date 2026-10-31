@@ -37,6 +37,8 @@ pub const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 pub struct Response {
     pub status: StatusCode,
     pub body: Bytes,
+    /// Transfer time after response headers, excluding the server's preparation time.
+    pub body_time: Duration,
 }
 
 fn provider() -> Arc<CryptoProvider> {
@@ -136,30 +138,54 @@ pub fn host(addr: &str) -> &str {
 
 /// Sends one request over a new TLS connection to `addr` (`host:port`).
 pub async fn send(addr: &str, tls: Arc<ClientConfig>, request: Request<Full<Bytes>>) -> Result<Response, Error> {
+    send_limited(addr, tls, request, MAX_RESPONSE, CONNECT_TIMEOUT).await
+}
+
+pub(crate) async fn send_limited(
+    addr: &str,
+    tls: Arc<ClientConfig>,
+    request: Request<Full<Bytes>>,
+    limit: usize,
+    header_timeout: Duration,
+) -> Result<Response, Error> {
     let (host, port) = split(addr).ok_or(Error::BadAddress)?;
     let name = match host.parse::<IpAddr>() {
         Ok(ip) => ServerName::IpAddress(ip.into()),
         Err(_) => ServerName::try_from(host.to_string()).map_err(|_| Error::BadAddress)?,
     };
     let timed_out = |_| Error::Io(std::io::ErrorKind::TimedOut.into());
-    let headers = async {
+    let start = tokio::time::Instant::now();
+    let connect = async {
         let tcp = TcpStream::connect((host, port)).await?;
         let stream = TlsConnector::from(tls).connect(name, tcp).await?;
-        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+        let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
         tokio::spawn(connection);
-        Ok::<_, Error>(sender.send_request(request).await?)
+        Ok::<_, Error>(sender)
     };
-    let response = tokio::time::timeout(CONNECT_TIMEOUT, headers).await.map_err(timed_out)??;
+    let mut sender = tokio::time::timeout(CONNECT_TIMEOUT, connect).await.map_err(timed_out)??;
+    let response =
+        tokio::time::timeout_at(start + header_timeout, sender.send_request(request)).await.map_err(timed_out)??;
+    let start = std::time::Instant::now();
     let status = response.status();
     let mut body = response.into_body();
-    let mut bytes = Vec::new();
+    let len = hyper::body::Body::size_hint(&body).exact().unwrap_or(0);
+    if len > limit as u64 {
+        return Err(Error::BadResponse);
+    }
+    let mut bytes = Vec::with_capacity(len as usize);
     while let Some(frame) = tokio::time::timeout(IDLE_TIMEOUT, body.frame()).await.map_err(timed_out)? {
         if let Ok(data) = frame?.into_data() {
-            if bytes.len().saturating_add(data.len()) > MAX_RESPONSE {
+            let end = bytes.len().saturating_add(data.len());
+            if end > limit {
                 return Err(Error::BadResponse);
+            }
+            if end > bytes.capacity() {
+                // Also bound allocation growth for chunked bodies without Content-Length.
+                let capacity = end.max(bytes.capacity().saturating_mul(2)).min(limit);
+                bytes.reserve_exact(capacity - bytes.len());
             }
             bytes.extend_from_slice(&data);
         }
     }
-    Ok(Response { status, body: bytes.into() })
+    Ok(Response { status, body: bytes.into(), body_time: start.elapsed() })
 }

@@ -444,14 +444,14 @@ impl Connection {
         Ok(Connection { addr, tls, key, server_key: keys::public_bytes(server_key) })
     }
 
-    async fn send(
+    fn request(
         &self,
         method: Method,
         path_and_query: &str,
         range: Option<&str>,
         body: Vec<u8>,
         signed: bool,
-    ) -> Result<net::Response, Error> {
+    ) -> Result<hyper::Request<Full<Bytes>>, Error> {
         let mut request = hyper::Request::builder()
             .method(method.clone())
             .uri(path_and_query)
@@ -469,8 +469,18 @@ impl Connection {
         if !body.is_empty() {
             request = request.header(CONTENT_TYPE, "application/json");
         }
-        let request = request.body(Full::new(Bytes::from(body))).map_err(|_| Error::BadAddress)?;
-        net::send(&self.addr, self.tls.clone(), request).await
+        request.body(Full::new(Bytes::from(body))).map_err(|_| Error::BadAddress)
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        path_and_query: &str,
+        range: Option<&str>,
+        body: Vec<u8>,
+        signed: bool,
+    ) -> Result<net::Response, Error> {
+        net::send(&self.addr, self.tls.clone(), self.request(method, path_and_query, range, body, signed)?).await
     }
 
     /// A signed request with an optional JSON body, its answer decoded from JSON; an error status
@@ -514,6 +524,52 @@ impl Connection {
         let response = self.send(Method::GET, &format!("/artwork/{name}"), None, Vec::new(), true).await?;
         check(&response)?;
         Ok(response.body)
+    }
+
+    /// A signed GET below this file's HLS root. Never follow a playlist-supplied absolute
+    /// URL, parent path or bearer query. Bound the body *during* transfer, not after it.
+    pub async fn hls(&self, file: i64, resource: &str) -> Result<(Vec<u8>, std::time::Duration), Error> {
+        if file <= 0
+            || resource.len() > 80
+            || !resource.split('/').all(|part| {
+                part.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+                    && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.')
+            })
+        {
+            return Err(Error::BadAddress);
+        }
+        let limit = if resource == "master.m3u8" {
+            64 << 10
+        } else if resource.ends_with(".m3u8") {
+            8 << 20
+        } else if resource.ends_with("/init.mp4") {
+            1 << 20
+        } else if resource.ends_with(".m4s") {
+            // At most 32 s of stereo AAC, or 64 MiB of original video plus its moof.
+            if resource.starts_with('a') { 2 << 20 } else { 65 << 20 }
+        } else {
+            return Err(Error::BadAddress);
+        };
+        let path = format!("/hls/{file}/{resource}");
+        let get = || async {
+            // Cold cuts can take up to the server's 12 s encoding deadline before response headers.
+            let req = self.request(Method::GET, &path, None, Vec::new(), true)?;
+            let response =
+                net::send_limited(&self.addr, self.tls.clone(), req, limit, std::time::Duration::from_secs(15)).await?;
+            check(&response)?;
+            if response.status != StatusCode::OK {
+                return Err(Error::BadResponse);
+            }
+            Ok((response.body.into(), response.body_time))
+        };
+        match get().await {
+            // One retry, with a fresh nonce, for a transient connection failure or busy encoder.
+            Err(Error::Io(_) | Error::Http(_) | Error::Status(503, _)) => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                get().await
+            }
+            other => other,
+        }
     }
 
     /// Bytes `start..=end` of a file, at most [`MAX_READ`]; fewer when the file ends sooner.
