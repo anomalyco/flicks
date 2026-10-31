@@ -30,6 +30,8 @@ A lightweight Plex alternative: Flicks servers (macOS, Windows, Linux) own folde
 
 9. **Motion at the display's rate.** Everything in the apps that moves (hover and focus, scrolling, screen transitions, overlays, menus, video) animates with Rune springs on its display link at the screen's refresh rate (120 Hz on ProMotion), respects reduced motion, and stops the link when nothing moves (0% CPU idle). Cards that add motion check it with Rune's pacing trace and record present-interval p50/p95/max and missed refreshes in `docs/perf.md`.
 
+10. **No gradients.** Nothing the user sees uses a gradient: no gradient buttons, scrims, backgrounds, progress bars, placeholders, text or logo. Use flat fills, solid bands or panels, blur materials and subtle shadows. Text over artwork sits on a solid or blurred panel, never a fade.
+
 ## Working in parallel
 
 The coordinator session launches each card's agent as a subagent of itself (never from the board's Launch button, so Ryan's session list stays clean) and hears back when it finishes. Agents work one card at a time from `ROADMAP.md`, each in its own worktree, tracked on the board: the `flicks` project (cards `FLK-n`), http://127.0.0.1:8789/p/flicks. Ryan reads the board, not chat.
@@ -56,8 +58,8 @@ Each card runs on one of three models (Big Boi at max reasoning, the others at h
 
 | Model | Ref | Gets |
 |---|---|---|
-| Big Boi | `console-openai-test/big-boi#max` | Performance-critical and low-level work: containers, codecs, hardware decode and encode, GPU, player core, transport, transcoding, benchmarks. Replaces GPT-6 Astra (2026-10-30) |
-| Opus 5.5 | `claude-agent/opus#high` | Design-heavy work: auth and storage, audio pipeline, Rune contributions, apps and UI |
+| Big Boi | `console-openai-test/big-boi#max` | Performance-critical and low-level work (never design or UI): containers, codecs, hardware decode and encode, GPU, player core, transport, transcoding, benchmarks. Replaces GPT-6 Astra (2026-10-30) |
+| Opus 5.5 | `claude-agent/opus#high` | All design and UI work (Ryan, 2026-10-30), plus design-heavy work: auth and storage, audio pipeline, Rune contributions, apps and UI |
 | Sonnet 5.5 | `claude-agent/sonnet#high` | Well-specified plumbing: CI, scanner, service install, parsers |
 
 ## Commands
