@@ -3,12 +3,14 @@
 //! It runs as the current user with an S4U logon (no stored password, no admin), started by a
 //! boot trigger, so the server comes back after a reboot without anyone logging on. S4U tasks
 //! run in session 0, so there is no console window; the user's `%APPDATA%` and profile paths
-//! are set as in a normal logon, which keeps the data dir per-user. The trigger repeats every
-//! minute and a running copy makes that a no-op (`IgnoreNew`), so a server that exits or is
+//! are set as in a normal logon, which keeps the data dir per-user. Both the registration and
+//! boot triggers repeat every minute; `IgnoreNew` skips a running copy, so a server that exits or is
 //! killed is back within a minute; the task's own `RestartOnFailure` setting did not restart
 //! on a nonzero exit or a kill on Windows 10.
 
-use std::path::Path;
+use std::fs::{self, File};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 
 use crate::Error;
@@ -23,14 +25,22 @@ pub(super) fn install(exe: &Path) -> Result<(), Error> {
     for unit in task_xml(&user, exe).encode_utf16() {
         file.extend_from_slice(&unit.to_le_bytes());
     }
-    let path = std::env::temp_dir().join(format!("flicks-task-{}.xml", std::process::id()));
-    std::fs::write(&path, file)?;
-    let created = schtasks(&["/Create", "/TN", TASK, "/XML", &path.to_string_lossy(), "/F"]);
-    let _ = std::fs::remove_file(&path);
+    let dir = crate::data_dir()?;
+    fs::create_dir_all(&dir)?;
+    #[cfg(windows)]
+    flicks_platform::permissions::owner_only(&dir)?;
+    let path = dir.join(format!("task-{}.xml", crate::keys::encode(&crate::keys::random::<16>()?)));
+    let mut xml = File::create_new(&path)?;
+    let created = (|| {
+        xml.write_all(&file)?;
+        drop(xml);
+        // End the old binary on reinstall; the registration trigger starts the new one.
+        let _ = schtasks(&["/End", "/TN", TASK]);
+        schtasks(&["/Create", "/TN", TASK, "/XML", &path.to_string_lossy(), "/F"])
+    })();
+    let removed = fs::remove_file(&path);
     created?;
-    // Stop a running copy first (an update, or a moved binary), then start the new one now.
-    let _ = schtasks(&["/End", "/TN", TASK]);
-    schtasks(&["/Run", "/TN", TASK])?;
+    removed?;
     println!("Installed the \"{TASK}\" scheduled task. `flicks serve` is running and starts at boot.");
     println!("Restart it with: schtasks /End /TN \"{TASK}\" & schtasks /Run /TN \"{TASK}\"");
     Ok(())
@@ -47,9 +57,17 @@ pub(super) fn uninstall() -> Result<(), Error> {
     Ok(())
 }
 
+fn system_tool(name: &str) -> io::Result<Process> {
+    let root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .ok_or_else(|| io::Error::other("missing absolute SystemRoot"))?;
+    Ok(Process::new(root.join("System32").join(name)))
+}
+
 /// `DOMAIN\user` from `whoami`; `%USERDOMAIN%` is wrong under SSH (it says WORKGROUP).
 fn user_name() -> Result<String, Error> {
-    let out = Process::new("whoami.exe").output()?;
+    let out = system_tool("whoami.exe")?.output()?;
     let name = String::from_utf8_lossy(&out.stdout);
     let name = name.trim();
     if !out.status.success() || name.is_empty() {
@@ -59,7 +77,7 @@ fn user_name() -> Result<String, Error> {
 }
 
 fn schtasks(args: &[&str]) -> Result<(), Error> {
-    let out = Process::new("schtasks.exe").args(args).output()?;
+    let out = system_tool("schtasks.exe")?.args(args).output()?;
     if out.status.success() {
         return Ok(());
     }
@@ -78,6 +96,10 @@ fn task_xml(user: &str, exe: &Path) -> String {
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
+    <RegistrationTrigger>
+      <Enabled>true</Enabled>
+      <Repetition><Interval>PT1M</Interval></Repetition>
+    </RegistrationTrigger>
     <BootTrigger>
       <Enabled>true</Enabled>
       <Repetition><Interval>PT1M</Interval></Repetition>
