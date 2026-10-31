@@ -805,6 +805,37 @@ HOME=$tmp target/release/flicks-desktop --native --trace pacing.jsonl   # close 
 # quality.cpu_ms; missed = intervals > 1.5 refresh periods.
 ```
 
+## FLK-50b — smoother launch intro pacing (2026-10-30)
+
+Apple M5 Max, macOS 27.2, release profile, branch `flk-50b`, Rune `e450c92`. The real app
+(`flicks-desktop --native --trace --frames 200`, a temp HOME with no servers) on the LG 5K at
+**60 Hz**, load average 30 to 35 from other agents' builds and a transcode test. Before is the
+same branch with `intro.rs` at `main`, run alternately with after. Intervals are counted from the
+frame the beats start to the last animating frame.
+
+| Run | Beats start | Intervals | Present interval p50 / p95 / max (ms) | Missed (> 25 ms) | Encode CPU p50 / p95 / max (ms) |
+|---|---:|---:|---:|---:|---:|
+| after 1 | frame 5, 613 ms | 161 | 16.67 / 16.67 / 16.67 | 0 | 0.60 / 0.86 / 1.54 |
+| after 2 | frame 7, 330 ms | 162 | 16.67 / 16.67 / 16.68 | 0 | 0.60 / 0.88 / 1.72 |
+| after 3 | frame 4, 625 ms | 162 | 16.67 / 16.67 / 16.67 | 0 | 0.56 / 0.87 / 1.61 |
+| before 1 | frame 6, 432 ms | 161 | 16.67 / 16.67 / 33.34 | 1 | 0.55 / 0.91 / 1.61 |
+| before 2 | frame 5, 262 ms | 161 | 16.67 / 16.67 / 33.33 | 1 | 0.55 / 0.99 / 2.26 |
+| before 3 | frame 6, 295 ms | 161 | 16.67 / 16.67 / 16.68 | 0 | 0.54 / 0.85 / 1.83 |
+
+- The two misses (before 1 at 2.42 s and before 2 at 1.95 s into the beats) were submitted on
+  time, 15 to 17 ms after the previous frame with 0.4 to 0.5 ms of CPU and 22 ms before their
+  target, and reached the screen one refresh late: the compositor under the machine's load, not
+  the intro's work. The after runs had none.
+- The link still stops after the intro: the last animating frame is 2.68 to 2.70 s after the
+  beats start (2.68 s before).
+- The launch's own stall before the beats (83 to 117 ms, as in FLK-50) is still outside the
+  window: the beats wait for it.
+- Motion, from the headless trace (`--scene intro --trace`): the mark never stops between its
+  landing and the top bar (slowest 96 pt/s, when the exit takes it; before, it crept under
+  30 pt/s from 1.41 to 1.63 s, down to 7 pt/s), and the exit peaks at 1,470 pt/s (2,240 before). The frames are within 1% of full size
+  at 0.367, 0.467 and 0.583 s, on the sound's hits as before, overshooting 0.9%, 0.9% and 2.0%
+  (3.6% each before).
+
 ## FLK-6 review fixes — player lifetime, idle and controls (2026-10-30)
 
 Release desktop on macOS, a 60 Hz display, temp server/client homes and the existing TV test
