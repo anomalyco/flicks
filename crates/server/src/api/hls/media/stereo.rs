@@ -67,7 +67,7 @@ pub(super) fn segment(
     delay_us: u64,
     deadline: std::time::Instant,
 ) -> io::Result<Vec<u8>> {
-    if end_ms <= start_ms || end_ms - start_ms > 32_000 || packets.is_empty() || packets.len() > MAX_PACKETS {
+    if end_ms <= start_ms || end_ms - start_ms > 32_000 || packets.len() > MAX_PACKETS {
         return Err(invalid("stereo segment duration or packet count"));
     }
     let mut bytes = 0usize;
@@ -94,6 +94,8 @@ pub(super) fn segment(
     // Discard those packets rather than adding an edit list or silence per cut.
     let padding = (FRAME as usize - priming % FRAME as usize) % FRAME as usize;
     let skip = (priming + padding + PREROLL) / FRAME as usize;
+    // Source audio may end before video. An empty cut is still the same AAC timeline:
+    // encode silence on its absolute grid instead of turning the advertised URI into a 422.
     let mut pcm = vec![0.0; (padding + PREROLL + frames + FRAME as usize) * 2];
     let origin = i128::from(start) - PREROLL as i128;
     let mut aac = match &track.config.entry.codec {
@@ -195,6 +197,32 @@ pub(super) fn segment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cut_past_the_audio_tail_decodes_to_silence_on_the_same_grid() {
+        let config = TrackConfig::new(SampleEntry::aac(vec![0x11, 0x90], 2, 48000), 48000);
+        let track = Track {
+            index: 1,
+            config,
+            duration: 1024,
+            video: false,
+            depth: 0,
+            sps_transfer: 2,
+            codec: "mp4a.40.2".into(),
+            partial_color: None,
+        };
+        let data =
+            segment(&track, &[], 1, 4000, 8000, 0, std::time::Instant::now() + std::time::Duration::from_secs(5))
+                .unwrap();
+        let samples = cmaf::read_media_segment(&data, 2).unwrap();
+        assert_eq!(samples[0].dts, boundary(4000, 48000).unwrap() as i64);
+        let mut d = flicks_aac::Decoder::new(&[0x11, 0x90]).unwrap();
+        for s in &samples {
+            let pcm = d.decode(&data[s.offset as usize..(s.offset + u64::from(s.size)) as usize]).unwrap();
+            assert!(pcm.iter().flatten().all(|v| v.abs() < 0.0001));
+        }
+        assert_eq!(samples.last().unwrap().dts + 1024, boundary(8000, 48000).unwrap() as i64);
+    }
 
     #[test]
     fn cuts_share_one_absolute_aac_grid() {

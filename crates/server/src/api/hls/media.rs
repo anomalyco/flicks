@@ -182,10 +182,19 @@ pub(super) fn render(
     } else {
         tiers
     };
+    let delay_ticks = u64::from(video.duration) * u64::from(video.depth);
+    let delay_ticks = match &source {
+        Source::Mp4(s) => delay_ticks.max(s.decode_delay(video)?),
+        _ => delay_ticks,
+    };
+    let rescale = |ticks: u64, from: u32, to: u32| {
+        u64::try_from(u128::from(ticks) * u128::from(to) / u128::from(from)).map_err(invalid)
+    };
+    let delay_us = rescale(delay_ticks, video.config.timescale, TS)?;
     let Some(r) = resource.rendition() else {
         return Ok((
             PLAYLIST,
-            rendition::master(&tracks, video, &tiers, source_bps, item.hdr.as_deref(), suffix).into(),
+            rendition::master(&tracks, video, &tiers, source_bps, item.hdr.as_deref(), suffix, delay_us).into(),
         ));
     };
     let track = tracks.iter().find(|t| t.index == r.source_index(video.index)).ok_or(io::ErrorKind::NotFound)?;
@@ -209,14 +218,6 @@ pub(super) fn render(
         return Ok(("video/mp4", stereo::init(track)?.into()));
     }
     let encoded = !matches!(r, Rendition::Direct(_));
-    let delay_ticks = u64::from(video.duration) * u64::from(video.depth);
-    let delay_ticks = match &source {
-        Source::Mp4(s) => delay_ticks.max(s.decode_delay(video)?),
-        _ => delay_ticks,
-    };
-    let rescale = |ticks: u64, from: u32, to: u32| {
-        u64::try_from(u128::from(ticks) * u128::from(to) / u128::from(from)).map_err(invalid)
-    };
     let delay = rescale(delay_ticks, video.config.timescale, track.config.timescale)?;
     let packets = match &mut source {
         Source::Mkv(s) => s.packets(track, start, end, encoded)?,
@@ -231,7 +232,6 @@ pub(super) fn render(
     }
     #[cfg(target_os = "macos")]
     {
-        let delay_us = rescale(delay_ticks, video.config.timescale, TS)?;
         let key = key.ok_or_else(|| invalid("missing encode key"))?;
         if let Some(tier) = tier {
             let (init, media) = video::segment(track, tier, &packets, sequence, start..end, delay_us, deadline)?;

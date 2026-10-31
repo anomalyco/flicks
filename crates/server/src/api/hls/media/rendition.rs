@@ -136,6 +136,7 @@ pub(super) fn master(
     source_bps: u64,
     hdr: Option<&str>,
     suffix: &str,
+    delay_us: u64,
 ) -> String {
     let audio: Vec<_> = tracks.iter().filter(|t| !t.video).collect();
     let v = video.config.entry.video.as_ref();
@@ -152,7 +153,11 @@ pub(super) fn master(
         (18, _) | (2, Some("hlg")) => ",VIDEO-RANGE=HLG",
         _ => "",
     };
-    let mut out = "#EXTM3U\n#EXT-X-VERSION:7\n".to_string();
+    // Native decoders need the original presentation timeline for seeks/progress. In
+    // particular, a video-only MP4 may have a nonzero first PTS *in addition* to reorder delay.
+    let mut out = format!(
+        "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-SESSION-DATA:DATA-ID=\"org.flicks.presentation-delay-us\",VALUE=\"{delay_us}\"\n"
+    );
     // Do not claim INDEPENDENT-SEGMENTS for direct open-GOP streams.
     for (i, t) in audio.iter().enumerate() {
         let language = &t.config.language;
