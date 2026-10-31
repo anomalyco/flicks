@@ -1,5 +1,96 @@
 # Performance measurements
 
+## FLK-26 — on-demand macOS HLS transcode (2026-10-30)
+
+Apple M5 Max, macOS 27.2 (26B5112a), rustc 1.99.0, release with LTO. Server `342e4e1`,
+acceptance harness `7e4e4f9`. Previously there were no transcoded renditions, and HLS required
+MKV. These measurements include the complete signed, pinned loopback HTTPS request to a real
+`flicks serve`: catalog lookup, reopen/seek, decode, transfer, encode, fMP4 mux and response body.
+They are warm-filesystem measurements, **not cold-disk, Internet or whole-film benchmarks**.
+
+| Source → H.264 SDR tier | Uncached segment ms (3 distinct cuts) | × realtime | Immediate LRU repeat ms | Decoded PSNR, one cut (dB) |
+|---|---:|---:|---:|---:|
+| 4K PQ closed GOP → 1080p | 434–454 | 8.85–9.22 | 2.4–3.0 | 39.97 |
+| 4K PQ closed GOP → 720p | 312–323 | 12.39–12.84 | 1.5–1.6 | 38.75 |
+| 4K PQ closed GOP → 480p | 195–244 | 16.38–20.55 | 1.4–1.5 | 37.91 |
+| 4K PQ open GOP → 1080p | 422–448 | 8.97–9.48 | 2.3–2.6 | 39.98 |
+| 4K PQ open GOP → 720p | 260–289 | 13.91–15.38 | 1.5–1.6 | 38.77 |
+| 4K PQ open GOP → 480p | 229–293 | 13.74–17.51 | 1.2–1.9 | 37.87 |
+| Real 1080p MP4 → 720p | 225–246 | 17.82–18.32 | 1.1–1.6 | 44.56 |
+| Real 1080p MP4 → 480p | 142–156 | 28.27–28.64 | 1.2–1.3 | 44.05 |
+
+The generated clips were 16 s / 384 pictures at 24 fps, 3840×2160 Main10 PQ/BT.2020, 5.1 AAC,
+4-second x265 GOPs, 18.6 Mbps files. Cuts 2, 1 and 3 lasted 4.000–4.021 s. Cut 0 was also
+verified, but **excluded from encode timings**: obtaining its `avcC` for `/init.mp4` already
+produced it. At 8/3/1.2 Mbps video targets the busy test pattern actually used about 7.0/2.62/1.05
+Mbps, not counting AAC. The read-only original episode A was a 1,203,733,864-byte H.264/AAC
+MP4 (about 45 min, 3.56 Mbps including audio). It offers 720p/480p, not a same-size 8 Mbps tier.
+Cuts 299, 1 and 597 lasted 4.000–4.458 s. No source conversion, copying, or modification was
+needed to serve the episode. Each repeat was byte-identical, and init bytes matched across
+independent encoder runs for each tier.
+
+**Playback.** Headless Swift AVPlayer decoded video at start and after seeks to 9 s (generated)
+or 1,353.5 s (episode). **26/26 phases, 0 stalls, 0 error-log events**, nonempty access logs:
+three forced SDR video+stereo-audio variants per generated source, two for the episode, original
+video for all three, plus both intact HDR masters. The Mac's external displays reported HDR
+ineligible: the intact masters correctly selected 1080p SDR. To inspect 4K original PQ video
+on this machine the test requested its real **video media playlist**; it did not pretend that an
+HDR-only master was selectable on an SDR display. The original episode used its normal A/V
+variant. This is decoded-buffer and log evidence, not an HDR-display visual or listening test.
+Episode seek completion: 67 ms direct, 1,282 ms at 720p and 842 ms at 480p in this run; not a
+sub-300 ms transcode-seek claim. AVPlayer used five-minute grants through a test-only loopback
+HTTP adapter to the real HTTPS server. Every forwarded request returned 200.
+
+**Alignment and quality.** All ladder playlists had identical `EXTINF`s: 4 cuts per PQ source,
+598 for the episode. On **all** generated cuts and all three sampled episode cuts, FFprobe's
+source packet count matched the number of decoded output pictures exactly, every transcoded
+fragment began with IDR, and its first PTS matched the direct keyframe within one source frame.
+This includes three leading pictures following a CRA despite an SPS reorder bound of two, and
+two pictures at the same PTS in the original MP4 tail. For that collision only, distinct encoder
+decode ticks and signed fMP4 composition offsets preserve both original presentation times.
+
+FFmpeg 9.0.2 (test-only) compared the decoded video of the middle cut with an independently
+demuxed and scaled source: Lanczos for SDR, `scale_vt` with BT.709 color matching for PQ. The
+latter exercises the same Apple color transform, **not an independent tone-map algorithm**.
+VTPixelTransferSession does the conversion into the compression session's NV12 pool without
+a CPU pixel readback. A separate neutral PQ ramp at 1/10/50/100/203/400/1000/4000 nits gave
+limited-range 8-bit SDR luma **40/78/138/178/213/230/234/234**: highlight compression/clipping,
+not simply relabeling PQ. Every decoded tier was 8-bit BT.709 H.264 at its advertised dimensions.
+For AAC the Apple encoder reported 2,112 priming samples. The decoded 44.1/48 kHz impulse landed
+at sample 1,700 in both trim tests. The 5.1 fixture's left/right notes stayed separate and the
+center note appeared on both output channels. Audio stays at the supported source rate; each
+cut uses the same absolute 1,024-sample AAC grid, not a separately rounded duration.
+
+**Bounds.** Four HLS work slots, at most two encodes, 12 s HTTP deadline (permits stay with a
+worker until it actually exits a native call). Up to 32 s per transcoded cut, 2,048 submitted
+video frames, 4K-class source pixel budget, 16 MiB maximum source sample, 64 MiB retained
+segment payload. MKV also has a 256 MiB scan budget and bounded cue-only seeks; progressive
+MP4 has a 32 MiB `moov` / 8M sample ceiling and rejects fragments. The per-server LRU holds up to
+16 token-free resources / 32 MiB. Auth, catalog visibility, containment, open and file identity
+checks precede cache access. This isn't process isolation against a hung or defective OS driver.
+The macOS hardware AVC encoder and AudioConverter are the only backends; Linux VA-API and
+Windows Media Foundation encoding remain follow-ups.
+
+**Direct-remux baseline.** The existing unoptimized FLK-19 closed-GOP test still checks all
+video hashes. Its published repeat p95 → this workspace gate (ms, 20 repeats per codec pair):
+H.264/AAC 12.116 → 7.720; HEVC/AAC 8.768 → 13.711; H.264/AC-3 8.997 → 10.313; HEVC/E-AC-3
+8.363 → 6.817. Mixed shared-host timings, not a general improvement or regression claim.
+
+```sh
+export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
+export FLICKS_REQUIRE_ORACLES=1 CARGO_PROFILE_RELEASE_STRIP=none
+# Port 7686 must be free. Omit FLICKS_TRANSCODE_MEDIA for generated sources only.
+FLICKS_TRANSCODE_MEDIA=/absolute/path/to/episode.mp4 \
+  cargo test --release --locked -p flicks-server --test server transcode_ladder_avplayer -- --ignored --nocapture --test-threads=1
+scripts/check.sh
+cargo zigbuild --locked -p flicks-server --target aarch64-unknown-linux-musl
+```
+
+The workspace gate passed formatting, Clippy, dependency policy and **830 tests/doctests**
+(37 ignored). It includes MP4 truncation/header mutations, bounded MKV reads, platform
+input rejection, cache revision/recency, and existing parser/codec fuzz suites. The Linux
+ARM64 musl server cross-build and container's wasm32 check passed; no non-macOS encoder ran.
+
 ## FLK-51 — fallback artwork (2026-10-30)
 
 Code `a25a30e`. Apple M5 Max, macOS 27.2, rustc 1.99.0. Release `flicks` worker, one software-decoder
