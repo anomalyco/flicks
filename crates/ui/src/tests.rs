@@ -261,23 +261,6 @@ fn the_intro_plays_its_sound_then_hands_its_logo_to_the_top_bar() {
 }
 
 #[test]
-fn the_intro_logo_never_stops_between_its_landing_and_the_top_bar() {
-    let (mut rt, _) = intro(false);
-    let mark = |rt: &Runtime<Flicks>| {
-        rt.elements().iter().find(|e| e.key.as_deref() == Some("intro-mark")).map(|e| [e.rect[0], e.rect[1]])
-    };
-    run(&mut rt, 0.65);
-    let mut last = mark(&rt).unwrap();
-    for frame in 0..114 {
-        run(&mut rt, 1.0 / 120.0);
-        let now = mark(&rt).unwrap();
-        let moved = ((now[0] - last[0]).powi(2) + (now[1] - last[1]).powi(2)).sqrt();
-        assert!(moved > 0.25, "the mark moved {moved} pt in frame {frame} after 0.65 s");
-        last = now;
-    }
-}
-
-#[test]
 fn a_key_or_a_click_skips_the_intro_and_fades_its_sound() {
     let (mut rt, cues) = intro(false);
     run(&mut rt, 0.5);

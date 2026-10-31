@@ -1,11 +1,8 @@
 //! The launch intro: on the page's near-black, the logo's three frames fly in from depth one after
-//! another and land on springs, the mark slides off "flicks" as it fades in, and the whole lockup
-//! eases back into its place in the top bar while the backdrop dissolves into Home, which is drawn
-//! behind it from the first frame. The beats overlap, so the logo never comes to rest between
-//! them: the mark is still gliding into the lockup when the lockup takes it to the bar, one curve
-//! from the centre to the bar, and the whole stage pushes in slowly underneath. Motion, scale and
-//! opacity only: no gradients, glows or sweeps. About 2.4 s, with the signature sound
-//! (`assets/brand/intro.wav`) played by the app shell.
+//! another and land on springs, "flicks" slides out beside them, and the whole lockup eases back
+//! into its place in the top bar while the backdrop dissolves into Home, which is drawn behind it
+//! from the first frame. Motion, scale and opacity only: no gradients, glows or sweeps. About
+//! 2.4 s, with the signature sound (`assets/brand/intro.wav`) played by the app shell.
 //!
 //! The shell turns it on for a cold launch ([`Intro::new`]); returning to the app never does.
 //! Any key, click or tap skips it. Under reduced motion it is a short fade, silent.
@@ -60,34 +57,21 @@ const K: f32 = 1.15;
 const LOCKUP: [f32; 2] = [383.48 * K, 119.0 * K];
 const MARK_BOX: [f32; 4] = [10.0 * K, 10.0 * K, 94.3 * K, 98.9 * K];
 const WORD_BOX: [f32; 4] = [126.75 * K, 12.0 * K, 256.73 * K, 96.25 * K];
-/// How far right of its place the mark starts, so it lands centred before "flicks" joins it, and
-/// how much of that the whole lockup glides back with it.
+/// How far right of its place the mark starts, so it lands centred before "flicks" joins it.
 const MARK_SHIFT: f32 = LOCKUP[0] / 2.0 - (MARK_BOX[0] + MARK_BOX[2] / 2.0);
-const GLIDE_SHIFT: f32 = 110.0;
 
 // The beats, in seconds from the start, timed to intro.wav, which starts with them: its whoosh
 // builds to a first hit at 0.46 s and a fuller second one at 0.57 s.
-/// When each frame starts its flight, back to front. A frame is within 1% of its size 0.32 to
-/// 0.36 s later: the middle one on the sound's first hit, the front one on the second, which
-/// lands with a little more weight (a 2% overshoot, under 1% for the others).
-const FLY_AT: [f32; 3] = [0.0, 0.1, 0.26];
-const FLIGHT: Spring = Spring::new(0.55, 0.18);
-const LANDING: Spring = Spring::new(0.55, 0.24);
-/// The whole stage pushes in this slowly from the first frame, settling as the lockup lands.
-const PUSH_FROM: f32 = 0.95;
-const PUSH: Spring = Spring::new(2.0, 0.0);
-/// As the front frame lands, the mark slides off "flicks", which fades in behind it, and the whole
-/// lockup glides after it, slowly enough to still be moving when the exit takes it.
-const WORD_AT: f32 = 0.5;
-const SLIDE: Spring = Spring::new(0.7, 0.0);
-const GLIDE: Spring = Spring::new(1.6, 0.0);
-const WORD_FADE_AT: f32 = 0.56;
-const WORD_FADE: Spring = Spring::new(0.5, 0.0);
-/// The lockup eases back into the top bar's logo; the backdrop dissolves into Home on the same
-/// curve just behind it.
-const EXIT_AT: f32 = 1.15;
-const EXIT: Spring = Spring::new(0.8, 0.0);
-const BACKDROP_AT: f32 = 1.33;
+/// When each frame starts its flight, back to front. A frame's spring first reaches its place
+/// about 0.31 s later: the middle one on the sound's first hit, the front one on the second.
+const FLY_AT: [f32; 3] = [0.03, 0.15, 0.26];
+const FLIGHT: Spring = Spring::new(0.6, 0.3);
+/// The mark slides into the lockup and "flicks" slides out beside it.
+const WORD_AT: f32 = 0.85;
+/// The lockup eases back into the top bar's logo; the backdrop dissolves into Home just after.
+const EXIT_AT: f32 = 1.65;
+const EXIT: Spring = Spring::new(0.5, 0.0);
+const BACKDROP_AT: f32 = 1.72;
 /// The intro leaves the tree, its lockup on the top bar's to within half a point, which takes
 /// over.
 const END: f64 = 2.4;
@@ -195,20 +179,9 @@ pub fn view(intro: &Intro, cx: &mut Cx<Flicks>) -> El {
                 .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
                 .fill(style::bg())
                 .opacity(if on { 0.0 } else { 1.0 })
-                .opacity_motion(if reduced {
-                    Spring::new(0.45, 0.0).delay(REDUCED_EXIT_AT)
-                } else {
-                    EXIT.delay(BACKDROP_AT)
-                }),
+                .opacity_motion(Spring::new(0.45, 0.0).delay(if reduced { REDUCED_EXIT_AT } else { BACKDROP_AT })),
         )
-        .child(
-            el().key("intro-stage")
-                .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                .center()
-                .scale(if on || reduced { 1.0 } else { PUSH_FROM })
-                .scale_motion(PUSH)
-                .child(logo),
-        )
+        .child(el().key("intro-stage").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).center().child(logo))
 }
 
 fn picture(key: String, image: Option<&Image>, rect: [f32; 4]) -> El {
@@ -225,27 +198,21 @@ fn logo(intro: &Intro, on: bool, cx: &mut Cx<Flicks>) -> El {
         .key("intro-mark")
         .absolute(MARK_BOX[0], MARK_BOX[1])
         .size(MARK_BOX[2], MARK_BOX[3])
-        .offset(if on { 0.0 } else { MARK_SHIFT - GLIDE_SHIFT }, 0.0)
-        .offset_motion(SLIDE.delay(WORD_AT));
-    for (i, at) in FLY_AT.into_iter().enumerate() {
+        .offset(if on { 0.0 } else { MARK_SHIFT }, 0.0)
+        .offset_motion(Spring::new(0.7, 0.0).delay(WORD_AT - 0.05));
+    for i in 0..3 {
         let frame = picture(format!("intro-frame-{i}"), intro.frames.get(i), whole)
             .scale(if on { 1.0 } else { 0.22 })
-            .scale_motion(if i == 2 { LANDING } else { FLIGHT }.delay(at))
+            .scale_motion(FLIGHT.delay(FLY_AT[i]))
             .opacity(if on { 1.0 } else { 0.0 })
-            .opacity_motion(Spring::new(0.3, 0.0).delay(at));
+            .opacity_motion(Spring::new(0.22, 0.0).delay(FLY_AT[i]));
         mark = mark.child(frame);
     }
     let word = picture("intro-word".into(), intro.wordmark.as_ref(), WORD_BOX)
+        .offset(if on { 0.0 } else { -48.0 }, 0.0)
+        .offset_motion(Spring::new(0.7, 0.0).delay(WORD_AT))
         .opacity(if on { 1.0 } else { 0.0 })
-        .opacity_motion(WORD_FADE.delay(WORD_FADE_AT));
-    let glide = el()
-        .key("intro-glide")
-        .absolute(0.0, 0.0)
-        .size(LOCKUP[0], LOCKUP[1])
-        .offset(if on { 0.0 } else { GLIDE_SHIFT }, 0.0)
-        .offset_motion(GLIDE.delay(WORD_AT))
-        .child(word)
-        .child(mark);
+        .opacity_motion(Spring::new(0.5, 0.0).delay(WORD_AT + 0.05));
     // Where it ends: on the top bar's logo, else eased back and gone.
     let here = cx.layout("intro-logo");
     let bar = cx.layout("logo");
@@ -263,7 +230,8 @@ fn logo(intro: &Intro, on: bool, cx: &mut Cx<Flicks>) -> El {
         .offset_motion(EXIT.delay(EXIT_AT))
         .scale_motion(EXIT.delay(EXIT_AT))
         .opacity_motion(EXIT.delay(EXIT_AT))
-        .child(glide)
+        .child(word)
+        .child(mark)
 }
 
 /// The lockup, still, fading in and out.
