@@ -159,8 +159,8 @@ fn generate(exe: &Path, job: &Job) -> io::Result<()> {
     }
     #[cfg(unix)]
     let mut command = {
-        let mut command = Command::new("nice");
-        command.args(["-n", "19"]).arg(exe);
+        let mut command = Command::new("/usr/bin/nice");
+        command.args(["-n", "19", "--"]).arg(exe);
         command
     };
     #[cfg(not(unix))]
@@ -168,7 +168,7 @@ fn generate(exe: &Path, job: &Job) -> io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x00004000); // BELOW_NORMAL_PRIORITY_CLASS
+        command.creation_flags(0x00004000 | 0x08000000); // BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW
     }
     let mut child = command
         .arg("--still-worker")
