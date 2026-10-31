@@ -1,5 +1,86 @@
 # Performance measurements
 
+## FLK-47 — adaptive playback over signed HLS (2026-10-31)
+
+Apple M5 Max, macOS 27.2 (26B5112a), rustc 1.99.0, release/LTO, code `88bf711`.
+Both sources **returned to original quality with zero rebuffers and zero missing or dropped
+frames**. These are 210-second playback windows per source, not whole-episode runs.
+
+| Source / audio clock | First frame | Rebuffers / time | Switches | Frames presented / dropped | Max absolute A/V offset (all / at switches) | Peak compressed buffer | Peak sampled RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 3840×2160 HEVC Main10, silent AAC / real CoreAudio | 875 ms | 0 / 0.000 s | 6 | 5,019 / 0 | 10.495 / 6.060 ms | 33.4 s / 41.3 MiB | 85 MiB |
+| Original 1080p H.264/AAC episode A / null sink | 670 ms | 0 / 0.000 s | 3 | 5,024 / 0 | 6.324 / 4.143 ms | 34.8 s / 16.4 MiB | 87 MiB |
+
+| Media seconds displayed | 480p | 720p | 1080p encode | Direct | Final return to Direct (wall time) |
+|---|---:|---:|---:|---:|---:|
+| Generated 4K | 52.00 | 76.00 | 4.00 | 77.08 | 184.9 s |
+| Episode A | 56.33 | 0 | not offered | 152.96 | 145.8 s |
+
+**Method.** A real `flicks serve` under temporary HOME, no TMDB key, paired viewer, signed
+requests over pinned TLS. A loopback TCP proxy shares **one downstream** among all connections.
+It changes rate on wall time: 20 Mbps at open, 8 at 35 s, 3 at 70 s, 8 at 105 s, 20 at 140 s.
+With a forward buffer, a change in the *displayed* rendition trails the bandwidth change.
+The 4K stream showed 480p → Direct → 1080p → 720p → 480p → 720p → Direct; episode A showed
+480p → Direct → 480p → Direct. Its 3.56 Mbps original fits the 8 Mbps link. At the end of
+the 3 Mbps phase the EWMA was 3.16–3.17 Mbps; at the end of the last phase, 20.07–20.24 Mbps.
+Transferred including TLS/framing/prefetch: 168.9 / 88.6 MB. No tokens or test-only tier forcing.
+
+The generated fixture is a 240 s MP4: 5,760 frames at 24 fps, 10.80 Mbps video, closed 4 s
+GOPs, fresh continuous 48 kHz AAC. Episode A is the original 1,203,733,864-byte file from the
+read-only TV folder; it was neither copied nor modified. A 120 Hz caller drains owned frames,
+without waiting for the decode worker. **Every displayed PTS** was compared in order against
+the original progressive MP4 sample table with its edit offset; every frame size matched the
+reported tier. The worst display poll **on a switch** was 9.458 / 1.042 µs. Across *all* polls
+(including CoreAudio start) the maxima were 47.594 ms / 85.625 µs. Both players sought from
+the end of the measured window back to 37.5 s and displayed PTS 37.500: 460 / 602 ms.
+
+A/V here means frame release versus the player's audio clock, **not physical scanout or acoustic
+latency**. The episode's null sink decodes the actual audio and advances only through buffered
+samples; the generated case used a device with silent input. Sampled `ps` RSS every 500 ms
+includes the player, proxy and harness in one process, not the server. It is not a bound on
+GPU/driver memory. No UI, display-link, physical LAN, or WAN benchmark is implied.
+
+**Policy and limits.** A download is still a local file. A signed master with no encode, HLS
+setup returning 404/422/503, or the 20 s setup deadline keeps signed byte ranges. For a LAN candidate (loopback, private
+or link-local IP, localhost or `.local` name), a signed 256 KiB read must sustain **both
+50 Mbps and 3× original average bitrate** to stay on byte ranges; the player abandons this
+probe as soon as it cannot qualify. Otherwise use HLS. Start at the smallest tier. Select the
+highest average bitrate ≤70% of the EWMA of video-body transfers (50% new sample; exclude
+encode/header latency and bodies below 16 KiB). Upgrades need ≥10 s buffered and two confirming decisions; below 6 s,
+step down, without waiting for upgrade confirmation. Direct must start on an IDR and reach the
+next cut in presentation time; an unsafe open GOP stays on encoded video rather than losing
+pictures. Decoder changes drain delayed frames and keep the selected stereo AAC decoder, PCM
+queue and clock. AAC ticks must be contiguous across cuts; seeks discard the previous region.
+
+Fetch stops at ~30 s ahead (plus at most one cut). The active cut and queue share a **72 MiB**
+compressed-byte/index budget, separate from the existing short decoded-frame buffer. Only one
+additional cut can be in flight: video response ≤65 MiB and stereo ≤2 MiB; ≤8,192 samples per
+fragment. Init ≤1 MiB, playlists ≤8 MiB (master ≤64 KiB). Malformed input/auth errors are not
+retried as another URL. `Player::stats().adaptive` is `None` on byte ranges/local files, otherwise
+it reports the **displayed** `tier`, `throughput_bps`, `buffer_seconds` and `buffer_bytes`.
+
+**Retained LAN path, before → after.** On FLK-5's same 16 s, 11,570,581-byte separated-track
+fixture and pinned loopback, `5db408c` → `88bf711`: 46 → **48** TLS requests (master and range
+probe added), open to decoded preroll **74.51 → 85.63 ms**, four seek-to-frame times
+**12.22–14.03 → 12.61–13.97 ms**, 384/384 frames and zero drops both times. Single standalone
+release runs, warm filesystem, not a statistically significant latency comparison.
+
+```sh
+export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_PROFILE_RELEASE_STRIP=none
+export FLICKS_REQUIRE_ORACLES=1
+cargo build --release --locked -p flicks-server
+# Port 7686 must be free; macOS with CoreAudio. Without the optional path only the 4K case runs.
+FLICKS_PLAYER_MEDIA=/absolute/path/to/episode.mp4 cargo test --release --locked -p flicks-player adaptive_throttle -- --ignored --nocapture --test-threads=1
+cargo test --release --locked -p flicks-player network_ranges_and_seeks -- --nocapture --test-threads=1
+scripts/check.sh
+cargo zigbuild --locked -p flicks-server -p flicks-player --target aarch64-unknown-linux-musl
+```
+
+Workspace gate: format, Clippy with warnings denied, dependency policy, **836 tests/doctests
+passed** (38 ignored). Includes malformed/truncated playlists, sequence/size/offset/timestamp
+mutations in CMAF, signed retry and path rejection, audio-tail silence, and existing oracle
+and fuzz suites. Linux ARM64 musl cross-build passed; no non-macOS runtime or encoder measured.
+
 ## FLK-26 — on-demand macOS HLS transcode (2026-10-30)
 
 Apple M5 Max, macOS 27.2 (26B5112a), rustc 1.99.0, release with LTO. Server `342e4e1`,
