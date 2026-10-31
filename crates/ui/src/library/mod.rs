@@ -3,11 +3,9 @@
 pub mod catalog;
 pub mod fixture;
 
-use std::f32::consts::PI;
-
 use rune::{
-    Color, Cursor, Cx, El, ScrollPos, ScrollSpec, Shadow, Shape, SurfaceFit, TextStyle, Transition, col, el, oklch,
-    row, spacer, text, text_input,
+    Color, Cursor, Cx, El, ScrollPos, ScrollSpec, Shadow, Shape, SurfaceFit, TextStyle, Transition, col, el, row,
+    spacer, text, text_input,
 };
 
 use crate::{Flicks, Screen, Status, artwork_key, message, style};
@@ -25,7 +23,7 @@ pub fn home(s: &Flicks, cx: &mut Cx<Flicks>) -> El {
         Status::Ready => {}
     }
     // The rows start over the bottom of the hero, as Netflix's do.
-    let mut rows = col().w_full().gap(10.0).mt(-120.0);
+    let mut rows = col().w_full().gap(10.0).mt(-ROWS_OVERLAP);
     for (i, r) in s.catalog.rows.iter().enumerate() {
         rows = rows.child(shelf(s, cx, i, &r.name, &r.titles, r.groups));
     }
@@ -43,8 +41,8 @@ pub(crate) fn featured(catalog: &Catalog) -> Option<usize> {
     row("Continue Watching").or_else(|| row("Recently Added"))
 }
 
-/// Apple TV's top shelf: the featured title's backdrop across the window, fading into the page,
-/// with its name, facts and buttons.
+/// Apple TV's top shelf: the featured title's backdrop across the window, with its name, facts
+/// and buttons on a panel.
 fn hero(s: &Flicks) -> Option<El> {
     let t = featured(&s.catalog)?;
     let (title, group) = (s.catalog.titles.get(t)?, s.catalog.group_for(t)?);
@@ -59,7 +57,7 @@ fn hero(s: &Flicks) -> Option<El> {
     let mut info = col()
         .key(format!("hero-info-{t}"))
         .transition(Transition::opacity())
-        .max_w(620.0)
+        .max_w(620.0 + 2.0 * PANEL_PAD)
         .gap(14.0)
         .child(text(group.name.clone()).key("hero-title").font(style::DISPLAY).color(style::text()).max_lines(2))
         .child(text(facts.join("  ·  ")).font(style::META).color(style::text().alpha(0.78)));
@@ -79,7 +77,6 @@ fn hero(s: &Flicks) -> Option<El> {
         .px(22.0)
         .center_y()
         .radius(10.0)
-        .backdrop_blur(20.0)
         .fill(style::glass())
         .hover(Color::WHITE.alpha(0.12))
         .press(Color::WHITE.alpha(0.2))
@@ -97,38 +94,39 @@ fn hero(s: &Flicks) -> Option<El> {
     }
     info = info.child(buttons.child(more));
 
-    let art = backdrop(s, title, &group.name).key(format!("hero-art-{t}")).transition(Transition::opacity());
+    // The backdrop, unaltered, stops where the rows begin so their headings sit on the page.
+    let art = backdrop(s, title).key(format!("hero-art-{t}")).transition(Transition::opacity());
+    let art = el()
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h(style::HERO_H - ROWS_OVERLAP)
+        .clip_rounded(0.0)
+        .child(art.absolute(0.0, 0.0).w_full().h(style::HERO_H));
     Some(
         col()
             .key("hero")
             .w_full()
             .h(style::HERO_H)
             .justify_end()
-            .px(style::GUTTER)
-            .pb(170.0)
-            .child(art.absolute(0.0, 0.0).w_full().h_full())
-            .child(scrim_left())
-            .child(scrim_bottom(style::HERO_H * 0.5))
-            .child(info),
+            .px(style::GUTTER - PANEL_PAD)
+            .pb(170.0 - PANEL_PAD)
+            .child(art)
+            .child(panel(info)),
     )
 }
 
-fn scrim_left() -> El {
-    el().absolute(0.0, 0.0).w_full().h_full().linear_gradient(
-        PI / 2.0,
-        [(0.0, style::bg().alpha(0.85)), (0.45, style::bg().alpha(0.35)), (0.8, style::bg().alpha(0.0))],
-    )
+/// How far Home's rows start over the bottom of the hero.
+const ROWS_OVERLAP: f32 = 120.0;
+/// Around text on a panel over artwork.
+const PANEL_PAD: f32 = 24.0;
+
+/// Text over artwork sits on a solid near-black panel, never a fade.
+fn panel(content: El) -> El {
+    content.self_start().padding(PANEL_PAD).radius(14.0).fill(style::bg())
 }
 
-/// The bottom `h` of the hero fading into the page.
-fn scrim_bottom(h: f32) -> El {
-    el().pin(Some(0.0), None, Some(0.0), Some(0.0))
-        .h(h)
-        .linear_gradient(PI, [(0.0, style::bg().alpha(0.0)), (0.55, style::bg().alpha(0.7)), (1.0, style::bg())])
-}
-
-/// A row of tiles that scrolls sideways, with edge fades and, for a mouse, arrows that page it
-/// while the row is hovered.
+/// A row of tiles that scrolls sideways, with, for a mouse, arrows that page it while the row is
+/// hovered.
 fn shelf(s: &Flicks, cx: &mut Cx<Flicks>, i: usize, name: &str, titles: &[usize], whole_groups: bool) -> El {
     let cards = name == "Continue Watching";
     let tiles: Vec<El> = titles.iter().map(|&t| tile(s, t, &format!("r{i}"), whole_groups, cards)).collect();
@@ -143,7 +141,6 @@ fn shelf(s: &Flicks, cx: &mut Cx<Flicks>, i: usize, name: &str, titles: &[usize]
         .key(scroll.clone())
         .w_full()
         .scroll_x()
-        .scroll_edge_fade(56.0)
         .on_scroll_offset(move |p: ScrollPos| {
             row_x.borrow_mut().insert(at.clone(), p.offset[0]);
         })
@@ -231,11 +228,14 @@ fn tile(s: &Flicks, t: usize, place: &str, whole_group: bool, card: bool) -> El 
     let (w, h) = if card { (style::CARD_W, style::CARD_H) } else { (style::POSTER_W, style::POSTER_H) };
     let image = if card { still(s, title) } else { artwork(s, title, false) };
     let mut art = match image {
-        Some(image) if card => el()
-            .size(w, h)
-            .pixels_fit(image.pixels(), SurfaceFit::Fill)
-            .child(scrim_bottom(h * 0.6))
-            .child(name_on_art(&group.name, 22.0).pin(Some(16.0), None, Some(16.0), Some(30.0))),
+        Some(image) if card => el().size(w, h).pixels_fit(image.pixels(), SurfaceFit::Fill).child(
+            el().pin(Some(0.0), None, Some(0.0), Some(0.0))
+                .px(16.0)
+                .pt(12.0)
+                .pb(30.0)
+                .fill(style::bg())
+                .child(name_on_art(&group.name, 22.0).max_lines(2)),
+        ),
         Some(image) => el().size(w, h).pixels_fit(image.pixels(), SurfaceFit::Fill),
         None => title_card(&group.name, w, h, if card { 26.0 } else { 22.0 }),
     };
@@ -294,49 +294,31 @@ fn progress_bar(watched: f32) -> El {
         .h(4.0)
         .radius(2.0)
         .fill(Color::WHITE.alpha(0.28))
-        .child(el().w_frac(watched).h_full().radius(2.0).linear_gradient(PI / 2.0, style::progress()))
+        .child(el().w_frac(watched).h_full().radius(2.0).fill(style::accent()))
 }
 
-/// The hue of a title without artwork, from its name.
-fn hue(name: &str) -> f32 {
-    (name.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) % 360) as f32
-}
-
-/// The colourful wash that stands in for a title's artwork.
-fn wash(name: &str) -> El {
-    let hue = hue(name);
-    let stops =
-        [(0.0, oklch(0.58, 0.15, hue)), (0.55, oklch(0.36, 0.11, hue + 30.0)), (1.0, oklch(0.2, 0.06, hue + 60.0))];
-    el().linear_gradient(PI * 0.8, stops)
-        .child(el().absolute(0.0, 0.0).w_full().h_full().radial_gradient(
-            [0.85, 0.15],
-            [700.0, 480.0],
-            [(0.0, oklch(0.6, 0.16, hue + 70.0).alpha(0.55)), (1.0, oklch(0.6, 0.16, hue + 70.0).alpha(0.0))],
-        ))
-        .child(el().absolute(0.0, 0.0).w_full().h_full().radial_gradient(
-            [0.1, 0.0],
-            [520.0, 380.0],
-            [(0.0, Color::WHITE.alpha(0.2)), (1.0, Color::WHITE.alpha(0.0))],
-        ))
+/// What stands in for a title's artwork: a flat dark surface.
+fn blank() -> El {
+    el().fill(style::raised())
 }
 
 fn name_on_art(name: &str, size: f32) -> El {
     text(name.to_string())
         .font(TextStyle::new(size, 800.0).lh(size * 1.05).tracking(-size * 0.03))
-        .color(Color::WHITE)
+        .color(style::text())
         .max_lines(4)
 }
 
-/// What shows until (or instead of) a poster: the name, once, on its wash.
+/// What shows until (or instead of) a poster: the name, once, on a flat surface.
 fn title_card(name: &str, w: f32, h: f32, size: f32) -> El {
-    wash(name).size(w, h).child(name_on_art(name, size).pin(Some(16.0), None, Some(16.0), Some(30.0)))
+    blank().size(w, h).child(name_on_art(name, size).pin(Some(16.0), None, Some(16.0), Some(30.0)))
 }
 
-/// A title's backdrop, else its wash.
-fn backdrop(s: &Flicks, title: &Title, name: &str) -> El {
+/// A title's backdrop, else the plain page.
+fn backdrop(s: &Flicks, title: &Title) -> El {
     match artwork(s, title, true) {
         Some(image) => el().pixels_fit(image.pixels(), SurfaceFit::Fill),
-        None => wash(name),
+        None => el().fill(style::bg()),
     }
 }
 
@@ -372,7 +354,7 @@ pub fn detail(s: &Flicks, key: &catalog::GroupKey) -> El {
     };
     let mut info = col()
         .key("detail-info")
-        .max_w(680.0)
+        .max_w(680.0 + 2.0 * PANEL_PAD)
         .gap(14.0)
         .child(text(group.name.clone()).key("detail-title").font(style::DISPLAY).color(style::text()).wrap())
         .child(text(facts.join("  ·  ")).font(style::META).color(style::text().alpha(0.78)));
@@ -383,23 +365,16 @@ pub fn detail(s: &Flicks, key: &catalog::GroupKey) -> El {
     } else {
         info.child(play_button(&play_label, next).mt(10.0))
     };
-    // The backdrop, sharp at the top and fading into the same picture blurred behind the page.
+    // The backdrop, sharp, over the same picture blurred behind the page.
     let hero = col()
         .key("detail-hero")
         .w_full()
         .h(style::HERO_H)
         .justify_end()
-        .px(style::GUTTER)
-        .pb(36.0)
-        .child(
-            el().absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
-                .clip_fade(0.0, 0.0, 0.0, 280.0)
-                .child(backdrop(s, lead, &group.name).absolute(0.0, 0.0).w_full().h_full())
-                .child(scrim_left()),
-        )
-        .child(info);
+        .px(style::GUTTER - PANEL_PAD)
+        .pb(36.0 - PANEL_PAD)
+        .child(backdrop(s, lead).absolute(0.0, 0.0).w_full().h_full())
+        .child(panel(info));
 
     let mut page = col().w_full().pb(56.0).child(hero);
     if group.is_show() {
@@ -422,11 +397,11 @@ pub fn detail(s: &Flicks, key: &catalog::GroupKey) -> El {
         };
         list = list.child(heading);
         for &(t, title) in titles.iter().filter(|(_, title)| seasons.len() < 2 || title.item.season == season) {
-            list = list.child(episode_row(s, title, &group.name, t, s.offline(t)));
+            list = list.child(episode_row(s, title, t, s.offline(t)));
         }
         page = page.child(list);
     }
-    let blurred = backdrop(s, lead, &group.name).absolute(0.0, 0.0).w_full().h_full().blur(48.0).opacity(0.55);
+    let blurred = backdrop(s, lead).absolute(0.0, 0.0).w_full().h_full().blur(48.0).opacity(0.55);
     let dim = el().absolute(0.0, 0.0).w_full().h_full().fill(style::bg().alpha(0.55));
     el().w_full().h_full().child(blurred).child(dim).child(scrolling(page))
 }
@@ -457,15 +432,15 @@ fn play_button(label: &str, media: usize) -> El {
         .center_y()
         .self_start()
         .radius(10.0)
-        .linear_gradient(PI / 2.0, style::primary())
-        .hover(Color::WHITE.alpha(0.12))
+        .fill(style::text())
+        .hover(Color::BLACK.alpha(0.08))
         .press(Color::BLACK.alpha(0.15))
         .cursor(Cursor::Pointer)
         .focusable(true)
         .focus_ring(2.0, 3.0, style::focus())
         .label(label.to_string())
-        .child(play_icon(Color::WHITE, 14.0))
-        .child(text(label.to_string()).font(style::BUTTON).color(Color::WHITE))
+        .child(play_icon(style::bg(), 14.0))
+        .child(text(label.to_string()).font(style::BUTTON).color(style::bg()))
         .on_press(move |s: &mut Flicks| s.open_player(media))
 }
 
@@ -475,7 +450,7 @@ fn play_icon(color: Color, size: f32) -> El {
 }
 
 /// An episode: a thumbnail, its name and facts, and how far in it is.
-fn episode_row(s: &Flicks, title: &Title, show: &str, t: usize, offline: bool) -> El {
+fn episode_row(s: &Flicks, title: &Title, t: usize, offline: bool) -> El {
     let item = &title.item;
     let name = match (item.episode, item.episode_end) {
         (Some(first), Some(last)) if last > first => format!("Episodes {first}–{last}"),
@@ -492,7 +467,7 @@ fn episode_row(s: &Flicks, title: &Title, show: &str, t: usize, offline: bool) -
     let (w, h) = (176.0, 99.0);
     let mut thumb = match still(s, title) {
         Some(image) => el().size(w, h).pixels_fit(image.pixels(), SurfaceFit::Fill),
-        None => wash(show).size(w, h).child(
+        None => blank().size(w, h).child(
             text(item.episode.map(|e| e.to_string()).unwrap_or_default())
                 .font(TextStyle::new(34.0, 800.0).tracking(-1.0))
                 .color(Color::WHITE.alpha(0.9))
