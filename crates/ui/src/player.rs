@@ -349,7 +349,7 @@ fn track() -> Color {
     Color::WHITE.alpha(0.25)
 }
 fn played() -> Color {
-    style::coral()
+    style::accent()
 }
 
 fn top(p: &Screen, cx: &mut Cx<Flicks>) -> El {
@@ -497,7 +497,7 @@ fn menu_panel(p: &Screen, menu: Menu) -> El {
                 .radius(6.0)
                 .hover(style::faint())
                 .cursor(Cursor::Pointer)
-                .child(text(if on { "✓" } else { "" }).font(style::BODY).color(style::amber()).w(14.0))
+                .child(text(if on { "✓" } else { "" }).font(style::BODY).color(style::accent()).w(14.0))
                 .child(text(label).font(style::BODY).color(style::text()).truncate())
                 .on_press(pick),
         );

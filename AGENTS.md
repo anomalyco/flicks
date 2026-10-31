@@ -32,6 +32,8 @@ A lightweight Plex alternative: Flicks servers (macOS, Windows, Linux) own folde
 
 10. **No gradients.** Nothing the user sees uses a gradient: no gradient buttons, scrims, backgrounds, progress bars, placeholders, text or logo. Use flat fills, solid bands or panels, blur materials and subtle shadows. Text over artwork sits on a solid or blurred panel, never a fade.
 
+11. **No cards.** No boxed panels, rounded containers holding text, tiles with text bands, or raised surfaces. Artwork is just the image with a small radius; titles and metadata sit on the window background below or beside it; lists are rows with hairlines. System-style menus and popovers are fine.
+
 ## Working in parallel
 
 The coordinator session launches each card's agent as a subagent of itself (never from the board's Launch button, so Ryan's session list stays clean) and hears back when it finishes. Agents work one card at a time from `ROADMAP.md`, each in its own worktree, tracked on the board: the `flicks` project (cards `FLK-n`), http://127.0.0.1:8789/p/flicks. Ryan reads the board, not chat.

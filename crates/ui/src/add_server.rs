@@ -27,16 +27,12 @@ pub fn view(s: &Flicks) -> El {
         .center()
         .self_start()
         .radius(10.0)
-        .fill(style::faint())
-        .linear_gradient(
-            std::f32::consts::PI / 2.0,
-            style::primary().map(|(t, c)| (t, c.alpha(if ready { 1.0 } else { 0.0 }))),
-        )
-        .hover(Color::WHITE.alpha(if ready { 0.12 } else { 0.0 }))
+        .fill(if ready { style::text() } else { style::faint() })
+        .hover(Color::BLACK.alpha(if ready { 0.08 } else { 0.0 }))
         .cursor(if ready { Cursor::Pointer } else { Cursor::Default })
         .focusable(ready)
         .child(text(if s.pairing { "Adding…" } else { "Add Server" }).font(style::BUTTON).color(if ready {
-            Color::WHITE
+            style::bg()
         } else {
             style::muted()
         }))
