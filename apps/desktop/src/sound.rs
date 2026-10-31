@@ -1,5 +1,5 @@
 //! The intro's sound (`assets/brand/intro.wav`) on the default output through `flicks-audio`, on
-//! its own thread. Silent when the system output is muted or at zero volume.
+//! its own thread. CoreAudio keeps it silent when the system output is muted or at zero volume.
 
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -26,9 +26,6 @@ pub fn start() -> Option<Box<dyn Fn(Sound)>> {
 }
 
 fn play(rx: &Receiver<(Sound, Instant)>) {
-    if muted() {
-        return;
-    }
     let Some((rate, samples)) = decode(WAV) else { return };
     let Ok(mut output) = Output::open() else { return };
     let started = match rx.recv_timeout(WAIT) {
@@ -71,15 +68,6 @@ fn play(rx: &Receiver<(Sound, Instant)>) {
     }
     // Let the device play out what's queued before closing it.
     std::thread::sleep(output.queued() + output.latency() + Duration::from_millis(50));
-}
-
-/// Whether the system output is muted or at zero volume. Unknown counts as not muted.
-fn muted() -> bool {
-    let script = "set v to get volume settings\noutput muted of v or output volume of v is 0";
-    std::process::Command::new("osascript")
-        .args(["-e", script])
-        .output()
-        .is_ok_and(|out| out.status.success() && out.stdout.trim_ascii() == b"true")
 }
 
 /// The rate and interleaved stereo samples of a 16-bit PCM stereo WAV.

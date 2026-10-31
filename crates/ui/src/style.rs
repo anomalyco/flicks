@@ -1,15 +1,16 @@
-//! Colours, type and motion: near-black, artwork first, warm white text, the logo's violet to
-//! amber for what's primary, springs for everything that moves.
+//! Colours, type and motion: near-black, artwork first, warm white text, flat fills (never a
+//! gradient), one coral accent, springs for everything that moves.
 
 use rune::{Color, Spring, TextStyle, oklch, oklcha};
 
 pub fn bg() -> Color {
     oklch(0.145, 0.004, 265.0)
 }
+/// Fields, and titles without artwork.
 pub fn raised() -> Color {
     oklch(0.22, 0.004, 265.0)
 }
-/// The wordmark's off-white.
+/// The wordmark's off-white; also the primary button's fill.
 pub fn text() -> Color {
     oklch(0.95, 0.012, 80.0)
 }
@@ -19,30 +20,13 @@ pub fn muted() -> Color {
 pub fn faint() -> Color {
     oklcha(1.0, 0.0, 0.0, 0.08)
 }
-// The logo's frames, back to front: violet, orchid, coral and amber.
-pub fn violet() -> Color {
-    oklch(0.504, 0.229, 282.0)
-}
-pub fn orchid() -> Color {
-    oklch(0.589, 0.213, 310.5)
-}
-pub fn coral() -> Color {
+/// The logo's front frame: progress, the seek bar and focus rings.
+pub fn accent() -> Color {
     oklch(0.715, 0.18, 16.8)
-}
-pub fn amber() -> Color {
-    oklch(0.826, 0.148, 73.8)
-}
-/// Primary buttons, left to right.
-pub fn primary() -> [(f32, Color); 3] {
-    [(0.0, violet()), (0.6, orchid()), (1.0, coral())]
-}
-/// How far in a title is: the logo's front frame.
-pub fn progress() -> [(f32, Color); 2] {
-    [(0.0, coral()), (1.0, amber())]
 }
 /// Keyboard focus rings.
 pub fn focus() -> Color {
-    amber()
+    accent()
 }
 pub fn error() -> Color {
     oklch(0.72, 0.15, 27.0)
