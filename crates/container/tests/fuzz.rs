@@ -58,6 +58,123 @@ fn cmaf_writer_hostile_inputs() {
     assert_eq!(s.dts, 12345);
     assert_eq!(parsed.read_sample(bytes.as_slice(), 0, 0).unwrap(), [1]);
 }
+#[test]
+fn cmaf_reader_hostile_segments() {
+    use flicks_container::isobmff::boxes::boxes;
+    use flicks_container::isobmff::cmaf;
+    let avc = SampleEntry::avc(AvcConfig::new(vec![vec![0x67, 0x64, 0, 0x1F]], vec![vec![0x68]], 4), 64, 64);
+    let aac = SampleEntry::aac(vec![0x11, 0x90], 2, 48000);
+    let data: Vec<Vec<u8>> = (0..5).map(|i| vec![i as u8; 3 + i]).collect();
+    let ws: Vec<_> = data
+        .iter()
+        .enumerate()
+        .map(|(i, d)| WriteSample {
+            data: d,
+            duration: 1000,
+            composition_offset: 2000 - 500 * i as i32,
+            is_sync: i == 0,
+        })
+        .collect();
+    let seg = cmaf::write_media_segment(9, 3000, &ws).unwrap();
+    // Every sample read back lies inside the mdat, in order, without overlap.
+    let check = |d: &[u8], samples: &[Sample]| {
+        let mut end = 0;
+        for s in samples {
+            assert!(s.offset >= end && s.size > 0 && s.duration > 0 && s.pts >= 0);
+            end = s.offset + s.size as u64;
+        }
+        assert!(end <= d.len() as u64 && samples.len() <= cmaf::MAX_READ_SAMPLES);
+    };
+    check(&seg, &cmaf::read_media_segment(&seg, 9).unwrap());
+    let mut parsed = 0;
+    for n in 0..seg.len() {
+        assert!(cmaf::read_media_segment(&seg[..n], 9).is_err());
+    }
+    for bit in 0..seg.len() * 8 {
+        let mut d = seg.clone();
+        d[bit / 8] ^= 1 << (bit % 8);
+        if let Ok(s) = cmaf::read_media_segment(&d, 9) {
+            check(&d, &s);
+            parsed += 1;
+        }
+    }
+    // Box sizes, the sample count and the data offset set to extreme values.
+    let fields = [0, 8, 16, 24, 32, 36, 40, 52, 56, 60, 64, 68, 72, 76, 80, 84, 88];
+    for at in fields.into_iter().chain([88 + 16 * ws.len()]) {
+        for v in [0u32, 1, 7, 8, 0x7FFF_FFFF, 0x8000_0000, u32::MAX] {
+            let mut d = seg.clone();
+            d[at..at + 4].copy_from_slice(&v.to_be_bytes());
+            if let Ok(s) = cmaf::read_media_segment(&d, 9) {
+                check(&d, &s);
+            }
+        }
+    }
+    eprintln!("CMAF segment bit flips still read: {parsed}");
+    let mut trailing = seg.clone();
+    trailing.push(0);
+    assert!(cmaf::read_media_segment(&trailing, 9).is_err());
+    assert!(cmaf::read_media_segment(&[seg.clone(), seg.clone()].concat(), 9).is_err());
+    assert!(cmaf::read_media_segment(&seg, 0).is_err());
+    let one = WriteSample { data: &[1], duration: 1, composition_offset: 0, is_sync: true };
+    let many = cmaf::write_media_segment(1, 0, &vec![one; cmaf::MAX_READ_SAMPLES + 1]).unwrap();
+    assert!(cmaf::read_media_segment(&many, 1).is_err());
+    let at_cap = cmaf::write_media_segment(1, 0, &vec![one; cmaf::MAX_READ_SAMPLES]).unwrap();
+    assert_eq!(cmaf::read_media_segment(&at_cap, 1).unwrap().len(), cmaf::MAX_READ_SAMPLES);
+    let mut huge = seg.clone();
+    huge.resize(104 + 16 * cmaf::MAX_READ_SAMPLES + cmaf::MAX_SEGMENT_BYTES + 1, 0);
+    assert!(matches!(cmaf::read_media_segment(&huge, 1), Err(Error::TooLarge(_))));
+    // A timestamp past i64 is refused rather than wrapped.
+    let late = cmaf::write_media_segment(1, i64::MAX as u64, &[one]).unwrap();
+    assert!(cmaf::read_media_segment(&late, 1).is_err());
+
+    for entry in [avc.clone(), aac.clone()] {
+        let init = cmaf::write_init_segment(&[TrackConfig::new(entry, 90000)]).unwrap();
+        assert!(cmaf::read_init_segment(&init).is_ok());
+        assert!(cmaf::read_media_segment(&init, 1).is_err());
+        assert!(cmaf::read_init_segment(&seg).is_err());
+        assert!(cmaf::read_init_segment(&[init.clone(), seg.clone()].concat()).is_err());
+        for n in 0..init.len() {
+            assert!(cmaf::read_init_segment(&init[..n]).is_err());
+        }
+        for bit in 0..init.len() * 8 {
+            let mut d = init.clone();
+            d[bit / 8] ^= 1 << (bit % 8);
+            if let Ok(t) = cmaf::read_init_segment(&d) {
+                assert!(t.id == 1 && t.samples.is_empty() && t.entries.len() == 1 && t.timescale > 0);
+            }
+        }
+        for at in (0..init.len() - 4).step_by(4) {
+            for v in [0u32, 1, 8, 0x8000_0000, u32::MAX] {
+                let mut d = init.clone();
+                d[at..at + 4].copy_from_slice(&v.to_be_bytes());
+                let _ = cmaf::read_init_segment(&d);
+            }
+        }
+    }
+    let two = cmaf::write_init_segment(&[TrackConfig::new(avc.clone(), 90000), TrackConfig::new(aac, 48000)]).unwrap();
+    assert!(cmaf::read_init_segment(&two).is_err());
+    let mut padded = cmaf::write_init_segment(&[TrackConfig::new(avc.clone(), 90000)]).unwrap();
+    padded.resize(cmaf::MAX_INIT_BYTES + 1, 0);
+    assert!(matches!(cmaf::read_init_segment(&padded), Err(Error::TooLarge(_))));
+    // A CMAF init carrying a progressive file's sample tables is refused before they are built.
+    let init = cmaf::write_init_segment(&[TrackConfig::new(avc.clone(), 90000)]).unwrap();
+    let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+    let t = w.add_track(TrackConfig::new(avc, 90000)).unwrap();
+    for _ in 0..1000 {
+        w.write_sample(t, WriteSample { data: &[1, 2, 3], duration: 3000, composition_offset: 0, is_sync: true })
+            .unwrap();
+    }
+    let progressive = w.finish().unwrap().into_inner();
+    fn find_box<'a>(data: &'a [u8], kind: &[u8; 4]) -> &'a [u8] {
+        &data[boxes(data).map(Result::unwrap).find(|b| b.kind == kind).unwrap().range()]
+    }
+    let (cmaf_moov, prog_moov) = (&find_box(&init, b"moov")[8..], &find_box(&progressive, b"moov")[8..]);
+    let body = [find_box(cmaf_moov, b"mvhd"), find_box(prog_moov, b"trak"), find_box(cmaf_moov, b"mvex")].concat();
+    let ftyp = find_box(&init, b"ftyp").to_vec();
+    let spliced = [ftyp, ((body.len() + 8) as u32).to_be_bytes().to_vec(), b"moov".to_vec(), body].concat();
+    assert!(matches!(cmaf::read_init_segment(&spliced), Err(Error::TooLarge("sample count"))));
+}
+
 impl Rng {
     fn next(&mut self) -> u64 {
         // xorshift64*

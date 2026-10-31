@@ -1,8 +1,13 @@
 //! Stateless, bounded fragmented MP4 for HLS (ISO/IEC 14496-12:2022 and
 //! 14496-15:2022). No file I/O; the same functions work in a wasm host.
 
+use super::boxes::{BoxIter, BoxRef, Reader};
 use super::bytes::BoxBuf;
-use super::{Brand, CodecConfig, Error, FragmentedWriter, Result, TrackConfig, WriteSample, WriterOptions};
+use super::{
+    Brand, CodecConfig, Error, FragmentedWriter, Result, Sample, Track, TrackConfig, TrackKind, WriteSample,
+    WriterOptions,
+};
+use std::ops::Range;
 
 pub mod timing;
 
@@ -294,4 +299,143 @@ pub fn write_media_segment(seq: u32, base_decode_time: u64, samples: &[WriteSamp
     }
     b.end(h);
     Ok(b.buf)
+}
+
+/// Largest init segment [`read_init_segment`] accepts.
+pub const MAX_INIT_BYTES: usize = 1 << 20;
+/// Most samples [`read_media_segment`] accepts: 32 s of 240 fps video, or of any audio frame size
+/// the writer's codecs use.
+pub const MAX_READ_SAMPLES: usize = 8192;
+
+/// Read back a one-track init segment from [`write_init_segment`]: an empty fragmented track 1
+/// whose sample description passes [`validate`]. Anything else, including extra tracks, boxes or
+/// sample tables, is refused.
+pub fn read_init_segment(data: &[u8]) -> Result<Track> {
+    let bad = |what: &str| Error::Invalid(format!("CMAF init: {what}"));
+    if data.len() > MAX_INIT_BYTES {
+        return Err(Error::TooLarge("CMAF init"));
+    }
+    let [ftyp, moov] = exactly(data, 0..data.len(), [b"ftyp", b"moov"])?;
+    if ftyp.payload != b"iso6\0\0\0\x01iso6cmfcmp41" {
+        return Err(bad("brand"));
+    }
+    // Every table is count-checked against `data`, and the sample budget is zero.
+    let mut file = super::demux::open_init(data, MAX_INIT_BYTES as u64)?;
+    let mvex = BoxIter::within(data, moov.payload_range())
+        .map_while(|b| b.ok())
+        .find(|b| b.kind == b"mvex")
+        .ok_or_else(|| bad("mvex"))?;
+    let [trex] = exactly(data, mvex.payload_range(), [b"trex"])?;
+    // Version 0, track 1, sample description 1, no default duration, size or flags.
+    if trex.payload != [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] {
+        return Err(bad("trex"));
+    }
+    let track = match file.tracks.pop() {
+        Some(t) if file.tracks.is_empty() => t,
+        _ => return Err(bad("track count")),
+    };
+    let entry = match track.entries.as_slice() {
+        [e] => e.clone(),
+        _ => return Err(bad("sample descriptions")),
+    };
+    let (kind, format) = match &entry.codec {
+        CodecConfig::Avc(_) => (TrackKind::Video, b"avc1"),
+        CodecConfig::Hevc(_) => (TrackKind::Video, b"hvc1"),
+        CodecConfig::Aac(_) => (TrackKind::Audio, b"mp4a"),
+        CodecConfig::Ac3 { .. } => (TrackKind::Audio, b"ac-3"),
+        CodecConfig::Eac3 { .. } => (TrackKind::Audio, b"ec-3"),
+        _ => return Err(bad("codec")),
+    };
+    if track.id != 1
+        || track.kind != kind
+        || entry.format != format
+        || track.duration != 0
+        || !track.samples.is_empty()
+        || !track.edits.is_empty()
+    {
+        return Err(bad("track"));
+    }
+    validate(&TrackConfig::new(entry, track.timescale)).map_err(|_| bad("sample description"))?;
+    Ok(track)
+}
+
+/// Read back one segment from [`write_media_segment`]: a single `moof` with the given sequence
+/// number for track 1, then its `mdat`. Sample offsets are relative to `data`; the samples tile
+/// the `mdat` payload exactly, in order. Durations and sizes are non-zero and timestamps fit
+/// `i64` with `pts >= 0`. The caller checks the segment's span against the track's timescale.
+pub fn read_media_segment(data: &[u8], sequence: u32) -> Result<Vec<Sample>> {
+    let bad = |what: &str| Error::Invalid(format!("CMAF segment: {what}"));
+    // The trun of MAX_READ_SAMPLES samples plus the fixed boxes, then the payload.
+    if data.len() > 104 + 16 * MAX_READ_SAMPLES + MAX_SEGMENT_BYTES {
+        return Err(Error::TooLarge("CMAF segment"));
+    }
+    let [moof, mdat] = exactly(data, 0..data.len(), [b"moof", b"mdat"])?;
+    let [mfhd, traf] = exactly(data, moof.payload_range(), [b"mfhd", b"traf"])?;
+    let [tfhd, tfdt, trun] = exactly(data, traf.payload_range(), [b"tfhd", b"tfdt", b"trun"])?;
+    let mut c = Reader::labeled(mfhd.payload, "mfhd");
+    if sequence == 0 || c.full_header()? != (0, 0) || c.u32()? != sequence || !c.is_empty() {
+        return Err(bad("sequence"));
+    }
+    let mut c = Reader::labeled(tfhd.payload, "tfhd");
+    if c.full_header()? != (0, 0x20000) || c.u32()? != 1 || !c.is_empty() {
+        return Err(bad("tfhd"));
+    }
+    let mut c = Reader::labeled(tfdt.payload, "tfdt");
+    if c.full_header()? != (1, 0) {
+        return Err(bad("tfdt"));
+    }
+    let mut dts = i64::try_from(c.u64()?).map_err(|_| bad("decode time"))?;
+    if !c.is_empty() {
+        return Err(bad("tfdt"));
+    }
+    let mut c = Reader::labeled(trun.payload, "trun");
+    if c.full_header()? != (1, 0xf01) {
+        return Err(bad("trun flags"));
+    }
+    let n = c.u32()? as usize;
+    let data_offset = c.i32()?;
+    if n == 0 || n > MAX_READ_SAMPLES || c.remaining() != n * 16 {
+        return Err(bad("sample count"));
+    }
+    let Range { start: mut pos, end } = mdat.payload_range();
+    if i64::from(data_offset) != pos as i64 - moof.offset as i64 || end - pos > MAX_SEGMENT_BYTES {
+        return Err(bad("data offset"));
+    }
+    let mut samples = Vec::with_capacity(n);
+    for _ in 0..n {
+        let (duration, size, flags, cto) = (c.u32()?, c.u32()?, c.u32()?, c.i32()?);
+        let next = pos.checked_add(size as usize).filter(|e| *e <= end);
+        let pts = dts.checked_add(i64::from(cto)).filter(|p| *p >= 0);
+        let after = dts.checked_add(i64::from(duration));
+        let (Some(next), Some(pts), Some(after)) = (next, pts, after) else {
+            return Err(bad("sample bounds"));
+        };
+        if duration == 0 || size == 0 || !matches!(flags & !0x0400_0000, 0x0200_0000 | 0x0101_0000) {
+            return Err(bad("sample"));
+        }
+        let is_sync = flags & 0x1_0000 == 0;
+        samples.push(Sample { offset: pos as u64, size, dts, pts, duration, is_sync, description_index: 1 });
+        (pos, dts) = (next, after);
+    }
+    if pos != end {
+        return Err(bad("sample sizes"));
+    }
+    Ok(samples)
+}
+
+/// The boxes in `data[range]`, which must be exactly `kinds` in order and fill the range, each
+/// with a plain 32-bit header and an explicit size.
+fn exactly<'a, const N: usize>(data: &'a [u8], range: Range<usize>, kinds: [&[u8; 4]; N]) -> Result<[BoxRef<'a>; N]> {
+    let mut out = Vec::with_capacity(N);
+    for b in BoxIter::within(data, range.clone()) {
+        let b = b?;
+        match kinds.get(out.len()) {
+            Some(k) if b.kind == **k && b.header_len == 8 && !b.extends_to_end => out.push(b),
+            _ => return Err(Error::Invalid(format!("CMAF: unexpected box '{}'", b.kind))),
+        }
+    }
+    if out.last().map(|b| b.end()) != Some(range.end) {
+        return Err(Error::Truncated("CMAF box"));
+    }
+    out.try_into().map_err(|_| Error::Truncated("CMAF box"))
 }

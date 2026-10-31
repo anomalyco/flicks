@@ -143,6 +143,33 @@ proptest! {
             dts += s.duration as i64;
         }
     }
+
+    #[test]
+    fn cmaf_read_roundtrip(
+        samples in prop::collection::vec(sample_strategy(), 1..60),
+        seq in 1u32..,
+        base in 0u64..1 << 40,
+        video in any::<bool>(),
+    ) {
+        let (entry, timescale) = if video { (entry(0), 90000) } else { (entry(2), 48000) };
+        let init = cmaf::write_init_segment(&[TrackConfig::new(entry.clone(), timescale)]).unwrap();
+        let track = cmaf::read_init_segment(&init).unwrap();
+        prop_assert_eq!((track.id, track.timescale, &track.entries[0].codec), (1, timescale, &entry.codec));
+        // Delay presentation so that every negative composition offset stays at or after zero.
+        let base = base + 200;
+        let data: Vec<_> = samples.iter().enumerate().map(|(i, s)| payload(0, i, s.size + 1)).collect();
+        let ws: Vec<_> = samples.iter().zip(&data).map(|(s, d)| WriteSample { data: d, duration: s.duration, composition_offset: s.cto, is_sync: s.sync }).collect();
+        let seg = cmaf::write_media_segment(seq, base, &ws).unwrap();
+        prop_assert!(cmaf::read_media_segment(&seg, seq.wrapping_add(1)).is_err());
+        let read = cmaf::read_media_segment(&seg, seq).unwrap();
+        prop_assert_eq!(read.len(), samples.len());
+        let mut dts = base as i64;
+        for ((r, s), d) in read.iter().zip(&samples).zip(&data) {
+            prop_assert_eq!((r.dts, r.pts, r.duration, r.is_sync), (dts, dts + s.cto as i64, s.duration, s.sync));
+            prop_assert_eq!(&seg[r.offset as usize..][..r.size as usize], d.as_slice());
+            dts += s.duration as i64;
+        }
+    }
 }
 
 #[test]
