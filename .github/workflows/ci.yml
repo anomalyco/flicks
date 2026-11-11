@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-24.04, windows-latest]
+        os: [blacksmith-6vcpu-macos-15, ubuntu-24.04, windows-latest]
     defaults:
       run:
         shell: bash
