@@ -1,5 +1,7 @@
 <h1><img src="assets/brand/lockup.svg" alt="flicks" height="56"></h1>
 
+<a href="https://opencode.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="https://opencode.ai/brand/badges/opencode-built-with-g-dark-20.svg"><img alt="Built with OpenCode" src="https://opencode.ai/brand/badges/opencode-built-with-g-light-20.svg" height="20" /></picture></a>
+
 A lightweight Plex alternative. Run a Flicks server on a Mac (later Linux and Windows) pointed at your folders; the Flicks app connects to any number of servers and shows them as one library. No account, no paywall, nothing we host: reach a server on your LAN, your tailnet or through a tunnel.
 
 Everything is built here, in Rust, with every UI in Rune. No FFmpeg, no libmpv, no dependencies on other projects' repos. Simple first.
